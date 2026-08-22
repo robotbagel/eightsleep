@@ -85,6 +85,7 @@ export async function GET(request: NextRequest): Promise<Response> {
               liveTuningEnabled: settings.liveTuningEnabled,
               maxDailyShiftC: settings.maxDailyShift / 10,
               sleepGoal: settings.sleepGoal,
+              updatedAt: settings.updatedAt,
             }
           : null,
         profileC: profile
