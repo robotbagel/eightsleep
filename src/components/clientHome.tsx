@@ -4,6 +4,7 @@ import { useState } from "react";
 import { EightLoginDialog } from "~/components/eightLogin";
 import { TemperatureProfileForm } from "~/components/temperatureProfileForm";
 import { LogoutButton } from "~/components/logout";
+import { AiPanel } from "~/components/aiPanel";
 
 export default function ClientHome({
   initialLoginState,
@@ -28,6 +29,7 @@ export default function ClientHome({
                 <LogoutButton onLogoutSuccess={() => setIsLoggedIn(false)} />
               </div>
               <TemperatureProfileForm />
+              <AiPanel />
             </>
           )}
         </div>

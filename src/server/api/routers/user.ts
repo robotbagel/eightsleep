@@ -8,11 +8,25 @@ import {
   obtainFreshAccessToken,
   AuthError,
 } from "~/server/eight/auth";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { type Token } from "~/server/eight/types";
 import { TRPCError } from "@trpc/server";
 import { adjustTemperature } from "~/app/api/temperatureCron/route";
 import jwt from "jsonwebtoken";
+import {
+  userAiSettings,
+  aiRecommendations,
+  aiLiveAdjustments,
+} from "~/server/db/schema";
+import {
+  applyRecommendation,
+  dismissRecommendation,
+  generateRecommendationForUser,
+  getAiSettingsOrDefaults,
+  getFreshToken,
+} from "~/server/ai/advisor";
+import { AiError, isAiConfigured } from "~/server/ai/gemini";
+import { collectSleepContext } from "~/server/ai/sleepData";
 
 class DatabaseError extends Error {
   constructor(message: string) {
@@ -269,6 +283,155 @@ export const userRouter = createTRPCRouter({
           code: "INTERNAL_SERVER_ERROR",
           message:
             "An unexpected error occurred while updating the temperature profile.",
+        });
+      }
+    }),
+
+  getAiSettings: publicProcedure.query(async ({ ctx }) => {
+    const decoded = await checkAuthCookie(ctx.headers);
+    const settings = await getAiSettingsOrDefaults(decoded.email);
+    return {
+      aiEnabled: settings.aiEnabled,
+      autoApply: settings.autoApply,
+      liveTuningEnabled: settings.liveTuningEnabled,
+      sleepGoal: settings.sleepGoal,
+      maxDailyShift: settings.maxDailyShift,
+      aiAvailable: isAiConfigured(),
+    };
+  }),
+
+  updateAiSettings: publicProcedure
+    .input(
+      z.object({
+        aiEnabled: z.boolean(),
+        autoApply: z.boolean(),
+        liveTuningEnabled: z.boolean(),
+        sleepGoal: z.string().max(500).nullable(),
+        maxDailyShift: z.number().int().min(5).max(40),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const decoded = await checkAuthCookie(ctx.headers);
+      await db
+        .insert(userAiSettings)
+        .values({
+          email: decoded.email,
+          aiEnabled: input.aiEnabled,
+          autoApply: input.autoApply,
+          liveTuningEnabled: input.liveTuningEnabled,
+          sleepGoal: input.sleepGoal,
+          maxDailyShift: input.maxDailyShift,
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: userAiSettings.email,
+          set: {
+            aiEnabled: input.aiEnabled,
+            autoApply: input.autoApply,
+            liveTuningEnabled: input.liveTuningEnabled,
+            sleepGoal: input.sleepGoal,
+            maxDailyShift: input.maxDailyShift,
+            updatedAt: new Date(),
+          },
+        })
+        .execute();
+      return { success: true };
+    }),
+
+  getLiveAdjustments: publicProcedure.query(async ({ ctx }) => {
+    const decoded = await checkAuthCookie(ctx.headers);
+    return await db
+      .select()
+      .from(aiLiveAdjustments)
+      .where(eq(aiLiveAdjustments.email, decoded.email))
+      .orderBy(desc(aiLiveAdjustments.id))
+      .limit(12);
+  }),
+
+  getSleepSummary: publicProcedure.query(async ({ ctx }) => {
+    const decoded = await checkAuthCookie(ctx.headers);
+    const user = await db.query.users.findFirst({
+      where: eq(users.email, decoded.email),
+    });
+    if (!user) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "User not found." });
+    }
+    const profile = await db.query.userTemperatureProfile.findFirst({
+      where: eq(userTemperatureProfile.email, decoded.email),
+    });
+    const timezone = profile?.timezoneTZ ?? "UTC";
+    try {
+      const token = await getFreshToken(user);
+      return await collectSleepContext(token, user.eightUserId, timezone);
+    } catch (error) {
+      console.error("Error fetching sleep summary:", error);
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Could not fetch sleep data from Eight Sleep.",
+      });
+    }
+  }),
+
+  getAiRecommendations: publicProcedure.query(async ({ ctx }) => {
+    const decoded = await checkAuthCookie(ctx.headers);
+    return await db
+      .select()
+      .from(aiRecommendations)
+      .where(eq(aiRecommendations.email, decoded.email))
+      .orderBy(desc(aiRecommendations.id))
+      .limit(5);
+  }),
+
+  generateAiRecommendation: publicProcedure.mutation(async ({ ctx }) => {
+    const decoded = await checkAuthCookie(ctx.headers);
+    try {
+      return await generateRecommendationForUser(decoded.email, "manual");
+    } catch (error) {
+      console.error("Error generating AI recommendation:", error);
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message:
+          error instanceof AiError
+            ? error.message
+            : "An unexpected error occurred while generating the recommendation.",
+      });
+    }
+  }),
+
+  applyAiRecommendation: publicProcedure
+    .input(z.object({ id: z.number().int() }))
+    .mutation(async ({ input, ctx }) => {
+      const decoded = await checkAuthCookie(ctx.headers);
+      try {
+        await applyRecommendation(decoded.email, input.id);
+        return { success: true };
+      } catch (error) {
+        console.error("Error applying AI recommendation:", error);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message:
+            error instanceof AiError
+              ? error.message
+              : "An unexpected error occurred while applying the recommendation.",
+        });
+      }
+    }),
+
+  dismissAiRecommendation: publicProcedure
+    .input(z.object({ id: z.number().int() }))
+    .mutation(async ({ input, ctx }) => {
+      const decoded = await checkAuthCookie(ctx.headers);
+      try {
+        await dismissRecommendation(decoded.email, input.id);
+        return { success: true };
+      } catch (error) {
+        console.error("Error dismissing AI recommendation:", error);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message:
+            error instanceof AiError
+              ? error.message
+              : "An unexpected error occurred while dismissing the recommendation.",
         });
       }
     }),

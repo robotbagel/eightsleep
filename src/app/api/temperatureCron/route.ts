@@ -6,6 +6,13 @@ import { obtainFreshAccessToken } from "~/server/eight/auth";
 import { type Token } from "~/server/eight/types";
 import { setHeatingLevel, turnOnSide, turnOffSide } from "~/server/eight/eight";
 import { getCurrentHeatingStatus } from "~/server/eight/user";
+import { runDailyAiPass } from "~/server/ai/advisor";
+import {
+  applyOffsetToLevel,
+  getActiveLiveOffset,
+  runLiveTuningPass,
+} from "~/server/ai/liveTuner";
+import { userAiSettings } from "~/server/db/schema";
 
 export const runtime = "nodejs";
 
@@ -195,6 +202,35 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
 
           console.log(`Adjusting temperature for ${sleepStage} stage for user ${profile.users.email}`);
 
+          // Live tuning stores an in-night offset (tenths of °C); apply it on
+          // top of the scheduled level so this cron doesn't undo live nudges.
+          if (!testMode?.enabled) {
+            try {
+              const aiSettings = await db.query.userAiSettings.findFirst({
+                where: eq(userAiSettings.email, profile.users.email),
+              });
+              if (aiSettings?.liveTuningEnabled) {
+                const offset = await getActiveLiveOffset(
+                  profile.users.email,
+                  userTemperatureProfile.timezoneTZ,
+                  userTemperatureProfile.wakeupTime.slice(0, 5),
+                  now,
+                );
+                if (offset !== 0) {
+                  targetLevel = applyOffsetToLevel(targetLevel, offset);
+                  console.log(
+                    `Applying live tuning offset of ${offset / 10}°C for user ${profile.users.email}; target level now ${targetLevel}`,
+                  );
+                }
+              }
+            } catch (error) {
+              console.error(
+                `Failed to apply live tuning offset for user ${profile.users.email}:`,
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+          }
+
           if (!heatingStatus.isHeating) {
             if (testMode?.enabled) {
               console.log(`[TEST MODE] Would turn on heating for user ${profile.users.email}`);
@@ -250,6 +286,26 @@ export async function GET(request: NextRequest): Promise<Response> {
         await adjustTemperature({ enabled: true, currentTime: testTime });
       } else {
         await adjustTemperature();
+        // The AI layers piggyback on this cron and must never break the
+        // temperature adjustment itself. Live tuning nudges the in-progress
+        // night; the daily pass turns the finished night into a
+        // recommendation once per day after wake-up.
+        try {
+          await runLiveTuningPass();
+        } catch (error) {
+          console.error(
+            "AI live tuning pass failed:",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        try {
+          await runDailyAiPass();
+        } catch (error) {
+          console.error(
+            "AI daily pass failed:",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
       }
       return Response.json({ success: true });
     } catch (error) {

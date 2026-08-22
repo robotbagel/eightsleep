@@ -1,7 +1,10 @@
 import { relations } from "drizzle-orm";
 import {
+  boolean,
+  index,
   integer,
   pgTableCreator,
+  serial,
   text,
   time,
   timestamp,
@@ -31,6 +34,67 @@ export const userTemperatureProfile = createTable("userTemperatureProfiles", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   timezoneTZ: varchar("timezone", { length: 50 }).notNull(),
 });
+
+export const userAiSettings = createTable("userAiSettings", {
+  email: varchar("email", { length: 255 }).references(() => users.email).primaryKey(),
+  aiEnabled: boolean("aiEnabled").notNull().default(false),
+  autoApply: boolean("autoApply").notNull().default(false),
+  liveTuningEnabled: boolean("liveTuningEnabled").notNull().default(false),
+  sleepGoal: text("sleepGoal"),
+  maxDailyShift: integer("maxDailyShift").notNull().default(20),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const aiLiveAdjustments = createTable(
+  "aiLiveAdjustments",
+  {
+    id: serial("id").primaryKey(),
+    email: varchar("email", { length: 255 }).references(() => users.email).notNull(),
+    night: varchar("night", { length: 10 }).notNull(),
+    stage: varchar("stage", { length: 10 }).notNull(),
+    offsetDelta: integer("offsetDelta").notNull(),
+    newOffset: integer("newOffset").notNull(),
+    appliedLevel: integer("appliedLevel").notNull(),
+    reason: text("reason").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    emailNightIdx: index("aiLiveAdjustments_email_night_idx").on(
+      table.email,
+      table.night,
+    ),
+  }),
+);
+
+export const aiRecommendations = createTable(
+  "aiRecommendations",
+  {
+    id: serial("id").primaryKey(),
+    email: varchar("email", { length: 255 }).references(() => users.email).notNull(),
+    forDate: varchar("forDate", { length: 10 }).notNull(),
+    previousInitialLevel: integer("previousInitialLevel").notNull(),
+    previousMidLevel: integer("previousMidLevel").notNull(),
+    previousFinalLevel: integer("previousFinalLevel").notNull(),
+    recommendedInitialLevel: integer("recommendedInitialLevel").notNull(),
+    recommendedMidLevel: integer("recommendedMidLevel").notNull(),
+    recommendedFinalLevel: integer("recommendedFinalLevel").notNull(),
+    reasoning: text("reasoning").notNull(),
+    confidence: varchar("confidence", { length: 10 }).notNull(),
+    sleepContextJson: text("sleepContextJson"),
+    status: varchar("status", { length: 20 }).notNull(),
+    source: varchar("source", { length: 20 }).notNull(),
+    model: varchar("model", { length: 50 }).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    emailDateIdx: index("aiRecommendations_email_forDate_idx").on(
+      table.email,
+      table.forDate,
+    ),
+  }),
+);
 
 export const usersRelations = relations(users, ({ one }) => ({
   temperatureProfile: one(userTemperatureProfile, {

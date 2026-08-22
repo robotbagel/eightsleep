@@ -50,6 +50,31 @@ In the following, I will explain how to self-host this webapp on Vercel so that 
 
 Enjoy! That's it!
 
+## AI Autopilot (optional)
+
+The app includes a self-correcting temperature optimizer that replaces the subscription "Autopilot". All temperatures are shown in °C (bed water temperature, 13-44°C) instead of Eight Sleep's raw -100..+100 levels. It has two layers:
+
+**Nightly optimizer.** Every morning it reads last night's sleep data from your pod (sleep stages, toss-and-turns, bed and room temperature, heart rate, HRV), combines it with research-backed thermoregulation rules and the running history of which temperature configuration produced your best sleep scores, and recommends adjusted temperatures for your three stages with plain-language reasoning. It works like an experiment loop: it keeps what improved your score, reverts automatically to the best-known configuration when two nights in a row regress, and declares the profile converged when scores plateau at your best. You can apply recommendations with one tap or let them auto-apply.
+
+**Live night-time tuning.** During the night, on every 30-minute cron tick, it looks at the last 45 minutes of the in-progress session. If you are tossing or your heart rate is elevated while the bed is warm, it cools by 0.5°C; if you are restless while the bed is cold, it warms by 0.5°C (never more than 1.5°C drift per night, reset each morning). Every nudge is logged with its reason in the app, and persistent nudges get folded into the next morning's schedule recommendation.
+
+Both layers run from the same 30-minute cron job you already set up — nothing extra to schedule.
+
+To enable it:
+
+1. Get a free Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey).
+2. In your Vercel project settings, add an Environment Variable `GEMINI_API_KEY` with that key and redeploy.
+3. In the app, open the "AI Autopilot" card, switch on "Enable daily AI recommendations" (and optionally "Live night-time tuning"), and describe your sleep preference (e.g. "I sleep hot, prioritize deep sleep").
+
+Settings:
+
+- **Auto-apply without asking**: morning recommendations update your temperature profile immediately. Off means they wait as "pending" until you tap Apply.
+- **Max change per day** caps how far the optimizer may move any stage in one day (default 2°C).
+- **Optimize Now** generates a recommendation on demand.
+- The optional `GEMINI_MODEL` environment variable overrides the model (default `gemini-3.7-flash`). The daily call costs a fraction of a cent.
+
+The rules encode findings from sleep-thermoregulation research: mild bed warmth at bedtime shortens sleep onset; heat above the comfort band suppresses deep sleep and REM, while mild within-comfort warming can deepen sleep and prevent early-morning waking ([Raymann, Swaab & Van Someren, Brain 2008](https://academic.oup.com/brain/article/131/2/500/407617)); slightly warmer late-night temperatures support REM; and stage-aware adjustment measurably improves deep sleep, HRV, and resting heart rate ([Eight Sleep / SLEEP 2025 abstract](https://academic.oup.com/sleep/article/48/Supplement_1/A202/8135278)).
+
 ## How to Upgrade from an older Version?
 
 Check the [Release Notes](https://github.com/aerotow/eightsleep-nosub-app/releases) to see what changed. I will include steps you have to do there to upgrade. After you have read the notes there and made potential changes, make sure to go to your GitHub fork and sync to the latest commit of this repository. It's just one click at the top.

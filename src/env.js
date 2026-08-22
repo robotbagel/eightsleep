@@ -14,6 +14,10 @@ export const env = createEnv({
       CRON_SECRET: z.string().min(1),
       JWT_SECRET: z.string().min(1),
       APPROVED_EMAILS: z.string().min(1),
+      // Optional: enables the AI temperature advisor (Gemini). Without it the
+      // app still works; the AI panel shows setup instructions instead.
+      GEMINI_API_KEY: z.string().min(1).optional(),
+      GEMINI_MODEL: z.string().min(1).optional(),
   },
 
   /**
@@ -35,6 +39,8 @@ export const env = createEnv({
     CRON_SECRET: process.env.CRON_SECRET,
     JWT_SECRET: process.env.JWT_SECRET,
     APPROVED_EMAILS: process.env.APPROVED_EMAILS,
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+    GEMINI_MODEL: process.env.GEMINI_MODEL,
     // NEXT_PUBLIC_CLIENTVAR: process.env.NEXT_PUBLIC_CLIENTVAR,
   },
   /**
