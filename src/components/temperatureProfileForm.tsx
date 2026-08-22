@@ -6,6 +6,7 @@ import { z } from "zod";
 import { apiR } from "~/trpc/react";
 import TimezoneSelect, { allTimezones } from "react-timezone-select";
 import { Button } from "./ui/button";
+import { TemperatureCurve } from "./temperatureCurve";
 import {
   celsiusToRaw,
   formatLevelScale,
@@ -61,6 +62,12 @@ export const TemperatureProfileForm: React.FC = () => {
 
   const bedTime = watch("bedTime");
   const wakeupTime = watch("wakeupTime");
+  const curveTemps = {
+    initial: watch("initialSleepLevel"),
+    deep: watch("deepSleepLevel"),
+    mid: watch("midStageSleepLevel"),
+    final: watch("finalSleepLevel"),
+  };
 
   const [sleepInfo, setSleepInfo] = useState({
     duration: "",
@@ -351,6 +358,15 @@ export const TemperatureProfileForm: React.FC = () => {
             </p>
           )}
         </div>
+
+        {!sleepDurationError && (
+          <TemperatureCurve
+            bedTime={bedTime}
+            wakeupTime={wakeupTime}
+            temps={curveTemps}
+            displayUnit={displayUnit}
+          />
+        )}
 
         <SliderInput
           name="initialSleepLevel"
