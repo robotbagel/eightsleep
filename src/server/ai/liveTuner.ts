@@ -110,9 +110,11 @@ export async function runLiveTuningPass(): Promise<void> {
       const plannedLevel =
         stage === "initial"
           ? profile.initialSleepLevel
-          : stage === "mid"
-            ? profile.midStageSleepLevel
-            : profile.finalSleepLevel;
+          : stage === "deep"
+            ? (profile.deepSleepLevel ?? profile.midStageSleepLevel)
+            : stage === "mid"
+              ? profile.midStageSleepLevel
+              : profile.finalSleepLevel;
       const newOffset = currentOffset + nudge.delta;
       const appliedLevel = applyOffsetToLevel(plannedLevel, newOffset);
 

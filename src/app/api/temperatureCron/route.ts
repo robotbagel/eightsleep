@@ -52,7 +52,8 @@ async function retryApiCall<T>(apiCall: () => Promise<T>, retries = 3): Promise<
 interface SleepCycle {
   preHeatingTime: Date;
   bedTime: Date;
-  midStageTime: Date;
+  deepStageTime: Date;
+  deepEndTime: Date;
   finalStageTime: Date;
   wakeupTime: Date;
 }
@@ -60,19 +61,25 @@ interface SleepCycle {
 function createSleepCycle(baseDate: Date, bedTimeStr: string, wakeupTimeStr: string): SleepCycle {
   const preHeatingTime = createDateWithTime(baseDate, bedTimeStr);
   preHeatingTime.setHours(preHeatingTime.getHours() - 1); // Set pre-heating to 1 hour before bedtime
-  
+
   const bedTime = createDateWithTime(baseDate, bedTimeStr);
   let wakeupTime = createDateWithTime(baseDate, wakeupTimeStr);
-  
+
   // Adjust wakeupTime if it's before bedTime (i.e., it's on the next day)
   if (wakeupTime <= bedTime) {
     wakeupTime = addDays(wakeupTime, 1);
   }
-  
-  const midStageTime = new Date(bedTime.getTime() + 60 * 60 * 1000);
+
+  // Four stages: initial (bed→+1h), deep (+1h→+3h — the cool trough for
+  // slow-wave sleep), mid (+3h→wake-2h), final (last 2h). On short nights the
+  // deep stage is clamped so it never overlaps the final stage.
+  const deepStageTime = new Date(bedTime.getTime() + 60 * 60 * 1000);
   const finalStageTime = new Date(wakeupTime.getTime() - 2 * 60 * 60 * 1000);
-  
-  return { preHeatingTime, bedTime, midStageTime, finalStageTime, wakeupTime };
+  const deepEndTime = new Date(
+    Math.min(bedTime.getTime() + 3 * 60 * 60 * 1000, finalStageTime.getTime()),
+  );
+
+  return { preHeatingTime, bedTime, deepStageTime, deepEndTime, finalStageTime, wakeupTime };
 }
 
 function adjustTimeToCurrentCycle(cycleStart: Date, currentTime: Date, timeInCycle: Date): Date {
@@ -140,7 +147,8 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
         const adjustedCycle: SleepCycle = {
           preHeatingTime: adjustTimeToCurrentCycle(cycleStart, userNow, sleepCycle.preHeatingTime),
           bedTime: adjustTimeToCurrentCycle(cycleStart, userNow, sleepCycle.bedTime),
-          midStageTime: adjustTimeToCurrentCycle(cycleStart, userNow, sleepCycle.midStageTime),
+          deepStageTime: adjustTimeToCurrentCycle(cycleStart, userNow, sleepCycle.deepStageTime),
+          deepEndTime: adjustTimeToCurrentCycle(cycleStart, userNow, sleepCycle.deepEndTime),
           finalStageTime: adjustTimeToCurrentCycle(cycleStart, userNow, sleepCycle.finalStageTime),
           wakeupTime: adjustTimeToCurrentCycle(cycleStart, userNow, sleepCycle.wakeupTime),
         };
@@ -158,13 +166,21 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
         console.log(`Adjusted times for user ${profile.users.email}:`);
         console.log(`Pre-heating: ${adjustedCycle.preHeatingTime.toISOString()}`);
         console.log(`Bed time: ${adjustedCycle.bedTime.toISOString()}`);
-        console.log(`Mid stage: ${adjustedCycle.midStageTime.toISOString()}`);
+        console.log(`Deep stage: ${adjustedCycle.deepStageTime.toISOString()}`);
+        console.log(`Deep end / mid stage: ${adjustedCycle.deepEndTime.toISOString()}`);
         console.log(`Final stage: ${adjustedCycle.finalStageTime.toISOString()}`);
         console.log(`Wake-up: ${adjustedCycle.wakeupTime.toISOString()}`);
 
+        // The deep stage falls back to the mid-stage level until the user (or
+        // the AI) sets one — rows from before the 4-stage model have null.
+        const deepLevel =
+          userTemperatureProfile.deepSleepLevel ??
+          userTemperatureProfile.midStageSleepLevel;
+
         const isNearPreHeating = isWithinTimeRange(userNow, adjustedCycle.preHeatingTime, 15);
         const isNearBedTime = isWithinTimeRange(userNow, adjustedCycle.bedTime, 15);
-        const isNearMidStage = isWithinTimeRange(userNow, adjustedCycle.midStageTime, 15);
+        const isNearDeepStage = isWithinTimeRange(userNow, adjustedCycle.deepStageTime, 15);
+        const isNearDeepEnd = isWithinTimeRange(userNow, adjustedCycle.deepEndTime, 15);
         const isNearFinalStage = isWithinTimeRange(userNow, adjustedCycle.finalStageTime, 15);
         const isNearWakeup = isWithinTimeRange(userNow, adjustedCycle.wakeupTime, 15);
 
@@ -172,9 +188,11 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
         let currentSleepStage = "outside sleep cycle";
         if (userNow >= adjustedCycle.preHeatingTime && userNow < adjustedCycle.bedTime) {
           currentSleepStage = "pre-heating";
-        } else if (userNow >= adjustedCycle.bedTime && userNow < adjustedCycle.midStageTime) {
+        } else if (userNow >= adjustedCycle.bedTime && userNow < adjustedCycle.deepStageTime) {
           currentSleepStage = "initial";
-        } else if (userNow >= adjustedCycle.midStageTime && userNow < adjustedCycle.finalStageTime) {
+        } else if (userNow >= adjustedCycle.deepStageTime && userNow < adjustedCycle.deepEndTime) {
+          currentSleepStage = "deep";
+        } else if (userNow >= adjustedCycle.deepEndTime && userNow < adjustedCycle.finalStageTime) {
           currentSleepStage = "mid";
         } else if (userNow >= adjustedCycle.finalStageTime && userNow < adjustedCycle.wakeupTime) {
           currentSleepStage = "final";
@@ -182,17 +200,26 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
 
         console.log(`Current sleep stage for user ${profile.users.email}: ${currentSleepStage}`);
 
-        if (isNearPreHeating || isNearBedTime || isNearMidStage || isNearFinalStage || isNearWakeup) {
+        if (isNearPreHeating || isNearBedTime || isNearDeepStage || isNearDeepEnd || isNearFinalStage || isNearWakeup) {
           let targetLevel: number;
           let sleepStage: string;
 
           if (isNearPreHeating || (isNearBedTime && userNow < adjustedCycle.bedTime)) {
             targetLevel = userTemperatureProfile.initialSleepLevel;
             sleepStage = "pre-heating";
-          } else if (isNearBedTime || (isNearMidStage && userNow < adjustedCycle.midStageTime)) {
+          } else if (isNearBedTime || (isNearDeepStage && userNow < adjustedCycle.deepStageTime)) {
             targetLevel = userTemperatureProfile.initialSleepLevel;
             sleepStage = "initial";
-          } else if (isNearMidStage || (isNearFinalStage && userNow < adjustedCycle.finalStageTime)) {
+          } else if (isNearDeepStage || (isNearDeepEnd && userNow < adjustedCycle.deepEndTime)) {
+            targetLevel = deepLevel;
+            sleepStage = "deep";
+          } else if (
+            // On short nights deepEnd is clamped onto the final-stage start;
+            // the final stage must win that shared boundary.
+            (isNearDeepEnd &&
+              adjustedCycle.deepEndTime < adjustedCycle.finalStageTime) ||
+            (isNearFinalStage && userNow < adjustedCycle.finalStageTime)
+          ) {
             targetLevel = userTemperatureProfile.midStageSleepLevel;
             sleepStage = "mid";
           } else {

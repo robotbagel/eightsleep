@@ -51,12 +51,16 @@ export function nightKeyFor(
 
 // Which temperature stage the user is in right now, mirroring the stage
 // boundaries the temperature cron uses; null outside the sleep cycle.
+// Stages: initial (bed→+1h), deep (+1h→+3h, clamped to the final-stage
+// start for short nights), mid, final (last 2h).
+export type SleepStage = "initial" | "deep" | "mid" | "final";
+
 export function currentStageFor(
   now: Date,
   timezone: string,
   bedTime: string,
   wakeupTime: string,
-): "initial" | "mid" | "final" | null {
+): SleepStage | null {
   const sinceBed = minutesSinceTimeOfDay(now, timezone, bedTime);
   const sinceWake = minutesSinceTimeOfDay(now, timezone, wakeupTime);
   if (isNaN(sinceBed) || isNaN(sinceWake)) return null;
@@ -67,7 +71,8 @@ export function currentStageFor(
     (((sinceBed - sinceWake) % minutesInDay) + minutesInDay) % minutesInDay;
   if (duration === 0 || elapsed >= duration) return null;
 
-  if (elapsed < 60) return "initial";
   if (elapsed >= duration - 120) return "final";
+  if (elapsed < 60) return "initial";
+  if (elapsed < Math.min(180, duration - 120)) return "deep";
   return "mid";
 }

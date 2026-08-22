@@ -20,7 +20,8 @@
 //   and cut HR -2.3 bpm; their protocol escalates the offset magnitude when
 //   deep sleep is under 15% or REM under 20% of the night. Notably, warmer
 //   bed temperatures correlated with REDUCED wake time in the same data.
-import { type SessionDetail, type SleepContext } from "./sleepData";
+import { type SleepContext } from "./sleepData";
+import { type SleepStage } from "./time";
 
 export const DEEP_TARGET_FRACTION = 0.15;
 export const REM_TARGET_FRACTION = 0.2;
@@ -58,10 +59,10 @@ export function deriveNightSignals(context: SleepContext): string[] {
         session.avgBedTempC.firstThird ?? session.avgBedTempC.middleThird;
       const direction =
         earlyBedTemp != null && earlyBedTemp >= HOT_BED_TEMP_C
-          ? "the bed ran warm early in the night, so cool the mid stage"
+          ? "the bed ran warm early in the night, so cool the deep stage"
           : earlyBedTemp != null && earlyBedTemp <= COLD_BED_TEMP_C
-            ? "the bed ran cool early in the night, so mild warming of the mid stage may deepen sleep (Raymann 2008)"
-            : "adjust the mid stage in the direction the restlessness data and past nights support";
+            ? "the bed ran cool early in the night, so mild warming of the deep stage may deepen sleep (Raymann 2008)"
+            : "adjust the deep stage in the direction the restlessness data and past nights support";
       signals.push(
         `Deep sleep was ${(deepFraction * 100).toFixed(0)}% of the night (target ≥15%): ${direction}.`,
       );
@@ -100,7 +101,7 @@ export interface LiveWindowStats {
   recentAvgHeartRate: number | null;
   nightAvgHeartRate: number | null;
   recentAvgBedTempC: number | null;
-  currentStage: "initial" | "mid" | "final";
+  currentStage: SleepStage;
   currentOffset: number;
 }
 

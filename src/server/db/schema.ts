@@ -28,6 +28,10 @@ export const userTemperatureProfile = createTable("userTemperatureProfiles", {
   bedTime: time("bedTime").notNull(),
   wakeupTime: time("wakeupTime").notNull(),
   initialSleepLevel: integer("initialSleepLevel").notNull(),
+  // Deep-sleep stage (bedtime+1h to bedtime+3h): the coolest point of the
+  // night curve. Nullable for rows created before the stage existed — code
+  // falls back to midStageSleepLevel when null.
+  deepSleepLevel: integer("deepSleepLevel"),
   midStageSleepLevel: integer("midStageSleepLevel").notNull(),
   finalSleepLevel: integer("finalSleepLevel").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -75,9 +79,11 @@ export const aiRecommendations = createTable(
     email: varchar("email", { length: 255 }).references(() => users.email).notNull(),
     forDate: varchar("forDate", { length: 10 }).notNull(),
     previousInitialLevel: integer("previousInitialLevel").notNull(),
+    previousDeepLevel: integer("previousDeepLevel"),
     previousMidLevel: integer("previousMidLevel").notNull(),
     previousFinalLevel: integer("previousFinalLevel").notNull(),
     recommendedInitialLevel: integer("recommendedInitialLevel").notNull(),
+    recommendedDeepLevel: integer("recommendedDeepLevel"),
     recommendedMidLevel: integer("recommendedMidLevel").notNull(),
     recommendedFinalLevel: integer("recommendedFinalLevel").notNull(),
     reasoning: text("reasoning").notNull(),

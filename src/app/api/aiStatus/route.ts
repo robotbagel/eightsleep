@@ -97,6 +97,9 @@ export async function GET(request: NextRequest): Promise<Response> {
               wakeupTime: profile.wakeupTime.slice(0, 5),
               timezone: profile.timezoneTZ,
               initialC: rawToCelsius(profile.initialSleepLevel),
+              deepC: rawToCelsius(
+                profile.deepSleepLevel ?? profile.midStageSleepLevel,
+              ),
               midC: rawToCelsius(profile.midStageSleepLevel),
               finalC: rawToCelsius(profile.finalSleepLevel),
               updatedAt: profile.updatedAt,
@@ -110,11 +113,17 @@ export async function GET(request: NextRequest): Promise<Response> {
               confidence: latest.confidence,
               previousC: {
                 initial: rawToCelsius(latest.previousInitialLevel),
+                deep: rawToCelsius(
+                  latest.previousDeepLevel ?? latest.previousMidLevel,
+                ),
                 mid: rawToCelsius(latest.previousMidLevel),
                 final: rawToCelsius(latest.previousFinalLevel),
               },
               recommendedC: {
                 initial: rawToCelsius(latest.recommendedInitialLevel),
+                deep: rawToCelsius(
+                  latest.recommendedDeepLevel ?? latest.recommendedMidLevel,
+                ),
                 mid: rawToCelsius(latest.recommendedMidLevel),
                 final: rawToCelsius(latest.recommendedFinalLevel),
               },

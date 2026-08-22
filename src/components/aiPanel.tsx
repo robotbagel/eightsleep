@@ -344,7 +344,7 @@ export const AiPanel: React.FC = () => {
           AI Autopilot
         </h2>
         <p className="mb-4 text-center text-sm text-gray-500">
-          Tunes your three temperature stages every morning from last
+          Tunes your four temperature stages every morning from last
           night&apos;s sleep data.
         </p>
 
@@ -480,7 +480,7 @@ export const AiPanel: React.FC = () => {
                 setMaxDailyShift(Number(e.target.value));
                 markDirty();
               }}
-              className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-gray-200"
+              className="h-3 w-full cursor-pointer appearance-none rounded-lg bg-gray-200 accent-indigo-600 [&::-moz-range-thumb]:h-6 [&::-moz-range-thumb]:w-6 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-indigo-600 [&::-webkit-slider-thumb]:h-6 [&::-webkit-slider-thumb]:w-6 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-indigo-600 [&::-webkit-slider-thumb]:shadow"
             />
           </div>
 
@@ -536,6 +536,15 @@ export const AiPanel: React.FC = () => {
                 recommended={latest.recommendedInitialLevel}
                 unit={displayUnit}
               />
+              {latest.previousDeepLevel != null &&
+                latest.recommendedDeepLevel != null && (
+                  <LevelChange
+                    label="Deep stage"
+                    previous={latest.previousDeepLevel}
+                    recommended={latest.recommendedDeepLevel}
+                    unit={displayUnit}
+                  />
+                )}
               <LevelChange
                 label="Mid stage"
                 previous={latest.previousMidLevel}

@@ -21,6 +21,7 @@ const temperatureProfileSchema = z.object({
   bedTime: z.string().regex(/^\d{2}:\d{2}$/, "Must be in HH:MM format"),
   wakeupTime: z.string().regex(/^\d{2}:\d{2}$/, "Must be in HH:MM format"),
   initialSleepLevel: z.number().min(MIN_BED_TEMP_C).max(MAX_BED_TEMP_C),
+  deepSleepLevel: z.number().min(MIN_BED_TEMP_C).max(MAX_BED_TEMP_C),
   midStageSleepLevel: z.number().min(MIN_BED_TEMP_C).max(MAX_BED_TEMP_C),
   finalSleepLevel: z.number().min(MIN_BED_TEMP_C).max(MAX_BED_TEMP_C),
   timezone: z.object({
@@ -51,6 +52,7 @@ export const TemperatureProfileForm: React.FC = () => {
       bedTime: "22:00",
       wakeupTime: "06:00",
       initialSleepLevel: 27,
+      deepSleepLevel: 27,
       midStageSleepLevel: 27,
       finalSleepLevel: 27,
       timezone: { value: "America/New_York"},
@@ -62,7 +64,8 @@ export const TemperatureProfileForm: React.FC = () => {
 
   const [sleepInfo, setSleepInfo] = useState({
     duration: "",
-    midStageTime: "",
+    deepStartTime: "",
+    midStartTime: "",
     finalStageTime: "",
   });
 
@@ -82,6 +85,10 @@ export const TemperatureProfileForm: React.FC = () => {
       setValue("bedTime", profile.bedTime.slice(0, 5));
       setValue("wakeupTime", profile.wakeupTime.slice(0, 5));
       setValue("initialSleepLevel", rawToCelsius(profile.initialSleepLevel));
+      setValue(
+        "deepSleepLevel",
+        rawToCelsius(profile.deepSleepLevel ?? profile.midStageSleepLevel),
+      );
       setValue("midStageSleepLevel", rawToCelsius(profile.midStageSleepLevel));
       setValue("finalSleepLevel", rawToCelsius(profile.finalSleepLevel));
       setValue("timezone", { value: profile.timezoneTZ });
@@ -110,15 +117,20 @@ export const TemperatureProfileForm: React.FC = () => {
       // Check if sleep duration is less than 4 hours
       if (hours < 4 ) {
         setSleepDurationError("Sleep duration must be at least 4 hours.");
-        setSleepInfo({ duration: "", midStageTime: "", finalStageTime: "" });
+        setSleepInfo({ duration: "", deepStartTime: "", midStartTime: "", finalStageTime: "" });
       } else {
         setSleepDurationError(null);
-        const midStageDate = new Date(bedDate.getTime() + 60 * 60 * 1000); // 1 hour after bedtime
+        const deepStartDate = new Date(bedDate.getTime() + 60 * 60 * 1000); // 1 hour after bedtime
         const finalStageDate = new Date(wakeDate.getTime() - 2 * 60 * 60 * 1000); // 2 hours before wakeup
+        // Deep stage ends 3h after bedtime, clamped to the final-stage start.
+        const midStartDate = new Date(
+          Math.min(bedDate.getTime() + 3 * 60 * 60 * 1000, finalStageDate.getTime()),
+        );
 
         setSleepInfo({
           duration: `${hours} hours ${minutes} minutes`,
-          midStageTime: midStageDate.toTimeString().slice(0, 5),
+          deepStartTime: deepStartDate.toTimeString().slice(0, 5),
+          midStartTime: midStartDate.toTimeString().slice(0, 5),
           finalStageTime: finalStageDate.toTimeString().slice(0, 5),
         });
       }
@@ -159,6 +171,7 @@ export const TemperatureProfileForm: React.FC = () => {
       bedTime: formatTimeForAPI(data.bedTime),
       wakeupTime: formatTimeForAPI(data.wakeupTime),
       initialSleepLevel: celsiusToRaw(data.initialSleepLevel),
+      deepSleepLevel: celsiusToRaw(data.deepSleepLevel),
       midStageSleepLevel: celsiusToRaw(data.midStageSleepLevel),
       finalSleepLevel: celsiusToRaw(data.finalSleepLevel),
       timezoneTZ: data.timezone.value,
@@ -176,7 +189,11 @@ export const TemperatureProfileForm: React.FC = () => {
   };
 
   const SliderInput: React.FC<{
-    name: "initialSleepLevel" | "midStageSleepLevel" | "finalSleepLevel";
+    name:
+      | "initialSleepLevel"
+      | "deepSleepLevel"
+      | "midStageSleepLevel"
+      | "finalSleepLevel";
     label: string;
     control: Control<TemperatureProfileForm>;
     info?: string;
@@ -193,21 +210,42 @@ export const TemperatureProfileForm: React.FC = () => {
           // preferred unit and converts on the way in and out.
           const isLevel = displayUnit === "level";
           const shown = isLevel ? rawToLevel(celsiusToRaw(value)) : value;
+          const min = isLevel ? -10 : MIN_BED_TEMP_C;
+          const max = isLevel ? 10 : MAX_BED_TEMP_C;
+          const setShown = (next: number) => {
+            const clamped = Math.min(Math.max(next, min), max);
+            onChange(isLevel ? rawToCelsius(levelToRaw(clamped)) : clamped);
+          };
+          const stepButton =
+            "flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-300 bg-white text-lg font-medium text-gray-700 hover:bg-gray-50 active:bg-gray-100";
           return (
-            <div className="flex items-center">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                aria-label={`Decrease ${label}`}
+                onClick={() => setShown(shown - 0.5)}
+                className={stepButton}
+              >
+                &minus;
+              </button>
               <input
                 type="range"
-                min={isLevel ? -10 : MIN_BED_TEMP_C}
-                max={isLevel ? 10 : MAX_BED_TEMP_C}
+                min={min}
+                max={max}
                 step="0.5"
                 value={shown}
-                onChange={(e) => {
-                  const next = Number(e.target.value);
-                  onChange(isLevel ? rawToCelsius(levelToRaw(next)) : next);
-                }}
-                className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-gray-200"
+                onChange={(e) => setShown(Number(e.target.value))}
+                className="h-3 w-full cursor-pointer appearance-none rounded-lg bg-gray-200 accent-indigo-600 [&::-moz-range-thumb]:h-6 [&::-moz-range-thumb]:w-6 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-indigo-600 [&::-webkit-slider-thumb]:h-6 [&::-webkit-slider-thumb]:w-6 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-indigo-600 [&::-webkit-slider-thumb]:shadow"
               />
-              <span className="ml-2 whitespace-nowrap text-sm text-gray-600">
+              <button
+                type="button"
+                aria-label={`Increase ${label}`}
+                onClick={() => setShown(shown + 0.5)}
+                className={stepButton}
+              >
+                +
+              </button>
+              <span className="w-14 shrink-0 text-right text-sm text-gray-600">
                 {isLevel ? formatLevelScale(shown) : `${shown}°C`}
               </span>
             </div>
@@ -318,19 +356,25 @@ export const TemperatureProfileForm: React.FC = () => {
           name="initialSleepLevel"
           label="Initial Sleep Temperature"
           control={control}
-          info={`Starts at ${bedTime}`}
+          info={`Sleep onset — starts at ${bedTime}`}
+        />
+        <SliderInput
+          name="deepSleepLevel"
+          label="Deep Sleep Temperature"
+          control={control}
+          info={`Slow-wave sleep window, usually the coolest — starts at ${sleepInfo.deepStartTime}`}
         />
         <SliderInput
           name="midStageSleepLevel"
           label="Mid-Stage Sleep Temperature"
           control={control}
-          info={`Starts at ${sleepInfo.midStageTime}`}
+          info={`Starts at ${sleepInfo.midStartTime}`}
         />
         <SliderInput
           name="finalSleepLevel"
           label="Final Sleep Temperature"
           control={control}
-          info={`Starts at ${sleepInfo.finalStageTime}`}
+          info={`REM and wake-up — starts at ${sleepInfo.finalStageTime}`}
         />
 
         <div className="flex justify-between">

@@ -81,16 +81,22 @@ export async function getAiSettingsOrDefaults(email: string) {
 
 interface ProfileLevels {
   initial: number;
+  deep: number;
   mid: number;
   final: number;
 }
 
 function formatProfileC(levels: ProfileLevels): string {
-  return `${rawToCelsius(levels.initial)}/${rawToCelsius(levels.mid)}/${rawToCelsius(levels.final)}°C`;
+  return `${rawToCelsius(levels.initial)}/${rawToCelsius(levels.deep)}/${rawToCelsius(levels.mid)}/${rawToCelsius(levels.final)}°C`;
 }
 
 function sameLevels(a: ProfileLevels, b: ProfileLevels): boolean {
-  return a.initial === b.initial && a.mid === b.mid && a.final === b.final;
+  return (
+    a.initial === b.initial &&
+    a.deep === b.deep &&
+    a.mid === b.mid &&
+    a.final === b.final
+  );
 }
 
 interface ExperimentHistory {
@@ -138,6 +144,7 @@ async function buildExperimentHistory(
       if (rec.forDate < date) {
         active = {
           initial: rec.recommendedInitialLevel,
+          deep: rec.recommendedDeepLevel ?? rec.recommendedMidLevel,
           mid: rec.recommendedMidLevel,
           final: rec.recommendedFinalLevel,
         };
@@ -148,6 +155,7 @@ async function buildExperimentHistory(
     if (first) {
       return {
         initial: first.previousInitialLevel,
+        deep: first.previousDeepLevel ?? first.previousMidLevel,
         mid: first.previousMidLevel,
         final: first.previousFinalLevel,
       };
@@ -262,6 +270,7 @@ export async function generateRecommendationForUser(
 
   const currentLevels: ProfileLevels = {
     initial: profile.initialSleepLevel,
+    deep: profile.deepSleepLevel ?? profile.midStageSleepLevel,
     mid: profile.midStageSleepLevel,
     final: profile.finalSleepLevel,
   };
@@ -278,9 +287,10 @@ export async function generateRecommendationForUser(
     const unit: DisplayUnit =
       settings.displayUnit === "level" ? "level" : "celsius";
     const best = history.bestProfile;
-    const bestFormatted = `${formatRawByUnit(best.initial, unit)}/${formatRawByUnit(best.mid, unit)}/${formatRawByUnit(best.final, unit)}`;
+    const bestFormatted = `${formatRawByUnit(best.initial, unit)}/${formatRawByUnit(best.deep, unit)}/${formatRawByUnit(best.mid, unit)}/${formatRawByUnit(best.final, unit)}`;
     recommendation = {
       initialSleepC: rawToCelsius(best.initial),
+      deepSleepC: rawToCelsius(best.deep),
       midStageSleepC: rawToCelsius(best.mid),
       finalSleepC: rawToCelsius(best.final),
       reasoning: `The last two nights scored at least ${REGRESSION_SCORE_DROP} points below your best night (${history.bestScore}), so this reverts to the best-known configuration (${bestFormatted}) before experimenting further.`,
@@ -296,6 +306,7 @@ export async function generateRecommendationForUser(
         bedTime: profile.bedTime.slice(0, 5),
         wakeupTime: profile.wakeupTime.slice(0, 5),
         initialSleepC: rawToCelsius(currentLevels.initial),
+        deepSleepC: rawToCelsius(currentLevels.deep),
         midStageSleepC: rawToCelsius(currentLevels.mid),
         finalSleepC: rawToCelsius(currentLevels.final),
       },
@@ -310,6 +321,7 @@ export async function generateRecommendationForUser(
 
   const recommendedLevels: ProfileLevels = {
     initial: celsiusToRaw(recommendation.initialSleepC),
+    deep: celsiusToRaw(recommendation.deepSleepC),
     mid: celsiusToRaw(recommendation.midStageSleepC),
     final: celsiusToRaw(recommendation.finalSleepC),
   };
@@ -325,9 +337,11 @@ export async function generateRecommendationForUser(
       email,
       forDate,
       previousInitialLevel: currentLevels.initial,
+      previousDeepLevel: currentLevels.deep,
       previousMidLevel: currentLevels.mid,
       previousFinalLevel: currentLevels.final,
       recommendedInitialLevel: recommendedLevels.initial,
+      recommendedDeepLevel: recommendedLevels.deep,
       recommendedMidLevel: recommendedLevels.mid,
       recommendedFinalLevel: recommendedLevels.final,
       reasoning: recommendation.reasoning,
@@ -349,6 +363,7 @@ export async function generateRecommendationForUser(
       .update(userTemperatureProfile)
       .set({
         initialSleepLevel: recommendedLevels.initial,
+        deepSleepLevel: recommendedLevels.deep,
         midStageSleepLevel: recommendedLevels.mid,
         finalSleepLevel: recommendedLevels.final,
         updatedAt: new Date(),
@@ -383,6 +398,8 @@ export async function applyRecommendation(
     .update(userTemperatureProfile)
     .set({
       initialSleepLevel: recommendation.recommendedInitialLevel,
+      deepSleepLevel:
+        recommendation.recommendedDeepLevel ?? recommendation.recommendedMidLevel,
       midStageSleepLevel: recommendation.recommendedMidLevel,
       finalSleepLevel: recommendation.recommendedFinalLevel,
       updatedAt: new Date(),

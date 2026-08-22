@@ -45,6 +45,7 @@ const GeminiResponseSchema = z.object({
 
 const RecommendationSchema = z.object({
   initialSleepC: z.number(),
+  deepSleepC: z.number(),
   midStageSleepC: z.number(),
   finalSleepC: z.number(),
   reasoning: z.string(),
@@ -58,6 +59,7 @@ export interface AdvisorInput {
     bedTime: string;
     wakeupTime: string;
     initialSleepC: number;
+    deepSleepC: number;
     midStageSleepC: number;
     finalSleepC: number;
   };
@@ -99,13 +101,14 @@ function buildPrompt(input: AdvisorInput): string {
     maxDailyShiftC,
   } = input;
   return [
-    `You are a sleep-temperature coach for an Eight Sleep Pod. Each night has three stages, each with a bed water temperature between ${MIN_BED_TEMP_C}°C and ${MAX_BED_TEMP_C}°C.`,
+    `You are a sleep-temperature coach for an Eight Sleep Pod. Each night has four stages, each with a bed water temperature between ${MIN_BED_TEMP_C}°C and ${MAX_BED_TEMP_C}°C, shaping the physiological curve: comfortable onset, a cool trough for slow-wave sleep, easing back toward neutral, then gentle warmth for REM and waking.`,
     "",
     "Current schedule and temperatures:",
     `- Bedtime ${currentProfile.bedTime}, wake-up ${currentProfile.wakeupTime}`,
-    `- Initial stage (bedtime to +1h): ${withLevel(currentProfile.initialSleepC, input.displayUnit)}`,
-    `- Mid stage (until 2h before wake-up): ${withLevel(currentProfile.midStageSleepC, input.displayUnit)}`,
-    `- Final stage (last 2h before wake-up): ${withLevel(currentProfile.finalSleepC, input.displayUnit)}`,
+    `- Initial stage (bedtime to +1h, sleep onset): ${withLevel(currentProfile.initialSleepC, input.displayUnit)}`,
+    `- Deep stage (+1h to +3h after bedtime, slow-wave-sleep window — usually the coolest stage): ${withLevel(currentProfile.deepSleepC, input.displayUnit)}`,
+    `- Mid stage (+3h until 2h before wake-up): ${withLevel(currentProfile.midStageSleepC, input.displayUnit)}`,
+    `- Final stage (last 2h before wake-up, REM-dominant): ${withLevel(currentProfile.finalSleepC, input.displayUnit)}`,
     "",
     sleepGoal ? `The sleeper's own goal/preference: ${sleepGoal}` : "",
     "",
@@ -163,6 +166,7 @@ export async function generateTemperatureRecommendation(
           type: "OBJECT",
           properties: {
             initialSleepC: { type: "NUMBER" },
+            deepSleepC: { type: "NUMBER" },
             midStageSleepC: { type: "NUMBER" },
             finalSleepC: { type: "NUMBER" },
             reasoning: { type: "STRING" },
@@ -173,6 +177,7 @@ export async function generateTemperatureRecommendation(
           },
           required: [
             "initialSleepC",
+            "deepSleepC",
             "midStageSleepC",
             "finalSleepC",
             "reasoning",
@@ -222,6 +227,7 @@ export async function generateTemperatureRecommendation(
   return {
     ...parsed,
     initialSleepC: bounded(parsed.initialSleepC, currentProfile.initialSleepC),
+    deepSleepC: bounded(parsed.deepSleepC, currentProfile.deepSleepC),
     midStageSleepC: bounded(parsed.midStageSleepC, currentProfile.midStageSleepC),
     finalSleepC: bounded(parsed.finalSleepC, currentProfile.finalSleepC),
   };
