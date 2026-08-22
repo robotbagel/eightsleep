@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from "react";
 import { apiR } from "~/trpc/react";
 import { Button } from "./ui/button";
-import { formatCelsius, rawToCelsius } from "~/lib/temperature";
+import { formatRawByUnit, type DisplayUnit } from "~/lib/temperature";
 
 const STAGE_LABELS: Record<string, string> = {
   deep: "Deep",
@@ -18,25 +18,23 @@ const STAGE_COLORS: Record<string, string> = {
   awake: "bg-amber-400",
 };
 
-function formatLevel(rawLevel: number): string {
-  return formatCelsius(rawToCelsius(rawLevel));
-}
-
 function LevelChange({
   label,
   previous,
   recommended,
+  unit,
 }: {
   label: string;
   previous: number;
   recommended: number;
+  unit: DisplayUnit;
 }) {
   const changed = previous !== recommended;
   return (
     <div className="flex items-center justify-between rounded-md bg-gray-50 px-3 py-2">
       <span className="text-sm text-gray-700">{label}</span>
       <span className="text-sm font-medium text-gray-800">
-        {formatLevel(previous)}
+        {formatRawByUnit(previous, unit)}
         {changed && (
           <>
             <span className="mx-1 text-gray-400" aria-hidden="true">
@@ -47,7 +45,7 @@ function LevelChange({
                 recommended < previous ? "text-blue-600" : "text-orange-600"
               }
             >
-              {formatLevel(recommended)}
+              {formatRawByUnit(recommended, unit)}
             </span>
           </>
         )}
@@ -272,6 +270,7 @@ export const AiPanel: React.FC = () => {
   const [aiEnabled, setAiEnabled] = useState(false);
   const [autoApply, setAutoApply] = useState(false);
   const [liveTuningEnabled, setLiveTuningEnabled] = useState(false);
+  const [displayUnit, setDisplayUnit] = useState<DisplayUnit>("celsius");
   const [sleepGoal, setSleepGoal] = useState("");
   const [maxDailyShift, setMaxDailyShift] = useState(20);
   const [settingsDirty, setSettingsDirty] = useState(false);
@@ -282,6 +281,7 @@ export const AiPanel: React.FC = () => {
       setAiEnabled(settings.aiEnabled);
       setAutoApply(settings.autoApply);
       setLiveTuningEnabled(settings.liveTuningEnabled);
+      setDisplayUnit(settings.displayUnit);
       setSleepGoal(settings.sleepGoal ?? "");
       setMaxDailyShift(settings.maxDailyShift);
     }
@@ -329,6 +329,7 @@ export const AiPanel: React.FC = () => {
       aiEnabled,
       autoApply,
       liveTuningEnabled,
+      displayUnit,
       sleepGoal: sleepGoal.trim() === "" ? null : sleepGoal.trim(),
       maxDailyShift,
     });
@@ -406,6 +407,34 @@ export const AiPanel: React.FC = () => {
             />
           </label>
 
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-gray-700">
+              Temperature display
+            </span>
+            <div className="flex overflow-hidden rounded-md border border-gray-300">
+              <button
+                type="button"
+                onClick={() => {
+                  setDisplayUnit("celsius");
+                  markDirty();
+                }}
+                className={`px-3 py-1 text-sm ${displayUnit === "celsius" ? "bg-indigo-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"}`}
+              >
+                °C
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDisplayUnit("level");
+                  markDirty();
+                }}
+                className={`px-3 py-1 text-sm ${displayUnit === "level" ? "bg-indigo-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"}`}
+              >
+                &minus;10&hellip;+10
+              </button>
+            </div>
+          </div>
+
           <div>
             <label
               htmlFor="sleepGoal"
@@ -433,6 +462,12 @@ export const AiPanel: React.FC = () => {
               className="block text-sm font-medium text-gray-700"
             >
               Max change per day: {maxDailyShift / 10}°C
+              {displayUnit === "level" && (
+                <span className="text-xs font-normal text-gray-500">
+                  {" "}
+                  (safety cap, roughly {maxDailyShift / 10} slider steps)
+                </span>
+              )}
             </label>
             <input
               id="maxDailyShift"
@@ -499,16 +534,19 @@ export const AiPanel: React.FC = () => {
                 label="Initial stage"
                 previous={latest.previousInitialLevel}
                 recommended={latest.recommendedInitialLevel}
+                unit={displayUnit}
               />
               <LevelChange
                 label="Mid stage"
                 previous={latest.previousMidLevel}
                 recommended={latest.recommendedMidLevel}
+                unit={displayUnit}
               />
               <LevelChange
                 label="Final stage"
                 previous={latest.previousFinalLevel}
                 recommended={latest.recommendedFinalLevel}
+                unit={displayUnit}
               />
             </div>
 
@@ -562,7 +600,7 @@ export const AiPanel: React.FC = () => {
                       minute: "2-digit",
                     })}{" "}
                     · {adjustment.stage} stage ·{" "}
-                    {formatLevel(adjustment.appliedLevel)}
+                    {formatRawByUnit(adjustment.appliedLevel, displayUnit)}
                   </span>
                   <span className="block text-gray-500">
                     {adjustment.reason}

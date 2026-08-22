@@ -27,13 +27,19 @@ import {
 } from "./gemini";
 import { deriveNightSignals, REGRESSION_SCORE_DROP } from "./rules";
 import { minutesSinceTimeOfDay } from "./time";
-import { celsiusToRaw, rawToCelsius } from "~/lib/temperature";
+import {
+  celsiusToRaw,
+  formatRawByUnit,
+  rawToCelsius,
+  type DisplayUnit,
+} from "~/lib/temperature";
 
 // maxDailyShift is stored in tenths of a degree Celsius (20 = 2.0°C).
 export const DEFAULT_AI_SETTINGS = {
   aiEnabled: false,
   autoApply: false,
   liveTuningEnabled: false,
+  displayUnit: "celsius",
   sleepGoal: null as string | null,
   maxDailyShift: 20,
 };
@@ -269,11 +275,15 @@ export async function generateRecommendationForUser(
   if (history.shouldRevertToBest && history.bestProfile) {
     // Deterministic guardrail: two nights in a row well below the best-known
     // score means the experiment went the wrong way — go straight back.
+    const unit: DisplayUnit =
+      settings.displayUnit === "level" ? "level" : "celsius";
+    const best = history.bestProfile;
+    const bestFormatted = `${formatRawByUnit(best.initial, unit)}/${formatRawByUnit(best.mid, unit)}/${formatRawByUnit(best.final, unit)}`;
     recommendation = {
-      initialSleepC: rawToCelsius(history.bestProfile.initial),
-      midStageSleepC: rawToCelsius(history.bestProfile.mid),
-      finalSleepC: rawToCelsius(history.bestProfile.final),
-      reasoning: `The last two nights scored at least ${REGRESSION_SCORE_DROP} points below your best night (${history.bestScore}), so this reverts to the best-known configuration (${formatProfileC(history.bestProfile)}) before experimenting further.`,
+      initialSleepC: rawToCelsius(best.initial),
+      midStageSleepC: rawToCelsius(best.mid),
+      finalSleepC: rawToCelsius(best.final),
+      reasoning: `The last two nights scored at least ${REGRESSION_SCORE_DROP} points below your best night (${history.bestScore}), so this reverts to the best-known configuration (${bestFormatted}) before experimenting further.`,
       confidence: "high",
     };
   } else {
@@ -294,6 +304,7 @@ export async function generateRecommendationForUser(
       historyLines: history.historyLines,
       sleepGoal: settings.sleepGoal,
       maxDailyShiftC: settings.maxDailyShift / 10,
+      displayUnit: settings.displayUnit === "level" ? "level" : "celsius",
     });
   }
 

@@ -8,9 +8,13 @@ import TimezoneSelect, { allTimezones } from "react-timezone-select";
 import { Button } from "./ui/button";
 import {
   celsiusToRaw,
+  formatLevelScale,
+  levelToRaw,
   MAX_BED_TEMP_C,
   MIN_BED_TEMP_C,
   rawToCelsius,
+  rawToLevel,
+  type DisplayUnit,
 } from "~/lib/temperature";
 
 const temperatureProfileSchema = z.object({
@@ -63,7 +67,14 @@ export const TemperatureProfileForm: React.FC = () => {
   });
 
   const getUserTemperatureProfileQuery = apiR.user.getUserTemperatureProfile.useQuery();
-  
+  // Same query the AI panel uses (deduped by react-query); only displayUnit
+  // is read here. Falls back to °C until settings load.
+  const aiSettingsQuery = apiR.user.getAiSettings.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+  });
+  const displayUnit: DisplayUnit =
+    aiSettingsQuery.data?.displayUnit === "level" ? "level" : "celsius";
+
 
   useEffect(() => {
     if (getUserTemperatureProfileQuery.isSuccess) {
@@ -177,22 +188,31 @@ export const TemperatureProfileForm: React.FC = () => {
       <Controller
         name={name}
         control={control}
-        render={({ field: { onChange, value } }) => (
-          <div className="flex items-center">
-            <input
-              type="range"
-              min={MIN_BED_TEMP_C}
-              max={MAX_BED_TEMP_C}
-              step="0.5"
-              value={value}
-              onChange={(e) => onChange(Number(e.target.value))}
-              className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-gray-200"
-            />
-            <span className="ml-2 whitespace-nowrap text-sm text-gray-600">
-              {value}°C
-            </span>
-          </div>
-        )}
+        render={({ field: { onChange, value } }) => {
+          // Form state is always °C; the slider renders in the user's
+          // preferred unit and converts on the way in and out.
+          const isLevel = displayUnit === "level";
+          const shown = isLevel ? rawToLevel(celsiusToRaw(value)) : value;
+          return (
+            <div className="flex items-center">
+              <input
+                type="range"
+                min={isLevel ? -10 : MIN_BED_TEMP_C}
+                max={isLevel ? 10 : MAX_BED_TEMP_C}
+                step="0.5"
+                value={shown}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  onChange(isLevel ? rawToCelsius(levelToRaw(next)) : next);
+                }}
+                className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-gray-200"
+              />
+              <span className="ml-2 whitespace-nowrap text-sm text-gray-600">
+                {isLevel ? formatLevelScale(shown) : `${shown}°C`}
+              </span>
+            </div>
+          );
+        }}
       />
       {info && <p className="mt-1 text-sm text-blue-600">{info}</p>}
       {errors[name] && (

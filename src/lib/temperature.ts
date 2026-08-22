@@ -75,3 +75,26 @@ export function celsiusToRaw(celsius: number): number {
 export function formatCelsius(celsius: number): string {
   return `${celsius.toFixed(1).replace(/\.0$/, "")}°C`;
 }
+
+// The Eight Sleep app's slider scale: -10 (coldest) .. +10 (warmest), which
+// is exactly the raw level divided by 10.
+export type DisplayUnit = "celsius" | "level";
+
+export function rawToLevel(raw: number): number {
+  return Math.round(raw) / 10;
+}
+
+export function levelToRaw(level: number): number {
+  return Math.round(level * 10);
+}
+
+export function formatLevelScale(level: number): string {
+  const text = level.toFixed(1).replace(/\.0$/, "");
+  return level > 0 ? `+${text}` : text;
+}
+
+export function formatRawByUnit(raw: number, unit: DisplayUnit): string {
+  return unit === "level"
+    ? formatLevelScale(rawToLevel(raw))
+    : formatCelsius(rawToCelsius(raw));
+}

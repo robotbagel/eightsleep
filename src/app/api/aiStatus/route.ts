@@ -78,6 +78,9 @@ export async function GET(request: NextRequest): Promise<Response> {
 
       report.push({
         email,
+        // Last 4 chars of the Eight Sleep user id: proof each app account
+        // drives a distinct Eight identity (and therefore a distinct side).
+        eightUserIdSuffix: user.eightUserId.slice(-4),
         settings: settings
           ? {
               aiEnabled: settings.aiEnabled,

@@ -40,6 +40,7 @@ export const userAiSettings = createTable("userAiSettings", {
   aiEnabled: boolean("aiEnabled").notNull().default(false),
   autoApply: boolean("autoApply").notNull().default(false),
   liveTuningEnabled: boolean("liveTuningEnabled").notNull().default(false),
+  displayUnit: varchar("displayUnit", { length: 10 }).notNull().default("celsius"),
   sleepGoal: text("sleepGoal"),
   maxDailyShift: integer("maxDailyShift").notNull().default(20),
   createdAt: timestamp("created_at").defaultNow().notNull(),

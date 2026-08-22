@@ -5,7 +5,13 @@
 // to Eight Sleep raw levels happens in the advisor.
 import { z } from "zod";
 import { type SleepContext } from "./sleepData";
-import { MAX_BED_TEMP_C, MIN_BED_TEMP_C } from "~/lib/temperature";
+import {
+  celsiusToRaw,
+  formatLevelScale,
+  MAX_BED_TEMP_C,
+  MIN_BED_TEMP_C,
+  rawToLevel,
+} from "~/lib/temperature";
 
 export const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-3.7-flash";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
@@ -60,10 +66,23 @@ export interface AdvisorInput {
   historyLines: string[];
   sleepGoal: string | null;
   maxDailyShiftC: number;
+  // How the sleeper reads temperatures in the app: "celsius" (bed water °C)
+  // or "level" (the Eight Sleep slider scale, -10 coldest .. +10 warmest,
+  // one slider step per °C-ish). Controls only the reasoning wording — the
+  // JSON response always carries °C.
+  displayUnit: "celsius" | "level";
 }
 
 function round1(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+// For slider-scale users, hand the model the exact level equivalent so its
+// reasoning quotes the same numbers the app displays (the °C→level mapping is
+// nonlinear; the model must not approximate it).
+function withLevel(celsius: number, unit: "celsius" | "level"): string {
+  if (unit !== "level") return `${celsius}°C`;
+  return `${celsius}°C (slider level ${formatLevelScale(rawToLevel(celsiusToRaw(celsius)))})`;
 }
 
 function clampC(value: number, min: number, max: number): number {
@@ -84,9 +103,9 @@ function buildPrompt(input: AdvisorInput): string {
     "",
     "Current schedule and temperatures:",
     `- Bedtime ${currentProfile.bedTime}, wake-up ${currentProfile.wakeupTime}`,
-    `- Initial stage (bedtime to +1h): ${currentProfile.initialSleepC}°C`,
-    `- Mid stage (until 2h before wake-up): ${currentProfile.midStageSleepC}°C`,
-    `- Final stage (last 2h before wake-up): ${currentProfile.finalSleepC}°C`,
+    `- Initial stage (bedtime to +1h): ${withLevel(currentProfile.initialSleepC, input.displayUnit)}`,
+    `- Mid stage (until 2h before wake-up): ${withLevel(currentProfile.midStageSleepC, input.displayUnit)}`,
+    `- Final stage (last 2h before wake-up): ${withLevel(currentProfile.finalSleepC, input.displayUnit)}`,
     "",
     sleepGoal ? `The sleeper's own goal/preference: ${sleepGoal}` : "",
     "",
@@ -112,7 +131,9 @@ function buildPrompt(input: AdvisorInput): string {
     "Recommend temperatures for tonight. Rules:",
     `- Adjust conservatively: change each stage by at most ${maxDailyShiftC}°C from its current value, and only where the data supports it. Keeping a stage unchanged is a valid choice.`,
     "- Treat this as a running experiment: if the history shows the current configuration is the best performer and recent scores are at or near the best, recommend no change and say the profile looks converged. If recent changes made scores worse, move back toward the best-known configuration.",
-    "- In the reasoning, talk in °C, cite the specific numbers that drove each change, in plain language, in at most 3 sentences. Set confidence low when data is sparse or mixed, high when the data and history clearly agree.",
+    input.displayUnit === "level"
+      ? "- In the reasoning, express all bed temperature SETTINGS on the Eight Sleep app slider scale from -10 (coldest) to +10 (warmest), using the exact slider levels given above for the current stages (do not convert degrees yourself; a change of about 1°C is roughly 0.5-1 slider step in the middle of the range). Measured temperatures from sensors (bed/room readings in the data) stay in °C. Cite the specific numbers that drove each change, in plain language, in at most 3 sentences. Set confidence low when data is sparse or mixed, high when the data and history clearly agree. The JSON response fields must still be in °C."
+      : "- In the reasoning, talk in °C, cite the specific numbers that drove each change, in plain language, in at most 3 sentences. Set confidence low when data is sparse or mixed, high when the data and history clearly agree.",
   ]
     .filter((line) => line !== "")
     .join("\n");
