@@ -12,8 +12,12 @@ import { triggerAssessmentAfterImport } from "~/server/ai/advisor";
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest): Promise<Response> {
+  // Token accepted either as a bearer header or a ?token= query param, so the
+  // iPhone Shortcut needs no custom header (fewer setup steps, fewer errors).
   const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  const token =
+    authHeader.replace(/^Bearer\s+/i, "").trim() ||
+    (request.nextUrl.searchParams.get("token") ?? "").trim();
   if (token.length < 20) {
     return new Response("Unauthorized", { status: 401 });
   }

@@ -3,6 +3,7 @@ import React, { useEffect, useState } from "react";
 import { apiR } from "~/trpc/react";
 import { Button } from "./ui/button";
 import { formatRawByUnit, type DisplayUnit } from "~/lib/temperature";
+import { buildSleepShortcutPlist } from "~/lib/sleepShortcut";
 
 const STAGE_LABELS: Record<string, string> = {
   deep: "Deep",
@@ -283,33 +284,67 @@ function HealthImportSection() {
         <span className="text-gray-400">{open ? "−" : "+"}</span>
       </button>
       {open && (
-        <div className="mt-2 space-y-2 text-xs text-gray-600">
+        <div className="mt-2 space-y-3 text-xs text-gray-600">
           <p>
-            Feeds the AI with your Watch&apos;s sleep stages when the pod
-            provides no data. Set up an iPhone Shortcut that runs each
-            morning:
+            Feeds the AI with your Apple Watch sleep stages when the pod
+            provides no data. Runs each morning and instantly triggers that
+            day&apos;s AI assessment and push report.
           </p>
-          <ol className="list-decimal space-y-1 pl-4">
-            <li>Shortcuts app → new Automation → &quot;At 08:00, daily&quot; → Run Immediately.</li>
-            <li>Add action <span className="font-medium">Find Health Samples</span>: type Sleep, Start Date is in the last 1 day.</li>
-            <li>Add <span className="font-medium">Repeat with Each</span>; inside it add <span className="font-medium">Text</span> with: Sleep Value, comma, Start Date (ISO 8601), comma, End Date (ISO 8601) — using the magic variables of the repeat item.</li>
-            <li>After the repeat, add <span className="font-medium">Combine Text</span> (Repeat Results, new lines).</li>
-            <li>Add <span className="font-medium">Get Contents of URL</span>: POST to the URL below, Request Body = the combined text, and a Header <span className="font-mono">Authorization</span> = <span className="font-mono">Bearer &lt;your token&gt;</span>.</li>
-          </ol>
+
           {infoQuery.data && (
-            <div className="space-y-1">
-              <p className="break-all rounded bg-white p-2 font-mono text-[11px]">
-                {endpoint}
-              </p>
-              <p className="break-all rounded bg-white p-2 font-mono text-[11px]">
-                Bearer {infoQuery.data.token}
+            <div className="space-y-2">
+              <p className="font-medium text-gray-700">Easiest: one-tap import</p>
+              <button
+                type="button"
+                onClick={() => {
+                  const plist = buildSleepShortcutPlist(
+                    endpoint,
+                    infoQuery.data!.token,
+                  );
+                  const blob = new Blob([plist], {
+                    type: "application/octet-stream",
+                  });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = "8sleep-sleep-import.shortcut";
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  URL.revokeObjectURL(url);
+                }}
+                className="w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+              >
+                Download Shortcut (URL &amp; token pre-filled)
+              </button>
+              <p className="text-[11px]">
+                Opens in the Shortcuts app to import (enable Settings →
+                Shortcuts → Allow Untrusted Shortcuts if prompted). Then add it
+                as a daily Automation at ~08:00. If import or run fails,
+                screenshot the error and use the manual steps below — Apple&apos;s
+                Health action varies by iOS build.
               </p>
             </div>
           )}
-          <p>
-            The import instantly triggers that morning&apos;s AI assessment
-            and your push notification.
-          </p>
+
+          <details className="rounded bg-white p-2">
+            <summary className="cursor-pointer font-medium text-gray-700">
+              Manual setup (fallback, no header needed)
+            </summary>
+            <ol className="mt-2 list-decimal space-y-1 pl-4">
+              <li>Shortcuts → new Shortcut.</li>
+              <li><span className="font-medium">Find Health Samples</span>: Sleep, Start Date is in the last 1 day.</li>
+              <li><span className="font-medium">Repeat with Each</span>; inside add <span className="font-medium">Text</span>: Repeat Item&apos;s Sleep value, comma, Start Date, comma, End Date.</li>
+              <li>After the repeat, <span className="font-medium">Combine Text</span> (Repeat Results, New Lines).</li>
+              <li><span className="font-medium">Get Contents of URL</span> → Method POST, Request Body = Combined Text (as File), URL below. No header.</li>
+              <li>Add it as a daily Automation (~08:00, Run Immediately).</li>
+            </ol>
+            {infoQuery.data && (
+              <p className="mt-2 break-all rounded bg-gray-50 p-2 font-mono text-[10px]">
+                {endpoint}?token={infoQuery.data.token}
+              </p>
+            )}
+          </details>
         </div>
       )}
     </div>
