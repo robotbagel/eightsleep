@@ -1,79 +1,158 @@
 "use client";
 
-import React from 'react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
-import { apiR } from '~/trpc/react';
+import React from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { apiR } from "~/trpc/react";
+import LordIcon from "./ui/lordIcon";
 
 const loginSchema = z.object({
-  email: z.string().email('Invalid email address'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
+  email: z.string().email("That does not look like an email address"),
+  password: z.string().min(6, "Add a few more characters — 6 minimum"),
 });
 
-type EightLoginDialog = z.infer<typeof loginSchema>;
+type LoginFields = z.infer<typeof loginSchema>;
 
-interface EightLoginDialogProps {
-  onLoginSuccess: () => void;
-}
-
-export const EightLoginDialog: React.FC<EightLoginDialogProps> = ({ onLoginSuccess }) => {
-  const form = useForm<EightLoginDialog>({
+export const EightLoginDialog: React.FC<{ onLoginSuccess: () => void }> = ({
+  onLoginSuccess,
+}) => {
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, touchedFields },
+  } = useForm<LoginFields>({
     resolver: zodResolver(loginSchema),
+    mode: "onBlur", // canon §10: validate on blur, not on submit
   });
-  const { register, handleSubmit, formState: { errors } } = form;
 
   const loginMutation = apiR.user.login.useMutation({
-    onSuccess: () => {
-      // Handle successful login
-      console.log('Login successful');
-      onLoginSuccess();
-    },
-    onError: (error: { message: unknown; }) => {
-      // Handle login error
-      console.error('Login failed:', error.message);
-    },
+    onSuccess: onLoginSuccess,
   });
 
-  const onSubmit = (data: EightLoginDialog) => {
-    loginMutation.mutate(data);
-  };
+  const valid = (field: keyof LoginFields) =>
+    touchedFields[field] && !errors[field];
 
   return (
-    <div className="max-w-md mx-auto mt-8 p-6 bg-white rounded-lg shadow-xl">
-      <h2 className="text-2xl font-bold mb-4 text-center text-gray-800">Login to Eight Sleep</h2>
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4 text-gray-800">
-        <div>
-          <label htmlFor="email" className="block text-sm font-medium text-gray-700">Email</label>
-          <input
-            {...register('email')}
-            type="email"
-            id="email"
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50"
-          />
-          {errors.email && <p className="mt-1 text-sm text-red-600">{errors.email.message}</p>}
-        </div>
-        <div>
-          <label htmlFor="password" className="block text-sm font-medium text-gray-700">Password</label>
-          <input
-            {...register('password')}
-            type="password"
-            id="password"
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50"
-          />
-          {errors.password && <p className="mt-1 text-sm text-red-600">{errors.password.message}</p>}
-        </div>
+    <div className="card enter mx-auto w-full max-w-sm p-6">
+      <div id="login-head" className="mb-5 flex flex-col items-center text-center">
+        <LordIcon
+          name="sleep"
+          size={44}
+          trigger="hover"
+          target="#login-head"
+          color="var(--accent)"
+          colorSecondary="var(--text-muted)"
+        />
+        <h1
+          className="mt-3 text-xl font-semibold"
+          style={{ color: "var(--text-headline)" }}
+        >
+          Connect your pod
+        </h1>
+        <p className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>
+          Sign in with the same Eight Sleep account you use in their app.
+        </p>
+      </div>
+
+      <form
+        onSubmit={handleSubmit((data) => loginMutation.mutate(data))}
+        className="space-y-4"
+        noValidate
+      >
+        <Field
+          id="email"
+          label="Email"
+          type="email"
+          autoComplete="username"
+          error={errors.email?.message}
+          valid={valid("email")}
+          register={register("email")}
+        />
+        <Field
+          id="password"
+          label="Password"
+          type="password"
+          autoComplete="current-password"
+          error={errors.password?.message}
+          valid={valid("password")}
+          register={register("password")}
+        />
+
         <button
           type="submit"
-          className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+          className="btn btn-primary w-full"
           disabled={loginMutation.isPending}
         >
-          {loginMutation.isPending ? 'Logging in...' : 'Login'}
+          {loginMutation.isPending ? "Signing in…" : "Sign in"}
         </button>
+
         {loginMutation.isError && (
-        <p className="mt-4 text-sm text-red-600 text-center">{loginMutation.error.message}</p>
-      )}
-    </form>
+          <p
+            className="rounded-xl p-3 text-sm"
+            role="alert"
+            style={{
+              backgroundColor: "var(--danger-soft)",
+              color: "var(--danger)",
+            }}
+          >
+            {loginMutation.error.message}
+          </p>
+        )}
+      </form>
     </div>
   );
 };
+
+const Field: React.FC<{
+  id: string;
+  label: string;
+  type: string;
+  autoComplete: string;
+  error?: string;
+  valid?: boolean;
+  register: ReturnType<ReturnType<typeof useForm<LoginFields>>["register"]>;
+}> = ({ id, label, type, autoComplete, error, valid, register }) => (
+  <div>
+    <label
+      htmlFor={id}
+      className="mb-1.5 block text-sm font-medium"
+      style={{ color: "var(--text-headline)" }}
+    >
+      {label}
+    </label>
+    <div className="relative">
+      <input
+        {...register}
+        id={id}
+        type={type}
+        autoComplete={autoComplete}
+        aria-invalid={!!error}
+        aria-describedby={error ? `${id}-error` : undefined}
+        className="field pr-9"
+      />
+      {valid && (
+        <span
+          aria-hidden="true"
+          className="absolute right-3 top-1/2 -translate-y-1/2"
+          style={{ color: "var(--success)" }}
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path
+              d="m2.5 7.5 3 3 6-7"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
+      )}
+    </div>
+    {error && (
+      <p id={`${id}-error`} className="mt-1 text-xs" style={{ color: "var(--danger)" }}>
+        {error}
+      </p>
+    )}
+  </div>
+);

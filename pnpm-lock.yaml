@@ -11,6 +11,9 @@ importers:
       '@hookform/resolvers':
         specifier: ^3.9.0
         version: 3.9.0(react-hook-form@7.53.0(react@18.3.1))
+      '@lordicon/element':
+        specifier: ^2.3.1
+        version: 2.3.1
       '@radix-ui/react-slot':
         specifier: ^1.1.0
         version: 1.1.0(@types/react@18.3.4)(react@18.3.1)
@@ -573,6 +576,12 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.25':
     resolution: {integrity: sha512-vNk6aEwybGtawWmy/PzwnGDOjCkLWSD2wqvjGGAgOAwCGWySYXfYoxt00IJkTF+8Lb57DwOb3Aa0o9CApepiYQ==}
+
+  '@lordicon/element@2.3.1':
+    resolution: {integrity: sha512-thmlosWLpOy+et/4Eu+0fM09u6gEn7ToQ+fBi7r/mS1F5N020yQJJEoUZJQ6RdZVloVSIlfOSxZgdE8GKu+GxQ==}
+
+  '@lordicon/web@1.2.1':
+    resolution: {integrity: sha512-16djHCP6w6+y5WuCEl6D3I2tZhzLqcVhdSR8jynzxIrF384t0RTL2zNYEZhjCjNbw5taN0pbdqlqH8vJ1+spQg==}
 
   '@neondatabase/serverless@0.9.4':
     resolution: {integrity: sha512-D0AXgJh6xkf+XTlsO7iwE2Q1w8981E1cLCPAALMU2YKtkF/1SF6BiAzYARZFYo175ON+b1RNIy9TdSFHm5nteg==}
@@ -2995,6 +3004,12 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.0
+
+  '@lordicon/element@2.3.1':
+    dependencies:
+      '@lordicon/web': 1.2.1
+
+  '@lordicon/web@1.2.1': {}
 
   '@neondatabase/serverless@0.9.4':
     dependencies:

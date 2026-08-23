@@ -49,6 +49,15 @@ const PodSessionSchema = z
     duration: z.number().nullish(),
     incomplete: z.boolean().nullish(),
     timezone: z.string().nullish(),
+    // The hypnogram: consecutive stage runs starting at `ts`, durations in
+    // seconds. This is what makes a real stage chart possible.
+    stages: z
+      .array(
+        z
+          .object({ stage: z.string(), duration: z.number() })
+          .catchall(z.unknown()),
+      )
+      .nullish(),
     stageSummary: z
       .object({
         totalDuration: z.number().nullish(),

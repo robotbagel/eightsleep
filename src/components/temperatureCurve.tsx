@@ -91,9 +91,9 @@ export const TemperatureCurve: React.FC<Props> = ({
   ];
 
   const W = 320;
-  const H = 110;
+  const H = 116;
   const PAD_TOP = 8;
-  const PAD_BOTTOM = 18;
+  const PAD_BOTTOM = 6;
   const allTemps = segments.map((s) => s.temp);
   const bandLo = Math.min(...STAGES.map((s) => s.bandC[0]));
   const bandHi = Math.max(...STAGES.map((s) => s.bandC[1]));
@@ -122,21 +122,37 @@ export const TemperatureCurve: React.FC<Props> = ({
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   };
 
-  const selectedMeta = segments.find((s) => s.meta.key === selected);
+  const selectedSegment = segments.find((s) => s.meta.key === selected);
 
   return (
-    <div className="rounded-md bg-gray-50 p-3">
-      <p className="mb-1 text-xs text-gray-600">
-        The research-backed shape: warm to fall asleep, coolest for deep sleep,
-        easing back, gently warm before waking. Tap a dot for stage advice.
+    <div
+      className="rounded-xl border p-3"
+      style={{
+        borderColor: "var(--border)",
+        backgroundColor: "var(--surface-sunken)",
+      }}
+    >
+      <p className="mb-2 text-xs" style={{ color: "var(--text-muted)" }}>
+        Warm to fall asleep, coolest for deep sleep, easing back, gently warm
+        before waking. Tap a dot for what each stage is doing.
       </p>
+
+      <div className="relative w-full" style={{ aspectRatio: `${W} / ${H}` }}>
       <svg
         viewBox={`0 0 ${W} ${H}`}
-        className="w-full"
+        preserveAspectRatio="none"
+        className="absolute inset-0 h-full w-full"
         role="img"
-        aria-label="Night temperature curve"
+        aria-label="Your planned bed temperature across the night"
       >
-        {/* Recommended band per stage */}
+        <defs>
+          <linearGradient id="curveFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.22" />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+
+        {/* Recommended band per stage — the target you are aiming inside of. */}
         {segments.map((segment) => (
           <rect
             key={`band-${segment.meta.key}`}
@@ -144,15 +160,26 @@ export const TemperatureCurve: React.FC<Props> = ({
             width={x(segment.end) - x(segment.start)}
             y={y(segment.meta.bandC[1])}
             height={y(segment.meta.bandC[0]) - y(segment.meta.bandC[1])}
-            className="fill-green-200/50"
+            fill="var(--success)"
+            opacity="0.14"
           />
         ))}
+
+        <path
+          d={`${path} L ${W} ${H - PAD_BOTTOM} L 0 ${H - PAD_BOTTOM} Z`}
+          fill="url(#curveFill)"
+        />
         <path
           d={path}
+          className="draw-line"
+          style={{ "--len": 700 } as React.CSSProperties}
           fill="none"
           strokeWidth="2.5"
-          className="stroke-indigo-600"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          stroke="var(--accent)"
         />
+
         {segments.map((segment) => {
           const cx = x((segment.start + segment.end) / 2);
           const cy = y(segment.temp);
@@ -163,65 +190,87 @@ export const TemperatureCurve: React.FC<Props> = ({
           return (
             <g
               key={`dot-${segment.meta.key}`}
-              onClick={() =>
-                setSelected(isSelected ? null : segment.meta.key)
-              }
+              onClick={() => setSelected(isSelected ? null : segment.meta.key)}
               className="cursor-pointer"
+              role="button"
+              tabIndex={0}
+              aria-label={`${segment.meta.name}, ${fmt(segment.temp)}`}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setSelected(isSelected ? null : segment.meta.key);
+                }
+              }}
             >
-              <circle cx={cx} cy={cy} r="13" fill="transparent" />
+              <circle cx={cx} cy={cy} r="14" fill="transparent" />
               <circle
                 cx={cx}
                 cy={cy}
                 r={isSelected ? 7 : 5.5}
-                className={
-                  inBand ? "fill-indigo-600" : "fill-amber-500"
-                }
-                stroke="white"
-                strokeWidth="2"
+                fill={inBand ? "var(--accent)" : "var(--warning)"}
+                stroke="var(--surface-sunken)"
+                strokeWidth="2.5"
+                className="transition-[r] duration-fast ease-snap"
               />
             </g>
           );
         })}
-        <text x={2} y={H - 4} className="fill-gray-500 text-[9px]">
-          {bedTime}
-        </text>
-        <text x={W - 2} y={H - 4} textAnchor="end" className="fill-gray-500 text-[9px]">
-          {wakeupTime}
-        </text>
-      </svg>
 
-      {selectedMeta ? (
-        <div className="mt-1 rounded-md bg-white p-3 shadow-sm">
-          <div className="flex items-baseline justify-between">
-            <span className="text-sm font-semibold text-gray-800">
-              {selectedMeta.meta.name}
+      </svg>
+      </div>
+
+      <div
+        className="tabular mt-1 flex justify-between text-[10px]"
+        style={{ color: "var(--text-faint)" }}
+      >
+        <span>{bedTime}</span>
+        <span>
+          {fmt(yMin + 1)} – {fmt(yMax - 1)}
+        </span>
+        <span>{wakeupTime}</span>
+      </div>
+
+      {selectedSegment ? (
+        <div
+          className="mt-1 rounded-lg p-3"
+          style={{ backgroundColor: "var(--surface)" }}
+        >
+          <div className="flex items-baseline justify-between gap-2">
+            <span
+              className="text-sm font-semibold"
+              style={{ color: "var(--text-headline)" }}
+            >
+              {selectedSegment.meta.name}
             </span>
-            <span className="text-xs text-gray-500">
-              {timeAt(selectedMeta.start)}–{timeAt(selectedMeta.end)}
+            <span className="tabular text-xs" style={{ color: "var(--text-faint)" }}>
+              {timeAt(selectedSegment.start)}–{timeAt(selectedSegment.end)}
             </span>
           </div>
-          <p className="mt-1 text-xs text-gray-700">
-            Feel: <span className="font-medium">{selectedMeta.meta.feel}</span>{" "}
-            · Recommended {fmt(selectedMeta.meta.bandC[0])} to{" "}
-            {fmt(selectedMeta.meta.bandC[1])} · Yours:{" "}
+          <p className="mt-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
+            Feel: <span className="font-medium">{selectedSegment.meta.feel}</span>{" "}
+            · target {fmt(selectedSegment.meta.bandC[0])} to{" "}
+            {fmt(selectedSegment.meta.bandC[1])} · yours{" "}
             <span
-              className={
-                selectedMeta.temp >= selectedMeta.meta.bandC[0] &&
-                selectedMeta.temp <= selectedMeta.meta.bandC[1]
-                  ? "font-medium text-green-700"
-                  : "font-medium text-amber-600"
-              }
+              className="font-semibold"
+              style={{
+                color:
+                  selectedSegment.temp >= selectedSegment.meta.bandC[0] &&
+                  selectedSegment.temp <= selectedSegment.meta.bandC[1]
+                    ? "var(--success)"
+                    : "var(--warning)",
+              }}
             >
-              {fmt(selectedMeta.temp)}
+              {fmt(selectedSegment.temp)}
             </span>
           </p>
-          <p className="mt-1 text-xs text-gray-600">{selectedMeta.meta.science}</p>
+          <p className="mt-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
+            {selectedSegment.meta.science}
+          </p>
         </div>
       ) : (
-        <p className="text-[11px] text-gray-500">
-          Room rule of thumb: above 24°C shift the whole curve about 1°C
-          cooler; below 18°C about 1°C warmer. Amber dot = outside the
-          recommended band.
+        <p className="text-[11px]" style={{ color: "var(--text-faint)" }}>
+          Room rule of thumb: above 24°C shift the whole curve about 1°C cooler,
+          below 18°C about 1°C warmer. An amber dot sits outside the target band.
         </p>
       )}
     </div>

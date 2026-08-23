@@ -1,356 +1,109 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import { apiR } from "~/trpc/react";
-import { Button } from "./ui/button";
-import { formatRawByUnit, type DisplayUnit } from "~/lib/temperature";
+import { type DisplayUnit } from "~/lib/temperature";
 import { buildSleepShortcutPlist } from "~/lib/sleepShortcut";
-import { NightTimeline } from "./nightTimeline";
+import { Card, CardHeader, Disclosure, Skeleton } from "./ui/card";
+import LordIcon from "./ui/lordIcon";
+import { StageChangeChart, type StageChange } from "./charts/stageChangeChart";
 
-const STAGE_LABELS: Record<string, string> = {
-  deep: "Deep",
-  rem: "REM",
-  light: "Light",
-  awake: "Awake",
-};
+// ---------------------------------------------------------------------------
+// Small shared pieces
+// ---------------------------------------------------------------------------
 
-const STAGE_COLORS: Record<string, string> = {
-  deep: "bg-indigo-600",
-  rem: "bg-purple-500",
-  light: "bg-blue-400",
-  awake: "bg-amber-400",
-};
-
-function LevelChange({
-  label,
-  previous,
-  recommended,
-  unit,
-}: {
+const Chip: React.FC<{
   label: string;
-  previous: number;
-  recommended: number;
-  unit: DisplayUnit;
-}) {
-  const changed = previous !== recommended;
-  return (
-    <div className="flex items-center justify-between rounded-md bg-gray-50 px-3 py-2">
-      <span className="text-sm text-gray-700">{label}</span>
-      <span className="text-sm font-medium text-gray-800">
-        {formatRawByUnit(previous, unit)}
-        {changed && (
-          <>
-            <span className="mx-1 text-gray-400" aria-hidden="true">
-              &rarr;
-            </span>
-            <span
-              className={
-                recommended < previous ? "text-blue-600" : "text-orange-600"
-              }
-            >
-              {formatRawByUnit(recommended, unit)}
-            </span>
-          </>
-        )}
-        {!changed && <span className="ml-2 text-xs text-gray-400">(keep)</span>}
-      </span>
-    </div>
-  );
-}
+  color: string;
+  background: string;
+}> = ({ label, color, background }) => (
+  <span className="chip" style={{ color, backgroundColor: background }}>
+    {label}
+  </span>
+);
 
-function ConfidenceChip({ confidence }: { confidence: string }) {
-  const styles: Record<string, string> = {
-    high: "bg-green-100 text-green-800",
-    medium: "bg-yellow-100 text-yellow-800",
-    low: "bg-gray-200 text-gray-700",
+const ConfidenceChip: React.FC<{ confidence: string }> = ({ confidence }) => {
+  const map: Record<string, [string, string]> = {
+    high: ["var(--success)", "var(--success-soft)"],
+    medium: ["var(--warning)", "var(--warning-soft)"],
+    low: ["var(--text-muted)", "var(--surface-sunken)"],
   };
+  const [color, background] = map[confidence] ?? map.low!;
   return (
-    <span
-      className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles[confidence] ?? styles.low}`}
-    >
-      {confidence} confidence
-    </span>
+    <Chip label={`${confidence} confidence`} color={color} background={background} />
   );
-}
+};
 
-function StatusChip({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    pending: "bg-blue-100 text-blue-800",
-    applied: "bg-green-100 text-green-800",
-    auto_applied: "bg-green-100 text-green-800",
-    dismissed: "bg-gray-200 text-gray-600",
+const StatusChip: React.FC<{ status: string }> = ({ status }) => {
+  const map: Record<string, [string, string, string]> = {
+    pending: ["Waiting for you", "var(--warning)", "var(--warning-soft)"],
+    applied: ["Applied", "var(--success)", "var(--success-soft)"],
+    auto_applied: ["Auto-applied", "var(--success)", "var(--success-soft)"],
+    dismissed: ["Dismissed", "var(--text-muted)", "var(--surface-sunken)"],
   };
-  const labels: Record<string, string> = {
-    pending: "Pending",
-    applied: "Applied",
-    auto_applied: "Auto-applied",
-    dismissed: "Dismissed",
-  };
-  return (
-    <span
-      className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles[status] ?? styles.dismissed}`}
-    >
-      {labels[status] ?? status}
-    </span>
-  );
-}
+  const [label, color, background] = map[status] ?? map.dismissed!;
+  return <Chip label={label} color={color} background={background} />;
+};
 
-function SleepSummaryCard() {
-  const sleepSummaryQuery = apiR.user.getSleepSummary.useQuery(undefined, {
-    retry: 1,
-    refetchOnWindowFocus: false,
-  });
-
-  if (sleepSummaryQuery.isLoading) {
-    return (
-      <div className="mx-auto mt-4 w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
-        <h2 className="mb-2 text-center text-2xl font-bold text-gray-800">
-          Sleep Data
-        </h2>
-        <p className="text-center text-sm text-gray-500">
-          Loading sleep data from Eight Sleep&hellip;
-        </p>
-      </div>
-    );
-  }
-
-  if (sleepSummaryQuery.isError || !sleepSummaryQuery.data) {
-    return (
-      <div className="mx-auto mt-4 w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
-        <h2 className="mb-2 text-center text-2xl font-bold text-gray-800">
-          Sleep Data
-        </h2>
-        <p className="text-center text-sm text-gray-500">
-          Could not load sleep data from Eight Sleep right now.
-        </p>
-      </div>
-    );
-  }
-
-  const { nights, recentSessions } = sleepSummaryQuery.data;
-  const lastSession = recentSessions[0];
-  const totalStageHours = lastSession
-    ? Object.values(lastSession.stageHours).reduce((sum, h) => sum + h, 0)
-    : 0;
-
-  return (
-    <div className="mx-auto mt-4 w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
-      <h2 className="mb-4 text-center text-2xl font-bold text-gray-800">
-        Sleep Data
-      </h2>
-
-      {lastSession ? (
-        <div className="mb-4">
-          <div className="mb-2 flex items-baseline justify-between">
-            <span className="text-sm font-medium text-gray-700">
-              Last night ({lastSession.date})
-            </span>
-            {lastSession.score != null && (
-              <span className="text-lg font-bold text-indigo-600">
-                {lastSession.score}
-                <span className="text-xs font-normal text-gray-500"> /100</span>
-              </span>
-            )}
-          </div>
-
-          {totalStageHours > 0 && (
-            <>
-              <div className="flex h-3 w-full overflow-hidden rounded-full bg-gray-100">
-                {(["deep", "rem", "light", "awake"] as const).map((stage) => {
-                  const hours = lastSession.stageHours[stage] ?? 0;
-                  if (hours <= 0) return null;
-                  return (
-                    <div
-                      key={stage}
-                      className={STAGE_COLORS[stage]}
-                      style={{ width: `${(hours / totalStageHours) * 100}%` }}
-                      title={`${STAGE_LABELS[stage]}: ${hours}h`}
-                    />
-                  );
-                })}
-              </div>
-              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
-                {(["deep", "rem", "light", "awake"] as const).map((stage) => {
-                  const hours = lastSession.stageHours[stage] ?? 0;
-                  if (hours <= 0) return null;
-                  return (
-                    <span
-                      key={stage}
-                      className="flex items-center text-xs text-gray-600"
-                    >
-                      <span
-                        className={`mr-1 inline-block h-2 w-2 rounded-full ${STAGE_COLORS[stage]}`}
-                      />
-                      {STAGE_LABELS[stage]} {hours}h
-                    </span>
-                  );
-                })}
-              </div>
-            </>
-          )}
-
-          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-            <div className="rounded-md bg-gray-50 p-2">
-              <div className="text-xs text-gray-500">Tosses and turns</div>
-              <div className="text-sm font-semibold text-gray-800">
-                {[
-                  lastSession.tossesAndTurns.firstThird,
-                  lastSession.tossesAndTurns.middleThird,
-                  lastSession.tossesAndTurns.finalThird,
-                ]
-                  .map((count) => count ?? 0)
-                  .join(" / ")}
-              </div>
-              <div className="text-[10px] text-gray-400">by third of night</div>
-            </div>
-            <div className="rounded-md bg-gray-50 p-2">
-              <div className="text-xs text-gray-500">Bed temp</div>
-              <div className="text-sm font-semibold text-gray-800">
-                {lastSession.avgBedTempC.middleThird != null
-                  ? `${lastSession.avgBedTempC.middleThird}°C`
-                  : "—"}
-              </div>
-              <div className="text-[10px] text-gray-400">mid-night avg</div>
-            </div>
-            <div className="rounded-md bg-gray-50 p-2">
-              <div className="text-xs text-gray-500">Heart rate</div>
-              <div className="text-sm font-semibold text-gray-800">
-                {lastSession.avgHeartRate != null
-                  ? `${lastSession.avgHeartRate} bpm`
-                  : "—"}
-              </div>
-              <div className="text-[10px] text-gray-400">night avg</div>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <p className="mb-4 text-center text-sm text-gray-500">
-          No completed sleep session found yet.
-        </p>
-      )}
-
-      {nights.length > 0 && (
-        <div>
-          <div className="mb-1 text-sm font-medium text-gray-700">
-            Last {nights.length} nights
-          </div>
-          <div className="flex items-end gap-1">
-            {nights.map((night) => (
-              <div key={night.date} className="flex-1 text-center">
-                <div className="flex h-16 items-end justify-center">
-                  <div
-                    className={`w-full rounded-t ${(night.score ?? 0) >= 80 ? "bg-green-400" : (night.score ?? 0) >= 60 ? "bg-yellow-400" : "bg-red-300"}`}
-                    style={{ height: `${Math.max(night.score ?? 0, 4)}%` }}
-                    title={`${night.date}: score ${night.score ?? "n/a"}, ${night.sleepDurationHours ?? "?"}h sleep`}
-                  />
-                </div>
-                <div className="mt-1 text-[10px] text-gray-500">
-                  {night.date.slice(5)}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function HealthImportSection() {
-  const [open, setOpen] = useState(false);
-  const infoQuery = apiR.user.getHealthImportInfo.useQuery(undefined, {
-    refetchOnWindowFocus: false,
-    enabled: open,
-  });
-  const endpoint =
-    typeof window !== "undefined"
-      ? `${window.location.origin}/api/healthImport`
-      : "/api/healthImport";
-
-  return (
-    <div className="rounded-md bg-gray-50 p-3">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-center justify-between text-sm font-medium text-gray-700"
+const Toggle: React.FC<{
+  id: string;
+  label: string;
+  hint?: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (next: boolean) => void;
+}> = ({ id, label, hint, checked, disabled, onChange }) => (
+  <label
+    htmlFor={id}
+    className="flex cursor-pointer items-start justify-between gap-4 rounded-xl px-2 py-2 transition-colors duration-fast ease-snap hover:bg-[var(--surface-hover)]"
+  >
+    <span className="flex-1">
+      <span
+        className="block text-sm font-medium"
+        style={{ color: "var(--text-headline)" }}
       >
-        <span>
-          Apple Watch import
-          {infoQuery.data?.lastImportNight && (
-            <span className="ml-2 rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800">
-              last: {infoQuery.data.lastImportNight} (score{" "}
-              {infoQuery.data.lastImportScore})
-            </span>
-          )}
+        {label}
+      </span>
+      {hint && (
+        <span
+          className="mt-0.5 block text-xs"
+          style={{ color: "var(--text-muted)" }}
+        >
+          {hint}
         </span>
-        <span className="text-gray-400">{open ? "−" : "+"}</span>
-      </button>
-      {open && (
-        <div className="mt-2 space-y-3 text-xs text-gray-600">
-          <p>
-            Feeds the AI with your Apple Watch sleep stages when the pod
-            provides no data. Runs each morning and instantly triggers that
-            day&apos;s AI assessment and push report.
-          </p>
-
-          {infoQuery.data && (
-            <div className="space-y-2">
-              <p className="font-medium text-gray-700">Easiest: one-tap import</p>
-              <button
-                type="button"
-                onClick={() => {
-                  const plist = buildSleepShortcutPlist(
-                    endpoint,
-                    infoQuery.data!.token,
-                  );
-                  const blob = new Blob([plist], {
-                    type: "application/octet-stream",
-                  });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = "8sleep-sleep-import.shortcut";
-                  document.body.appendChild(a);
-                  a.click();
-                  a.remove();
-                  URL.revokeObjectURL(url);
-                }}
-                className="w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-              >
-                Download Shortcut (URL &amp; token pre-filled)
-              </button>
-              <p className="text-[11px]">
-                Opens in the Shortcuts app to import (enable Settings →
-                Shortcuts → Allow Untrusted Shortcuts if prompted). Then add it
-                as a daily Automation at ~08:00. If import or run fails,
-                screenshot the error and use the manual steps below — Apple&apos;s
-                Health action varies by iOS build.
-              </p>
-            </div>
-          )}
-
-          <details className="rounded bg-white p-2">
-            <summary className="cursor-pointer font-medium text-gray-700">
-              Manual setup (fallback, no header needed)
-            </summary>
-            <ol className="mt-2 list-decimal space-y-1 pl-4">
-              <li>Shortcuts → new Shortcut.</li>
-              <li><span className="font-medium">Find Health Samples</span>: Sleep, Start Date is in the last 1 day.</li>
-              <li><span className="font-medium">Repeat with Each</span>; inside add <span className="font-medium">Text</span>: Repeat Item&apos;s Sleep value, comma, Start Date, comma, End Date.</li>
-              <li>After the repeat, <span className="font-medium">Combine Text</span> (Repeat Results, New Lines).</li>
-              <li><span className="font-medium">Get Contents of URL</span> → Method POST, Request Body = Combined Text (as File), URL below. No header.</li>
-              <li>Add it as a daily Automation (~08:00, Run Immediately).</li>
-            </ol>
-            {infoQuery.data && (
-              <p className="mt-2 break-all rounded bg-gray-50 p-2 font-mono text-[10px]">
-                {endpoint}?token={infoQuery.data.token}
-              </p>
-            )}
-          </details>
-        </div>
       )}
-    </div>
-  );
-}
+    </span>
+    <span className="relative mt-0.5 shrink-0">
+      <input
+        id={id}
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+        className="peer sr-only"
+      />
+      <span
+        aria-hidden="true"
+        className="block h-6 w-11 rounded-full transition-colors duration-fast ease-snap peer-disabled:opacity-50"
+        style={{
+          backgroundColor: checked ? "var(--accent)" : "var(--surface-sunken)",
+          border: `1px solid ${checked ? "var(--accent)" : "var(--border-strong)"}`,
+        }}
+      />
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute left-[3px] top-[3px] h-[18px] w-[18px] rounded-full transition-transform duration-fast ease-snap"
+        style={{
+          backgroundColor: checked ? "var(--accent-ink)" : "var(--text-muted)",
+          transform: checked ? "translateX(20px)" : undefined,
+        }}
+      />
+    </span>
+  </label>
+);
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -361,7 +114,7 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   return output;
 }
 
-function NotificationsToggle() {
+const NotificationsToggle: React.FC = () => {
   const pushKeyQuery = apiR.user.getPushPublicKey.useQuery(undefined, {
     refetchOnWindowFocus: false,
   });
@@ -394,11 +147,17 @@ function NotificationsToggle() {
 
   if (!supported || (isIos && !isStandalone)) {
     return (
-      <div className="rounded-md bg-blue-50 p-3 text-xs text-blue-900">
-        <span className="font-medium">Morning report notifications:</span>{" "}
+      <div
+        className="rounded-xl p-3 text-xs"
+        style={{
+          backgroundColor: "var(--cool-soft)",
+          color: "var(--text)",
+        }}
+      >
+        <span className="font-semibold">Morning report notifications: </span>
         {isIos
-          ? "add this app to your Home Screen first (Share button, then 'Add to Home Screen'), then open it from there and this becomes a toggle."
-          : "not supported in this browser."}
+          ? "add this app to your Home Screen first (Share, then Add to Home Screen), open it from there, and this becomes a toggle."
+          : "this browser does not support web push."}
       </div>
     );
   }
@@ -455,30 +214,197 @@ function NotificationsToggle() {
 
   return (
     <div>
-      <label className="flex items-center justify-between">
-        <span className="text-sm font-medium text-gray-700">
-          Morning report notification
-          <span className="block text-xs font-normal text-gray-500">
-            A push after each night: score, stats, and what the AI changed.
-          </span>
-        </span>
-        <input
-          type="checkbox"
-          checked={browserSubscribed}
-          disabled={busy}
-          onChange={(e) => {
-            if (e.target.checked) void enable();
-            else void disable();
-          }}
-          className="h-5 w-5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-        />
-      </label>
-      {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+      <Toggle
+        id="notifications"
+        label="Morning report notification"
+        hint="A push after each night: score, stats, and what the AI changed."
+        checked={browserSubscribed}
+        disabled={busy}
+        onChange={(next) => (next ? void enable() : void disable())}
+      />
+      {error && (
+        <p className="mt-1 px-2 text-xs" style={{ color: "var(--danger)" }}>
+          {error}
+        </p>
+      )}
     </div>
   );
-}
+};
 
-export const AiPanel: React.FC = () => {
+// ---------------------------------------------------------------------------
+// Apple Health import
+// ---------------------------------------------------------------------------
+
+const HealthImportSection: React.FC = () => {
+  const [open, setOpen] = useState(false);
+  const infoQuery = apiR.user.getHealthImportInfo.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+    enabled: open,
+  });
+  const endpoint =
+    typeof window !== "undefined"
+      ? `${window.location.origin}/api/healthImport`
+      : "/api/healthImport";
+
+  return (
+    <div
+      className="rounded-xl border"
+      style={{ borderColor: "var(--border)", backgroundColor: "var(--surface-sunken)" }}
+    >
+      <button
+        id="health-import"
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-2 p-3 text-left"
+      >
+        <span className="flex items-center gap-2">
+          <LordIcon
+            name="download"
+            size={18}
+            trigger="hover"
+            target="#health-import"
+            color="var(--accent)"
+          />
+          <span
+            className="text-sm font-medium"
+            style={{ color: "var(--text-headline)" }}
+          >
+            Apple Watch import
+          </span>
+          {infoQuery.data?.lastImportNight && (
+            <Chip
+              label={`last ${infoQuery.data.lastImportNight} · ${infoQuery.data.lastImportScore}`}
+              color="var(--success)"
+              background="var(--success-soft)"
+            />
+          )}
+        </span>
+        <span
+          className="transition-transform duration-fast ease-snap"
+          style={{
+            color: "var(--text-muted)",
+            transform: open ? "rotate(180deg)" : undefined,
+          }}
+          aria-hidden="true"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path
+              d="M2.5 4.5 6 8l3.5-3.5"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
+      </button>
+
+      <div
+        className="grid transition-[grid-template-rows] duration-base ease-snap"
+        style={{ gridTemplateRows: open ? "1fr" : "0fr" }}
+      >
+        <div className="overflow-hidden">
+          <div
+            className="space-y-3 border-t p-3 text-xs"
+            style={{ borderColor: "var(--border)", color: "var(--text-muted)" }}
+          >
+            <p>
+              Feeds the AI your Apple Watch sleep stages on nights the pod
+              recorded nothing. It runs each morning and triggers that
+              day&apos;s assessment and push report straight away.
+            </p>
+
+            {infoQuery.data && (
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const token = infoQuery.data?.token;
+                    if (!token) return;
+                    const plist = buildSleepShortcutPlist(endpoint, token);
+                    const blob = new Blob([plist], {
+                      type: "application/octet-stream",
+                    });
+                    const url = URL.createObjectURL(blob);
+                    const anchor = document.createElement("a");
+                    anchor.href = url;
+                    anchor.download = "8sleep-sleep-import.shortcut";
+                    document.body.appendChild(anchor);
+                    anchor.click();
+                    anchor.remove();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="btn btn-primary w-full"
+                >
+                  Download the Shortcut
+                </button>
+                <p style={{ color: "var(--text-faint)" }}>
+                  Opens in Shortcuts to import (turn on Settings → Shortcuts →
+                  Allow Untrusted Shortcuts if asked), then add it as a daily
+                  Automation around 08:00. If the import fails, build it by hand
+                  with the steps below.
+                </p>
+              </div>
+            )}
+
+            <details
+              className="rounded-lg p-2"
+              style={{ backgroundColor: "var(--surface)" }}
+            >
+              <summary
+                className="cursor-pointer font-medium"
+                style={{ color: "var(--text)" }}
+              >
+                Build it by hand instead
+              </summary>
+              <ol className="mt-2 list-decimal space-y-1 pl-4">
+                <li>Shortcuts → new Shortcut.</li>
+                <li>
+                  <span className="font-medium">Find Health Samples</span>:
+                  Sleep, Start Date is in the last 1 day.
+                </li>
+                <li>
+                  <span className="font-medium">Repeat with Each</span>; inside
+                  add <span className="font-medium">Text</span>: Repeat
+                  Item&apos;s Sleep value, comma, Start Date, comma, End Date.
+                </li>
+                <li>
+                  After the repeat,{" "}
+                  <span className="font-medium">Combine Text</span> (Repeat
+                  Results, New Lines).
+                </li>
+                <li>
+                  <span className="font-medium">Get Contents of URL</span> →
+                  POST, Request Body = Combined Text (as File), URL below. No
+                  header.
+                </li>
+                <li>Add it as a daily Automation (~08:00, Run Immediately).</li>
+              </ol>
+              {infoQuery.data && (
+                <p
+                  className="mt-2 break-all rounded-md p-2 font-mono text-[10px]"
+                  style={{ backgroundColor: "var(--surface-sunken)" }}
+                >
+                  {endpoint}?token={infoQuery.data.token}
+                </p>
+              )}
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// The advisor card — what the AI decided, and why
+// ---------------------------------------------------------------------------
+
+export const AiAdvisorCard: React.FC<{
+  displayUnit: DisplayUnit;
+  index?: number;
+}> = ({ displayUnit, index = 0 }) => {
   const utils = apiR.useUtils();
   const settingsQuery = apiR.user.getAiSettings.useQuery(undefined, {
     refetchOnWindowFocus: false,
@@ -487,36 +413,8 @@ export const AiPanel: React.FC = () => {
     undefined,
     { refetchOnWindowFocus: false },
   );
-  const liveAdjustmentsQuery = apiR.user.getLiveAdjustments.useQuery(
-    undefined,
-    { refetchOnWindowFocus: false },
-  );
-
-  const [aiEnabled, setAiEnabled] = useState(false);
-  const [autoApply, setAutoApply] = useState(false);
-  const [liveTuningEnabled, setLiveTuningEnabled] = useState(false);
-  const [displayUnit, setDisplayUnit] = useState<DisplayUnit>("celsius");
-  const [sleepGoal, setSleepGoal] = useState("");
-  const [maxDailyShift, setMaxDailyShift] = useState(20);
-  const [settingsDirty, setSettingsDirty] = useState(false);
-
-  useEffect(() => {
-    if (settingsQuery.isSuccess && !settingsDirty) {
-      const settings = settingsQuery.data;
-      setAiEnabled(settings.aiEnabled);
-      setAutoApply(settings.autoApply);
-      setLiveTuningEnabled(settings.liveTuningEnabled);
-      setDisplayUnit(settings.displayUnit);
-      setSleepGoal(settings.sleepGoal ?? "");
-      setMaxDailyShift(settings.maxDailyShift);
-    }
-  }, [settingsQuery.isSuccess, settingsQuery.data, settingsDirty]);
-
-  const updateSettingsMutation = apiR.user.updateAiSettings.useMutation({
-    onSuccess: async () => {
-      setSettingsDirty(false);
-      await utils.user.getAiSettings.invalidate();
-    },
+  const liveAdjustmentsQuery = apiR.user.getLiveAdjustments.useQuery(undefined, {
+    refetchOnWindowFocus: false,
   });
 
   const generateMutation = apiR.user.generateAiRecommendation.useMutation({
@@ -524,7 +422,6 @@ export const AiPanel: React.FC = () => {
       await utils.user.getAiRecommendations.invalidate();
     },
   });
-
   const applyMutation = apiR.user.applyAiRecommendation.useMutation({
     onSuccess: async () => {
       await Promise.all([
@@ -533,323 +430,474 @@ export const AiPanel: React.FC = () => {
       ]);
     },
   });
-
   const dismissMutation = apiR.user.dismissAiRecommendation.useMutation({
     onSuccess: async () => {
       await utils.user.getAiRecommendations.invalidate();
     },
   });
 
-  if (settingsQuery.isLoading) {
-    return null;
+  if (settingsQuery.isLoading || recommendationsQuery.isLoading) {
+    return (
+      <Card index={index}>
+        <CardHeader icon="ai" title="AI autopilot" />
+        <Skeleton className="h-40" />
+      </Card>
+    );
   }
 
   const aiAvailable = settingsQuery.data?.aiAvailable ?? false;
   const latest = recommendationsQuery.data?.[0];
+  const nudges = liveAdjustmentsQuery.data ?? [];
 
-  const markDirty = () => setSettingsDirty(true);
-
-  const saveSettings = () => {
-    updateSettingsMutation.mutate({
-      aiEnabled,
-      autoApply,
-      liveTuningEnabled,
-      displayUnit,
-      sleepGoal: sleepGoal.trim() === "" ? null : sleepGoal.trim(),
-      maxDailyShift,
-    });
-  };
+  const changes: StageChange[] = latest
+    ? [
+        {
+          label: "Falling asleep",
+          previous: latest.previousInitialLevel,
+          recommended: latest.recommendedInitialLevel,
+        },
+        ...(latest.previousDeepLevel != null &&
+        latest.recommendedDeepLevel != null
+          ? [
+              {
+                label: "Deep sleep",
+                previous: latest.previousDeepLevel,
+                recommended: latest.recommendedDeepLevel,
+              },
+            ]
+          : []),
+        {
+          label: "Middle of the night",
+          previous: latest.previousMidLevel,
+          recommended: latest.recommendedMidLevel,
+        },
+        {
+          label: "REM and wake-up",
+          previous: latest.previousFinalLevel,
+          recommended: latest.recommendedFinalLevel,
+        },
+      ]
+    : [];
 
   return (
-    <>
-      <SleepSummaryCard />
-      <NightTimeline displayUnit={displayUnit} />
-
-      <div className="mx-auto mt-4 w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
-        <h2 className="mb-1 text-center text-2xl font-bold text-gray-800">
-          AI Autopilot
-        </h2>
-        <p className="mb-4 text-center text-sm text-gray-500">
-          Tunes your four temperature stages every morning from last
-          night&apos;s sleep data.
-        </p>
-
-        {!aiAvailable && (
-          <div className="mb-4 rounded-md bg-yellow-50 p-4 text-sm text-yellow-800">
-            The AI advisor is not configured yet. Add a{" "}
-            <span className="font-mono font-medium">GEMINI_API_KEY</span>{" "}
-            environment variable to the Vercel project (free key from Google AI
-            Studio), then redeploy.
-          </div>
-        )}
-
-        <div className="space-y-3 text-gray-800">
-          <label className="flex items-center justify-between">
-            <span className="text-sm font-medium text-gray-700">
-              Enable daily AI recommendations
-            </span>
-            <input
-              type="checkbox"
-              checked={aiEnabled}
-              onChange={(e) => {
-                setAiEnabled(e.target.checked);
-                markDirty();
-              }}
-              className="h-5 w-5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-            />
-          </label>
-
-          <label className="flex items-center justify-between">
-            <span className="text-sm font-medium text-gray-700">
-              Auto-apply without asking
-            </span>
-            <input
-              type="checkbox"
-              checked={autoApply}
-              onChange={(e) => {
-                setAutoApply(e.target.checked);
-                markDirty();
-              }}
-              className="h-5 w-5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-            />
-          </label>
-
-          <label className="flex items-center justify-between">
-            <span className="text-sm font-medium text-gray-700">
-              Live night-time tuning
-              <span className="block text-xs font-normal text-gray-500">
-                Nudges the bed in 0.5°C steps during the night when tossing,
-                heart rate, or bed temperature call for it.
-              </span>
-            </span>
-            <input
-              type="checkbox"
-              checked={liveTuningEnabled}
-              onChange={(e) => {
-                setLiveTuningEnabled(e.target.checked);
-                markDirty();
-              }}
-              className="h-5 w-5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-            />
-          </label>
-
-          <NotificationsToggle />
-
-          <HealthImportSection />
-
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-gray-700">
-              Temperature display
-            </span>
-            <div className="flex overflow-hidden rounded-md border border-gray-300">
-              <button
-                type="button"
-                onClick={() => {
-                  setDisplayUnit("celsius");
-                  markDirty();
-                }}
-                className={`px-3 py-1 text-sm ${displayUnit === "celsius" ? "bg-indigo-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"}`}
-              >
-                °C
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setDisplayUnit("level");
-                  markDirty();
-                }}
-                className={`px-3 py-1 text-sm ${displayUnit === "level" ? "bg-indigo-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"}`}
-              >
-                &minus;10&hellip;+10
-              </button>
+    <Card index={index}>
+      <CardHeader
+        icon="ai"
+        title="AI autopilot"
+        subtitle={
+          latest
+            ? `Tonight's plan, decided ${new Date(`${latest.forDate}T12:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`
+            : "Tunes the four temperature stages from last night's data."
+        }
+        right={
+          latest ? (
+            <div className="flex flex-wrap justify-end gap-1.5">
+              <ConfidenceChip confidence={latest.confidence} />
+              <StatusChip status={latest.status} />
             </div>
-          </div>
+          ) : undefined
+        }
+      />
 
-          <div>
-            <label
-              htmlFor="sleepGoal"
-              className="block text-sm font-medium text-gray-700"
-            >
-              Your sleep preference (optional)
-            </label>
-            <textarea
-              id="sleepGoal"
-              value={sleepGoal}
-              onChange={(e) => {
-                setSleepGoal(e.target.value);
-                markDirty();
-              }}
-              maxLength={500}
-              rows={2}
-              placeholder="e.g. I sleep hot and wake up around 3am sweating. Prioritize deep sleep."
-              className="mt-1 block w-full rounded-md border border-gray-300 p-2 text-sm shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50"
-            />
-          </div>
-
-          <div>
-            <label
-              htmlFor="maxDailyShift"
-              className="block text-sm font-medium text-gray-700"
-            >
-              Max change per day: {maxDailyShift / 10}°C
-              {displayUnit === "level" && (
-                <span className="text-xs font-normal text-gray-500">
-                  {" "}
-                  (safety cap, roughly {maxDailyShift / 10} slider steps)
-                </span>
-              )}
-            </label>
-            <input
-              id="maxDailyShift"
-              type="range"
-              min="5"
-              max="40"
-              step="5"
-              value={maxDailyShift}
-              onChange={(e) => {
-                setMaxDailyShift(Number(e.target.value));
-                markDirty();
-              }}
-              className="h-3 w-full cursor-pointer appearance-none rounded-lg bg-gray-200 accent-indigo-600 [&::-moz-range-thumb]:h-6 [&::-moz-range-thumb]:w-6 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-indigo-600 [&::-webkit-slider-thumb]:h-6 [&::-webkit-slider-thumb]:w-6 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-indigo-600 [&::-webkit-slider-thumb]:shadow"
-            />
-          </div>
-
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              onClick={saveSettings}
-              disabled={!settingsDirty || updateSettingsMutation.isPending}
-              className="flex-grow rounded-md border border-transparent bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50"
-            >
-              {updateSettingsMutation.isPending
-                ? "Saving…"
-                : "Save AI Settings"}
-            </Button>
-            <Button
-              type="button"
-              onClick={() => generateMutation.mutate()}
-              disabled={!aiAvailable || generateMutation.isPending}
-              className="flex-grow rounded-md border border-indigo-600 bg-white px-4 py-2 text-sm font-medium text-indigo-600 shadow-sm hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50"
-            >
-              {generateMutation.isPending ? "Thinking…" : "Optimize Now"}
-            </Button>
-          </div>
-
-          {updateSettingsMutation.isError && (
-            <p className="text-sm text-red-600">
-              Failed to save settings: {updateSettingsMutation.error.message}
-            </p>
-          )}
-          {generateMutation.isError && (
-            <p className="text-sm text-red-600">
-              {generateMutation.error.message}
-            </p>
-          )}
+      {!aiAvailable && (
+        <div
+          className="mb-4 rounded-xl p-3 text-sm"
+          style={{ backgroundColor: "var(--warning-soft)", color: "var(--text)" }}
+        >
+          The advisor has no API key. Add{" "}
+          <span className="font-mono font-semibold">GEMINI_API_KEY</span> to the
+          Vercel project and redeploy.
         </div>
+      )}
 
-        {latest && (
-          <div className="mt-5 border-t border-gray-200 pt-4">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm font-medium text-gray-700">
-                Latest recommendation ({latest.forDate})
-              </span>
-              <div className="flex items-center gap-2">
-                <ConfidenceChip confidence={latest.confidence} />
-                <StatusChip status={latest.status} />
-              </div>
+      {latest ? (
+        <>
+          <StageChangeChart changes={changes} unit={displayUnit} />
+
+          <p
+            className="mt-4 rounded-xl p-3 text-sm leading-relaxed"
+            style={{
+              backgroundColor: "var(--surface-sunken)",
+              color: "var(--text)",
+            }}
+          >
+            {latest.reasoning}
+          </p>
+
+          {latest.status === "pending" && (
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                onClick={() => applyMutation.mutate({ id: latest.id })}
+                disabled={applyMutation.isPending}
+                className="btn btn-primary flex-1"
+              >
+                {applyMutation.isPending ? "Applying…" : "Apply tonight"}
+              </button>
+              <button
+                type="button"
+                onClick={() => dismissMutation.mutate({ id: latest.id })}
+                disabled={dismissMutation.isPending}
+                className="btn btn-secondary"
+              >
+                Keep as is
+              </button>
             </div>
-
-            <div className="space-y-1">
-              <LevelChange
-                label="Initial stage"
-                previous={latest.previousInitialLevel}
-                recommended={latest.recommendedInitialLevel}
-                unit={displayUnit}
-              />
-              {latest.previousDeepLevel != null &&
-                latest.recommendedDeepLevel != null && (
-                  <LevelChange
-                    label="Deep stage"
-                    previous={latest.previousDeepLevel}
-                    recommended={latest.recommendedDeepLevel}
-                    unit={displayUnit}
-                  />
-                )}
-              <LevelChange
-                label="Mid stage"
-                previous={latest.previousMidLevel}
-                recommended={latest.recommendedMidLevel}
-                unit={displayUnit}
-              />
-              <LevelChange
-                label="Final stage"
-                previous={latest.previousFinalLevel}
-                recommended={latest.recommendedFinalLevel}
-                unit={displayUnit}
-              />
-            </div>
-
-            <p className="mt-3 rounded-md bg-blue-50 p-3 text-sm text-blue-900">
-              {latest.reasoning}
+          )}
+          {applyMutation.isError && (
+            <p className="mt-2 text-sm" style={{ color: "var(--danger)" }}>
+              {applyMutation.error.message}
             </p>
+          )}
+        </>
+      ) : (
+        <EmptyAdvisor
+          aiAvailable={aiAvailable}
+          pending={generateMutation.isPending}
+          onRun={() => generateMutation.mutate()}
+        />
+      )}
 
-            {latest.status === "pending" && (
-              <div className="mt-3 flex gap-2">
-                <Button
-                  type="button"
-                  onClick={() => applyMutation.mutate({ id: latest.id })}
-                  disabled={applyMutation.isPending}
-                  className="flex-grow rounded-md border border-transparent bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
-                >
-                  {applyMutation.isPending ? "Applying…" : "Apply Tonight"}
-                </Button>
-                <Button
-                  type="button"
-                  onClick={() => dismissMutation.mutate({ id: latest.id })}
-                  disabled={dismissMutation.isPending}
-                  className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2"
-                >
-                  Dismiss
-                </Button>
-              </div>
-            )}
-            {applyMutation.isError && (
-              <p className="mt-2 text-sm text-red-600">
-                {applyMutation.error.message}
-              </p>
-            )}
-          </div>
-        )}
+      {latest && (
+        <div className="mt-4 flex justify-end">
+          <button
+            id="optimize-now"
+            type="button"
+            onClick={() => generateMutation.mutate()}
+            disabled={!aiAvailable || generateMutation.isPending}
+            className="btn btn-secondary"
+          >
+            <LordIcon
+              name="refresh"
+              size={16}
+              trigger="hover"
+              target="#optimize-now"
+              color="var(--text-muted)"
+            />
+            {generateMutation.isPending ? "Thinking…" : "Reassess now"}
+          </button>
+        </div>
+      )}
+      {generateMutation.isError && (
+        <p className="mt-2 text-sm" style={{ color: "var(--danger)" }}>
+          {generateMutation.error.message}
+        </p>
+      )}
 
-        {(liveAdjustmentsQuery.data?.length ?? 0) > 0 && (
-          <div className="mt-5 border-t border-gray-200 pt-4">
-            <div className="mb-2 text-sm font-medium text-gray-700">
-              Recent live adjustments
-            </div>
-            <ul className="space-y-2">
-              {liveAdjustmentsQuery.data!.map((adjustment) => (
-                <li
-                  key={adjustment.id}
-                  className="rounded-md bg-gray-50 p-2 text-xs text-gray-700"
+      {nudges.length > 0 && (
+        <div
+          className="mt-5 border-t pt-4"
+          style={{ borderColor: "var(--border)" }}
+        >
+          <div className="card-title mb-2">Live nudges</div>
+          <ul className="space-y-1">
+            {nudges.map((adjustment, i) => (
+              <li
+                key={adjustment.id}
+                className="enter flex items-start gap-3 rounded-lg px-2 py-1.5 transition-colors duration-fast ease-snap hover:bg-[var(--surface-hover)]"
+                style={{ "--i": i } as React.CSSProperties}
+              >
+                <span
+                  className="tabular w-11 shrink-0 pt-0.5 text-xs"
+                  style={{ color: "var(--text-faint)" }}
                 >
-                  <span className="font-medium">
-                    {adjustment.night} ·{" "}
-                    {new Date(adjustment.createdAt).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}{" "}
-                    · {adjustment.stage} stage ·{" "}
-                    {formatRawByUnit(adjustment.appliedLevel, displayUnit)}
+                  {new Date(adjustment.createdAt).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
+                <span
+                  className="mt-1.5 h-2 w-2 shrink-0 rounded-full"
+                  style={{ backgroundColor: "var(--warm)" }}
+                />
+                <span className="flex-1">
+                  <span
+                    className="block text-sm font-medium"
+                    style={{ color: "var(--text-headline)" }}
+                  >
+                    {adjustment.stage} stage
                   </span>
-                  <span className="block text-gray-500">
+                  <span
+                    className="block text-xs"
+                    style={{ color: "var(--text-muted)" }}
+                  >
                     {adjustment.reason}
                   </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Card>
+  );
+};
+
+/** Canon §10: an empty state is a prompt — one line of context, one action. */
+const EmptyAdvisor: React.FC<{
+  aiAvailable: boolean;
+  pending: boolean;
+  onRun: () => void;
+}> = ({ aiAvailable, pending, onRun }) => (
+  <div className="relative overflow-hidden rounded-xl px-4 py-8 text-center">
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-x-4 bottom-3 space-y-2 opacity-[0.14]"
+    >
+      {[62, 84, 48].map((width, i) => (
+        <div
+          key={i}
+          className="h-2.5 rounded-full"
+          style={{ width: `${width}%`, backgroundColor: "var(--accent)" }}
+        />
+      ))}
+    </div>
+    <div className="relative">
+      <div id="empty-advisor" className="mb-3 flex justify-center">
+        <LordIcon
+          name="ai"
+          size={40}
+          trigger="hover"
+          target="#empty-advisor"
+          color="var(--accent)"
+          colorSecondary="var(--text-muted)"
+        />
       </div>
-    </>
+      <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+        No plan yet. One night of pod data is enough to make the first one.
+      </p>
+      <button
+        type="button"
+        onClick={onRun}
+        disabled={!aiAvailable || pending}
+        className="btn btn-primary mx-auto mt-4"
+      >
+        {pending ? "Thinking…" : "Make tonight's plan"}
+      </button>
+    </div>
+  </div>
+);
+
+// ---------------------------------------------------------------------------
+// Settings, folded away under a disclosure
+// ---------------------------------------------------------------------------
+
+export const AiSettingsCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
+  const utils = apiR.useUtils();
+  const settingsQuery = apiR.user.getAiSettings.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+  });
+
+  const [aiEnabled, setAiEnabled] = useState(false);
+  const [autoApply, setAutoApply] = useState(false);
+  const [liveTuningEnabled, setLiveTuningEnabled] = useState(false);
+  const [displayUnit, setDisplayUnit] = useState<DisplayUnit>("celsius");
+  const [sleepGoal, setSleepGoal] = useState("");
+  const [maxDailyShift, setMaxDailyShift] = useState(20);
+  const [dirty, setDirty] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (settingsQuery.isSuccess && !dirty) {
+      const settings = settingsQuery.data;
+      setAiEnabled(settings.aiEnabled);
+      setAutoApply(settings.autoApply);
+      setLiveTuningEnabled(settings.liveTuningEnabled);
+      setDisplayUnit(settings.displayUnit);
+      setSleepGoal(settings.sleepGoal ?? "");
+      setMaxDailyShift(settings.maxDailyShift);
+    }
+  }, [settingsQuery.isSuccess, settingsQuery.data, dirty]);
+
+  const updateSettingsMutation = apiR.user.updateAiSettings.useMutation({
+    onSuccess: async () => {
+      setDirty(false);
+      setSavedAt(Date.now());
+      await utils.user.getAiSettings.invalidate();
+    },
+  });
+
+  useEffect(() => {
+    if (savedAt == null) return;
+    const timer = setTimeout(() => setSavedAt(null), 2500);
+    return () => clearTimeout(timer);
+  }, [savedAt]);
+
+  if (settingsQuery.isLoading) return null;
+
+  const mark = () => setDirty(true);
+  const summary = [
+    aiEnabled ? "Autopilot on" : "Autopilot off",
+    autoApply ? "auto-applies" : "asks first",
+    liveTuningEnabled ? "live tuning on" : "live tuning off",
+  ].join(" · ");
+
+  return (
+    <Disclosure icon="sliders" title="Autopilot settings" summary={summary} index={index}>
+      <div className="space-y-1">
+        <Toggle
+          id="ai-enabled"
+          label="Daily AI recommendations"
+          hint="Reads last night after you wake and plans tonight's four stages."
+          checked={aiEnabled}
+          onChange={(next) => {
+            setAiEnabled(next);
+            mark();
+          }}
+        />
+        <Toggle
+          id="auto-apply"
+          label="Apply without asking"
+          hint="Off means each plan waits for your tap."
+          checked={autoApply}
+          onChange={(next) => {
+            setAutoApply(next);
+            mark();
+          }}
+        />
+        <Toggle
+          id="live-tuning"
+          label="Live night-time tuning"
+          hint="Nudges the bed in 0.5°C steps mid-night when tossing, heart rate or bed temperature call for it."
+          checked={liveTuningEnabled}
+          onChange={(next) => {
+            setLiveTuningEnabled(next);
+            mark();
+          }}
+        />
+
+        <div className="pt-1">
+          <NotificationsToggle />
+        </div>
+
+        <div className="pt-2">
+          <HealthImportSection />
+        </div>
+
+        <div className="flex items-center justify-between px-2 pt-3">
+          <span
+            className="text-sm font-medium"
+            style={{ color: "var(--text-headline)" }}
+          >
+            Temperature display
+          </span>
+          <div
+            className="flex overflow-hidden rounded-lg border p-0.5"
+            style={{ borderColor: "var(--border-strong)" }}
+            role="group"
+            aria-label="Temperature display unit"
+          >
+            {(
+              [
+                ["celsius", "°C"],
+                ["level", "−10…+10"],
+              ] as [DisplayUnit, string][]
+            ).map(([unit, label]) => (
+              <button
+                key={unit}
+                type="button"
+                aria-pressed={displayUnit === unit}
+                onClick={() => {
+                  setDisplayUnit(unit);
+                  mark();
+                }}
+                className="rounded-md px-3 py-1 text-sm font-medium transition-colors duration-fast ease-snap"
+                style={{
+                  backgroundColor:
+                    displayUnit === unit ? "var(--accent)" : "transparent",
+                  color:
+                    displayUnit === unit
+                      ? "var(--accent-ink)"
+                      : "var(--text-muted)",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="px-2 pt-3">
+          <label
+            htmlFor="sleepGoal"
+            className="mb-1.5 block text-sm font-medium"
+            style={{ color: "var(--text-headline)" }}
+          >
+            What you want from your sleep
+          </label>
+          <textarea
+            id="sleepGoal"
+            value={sleepGoal}
+            onChange={(e) => {
+              setSleepGoal(e.target.value);
+              mark();
+            }}
+            maxLength={500}
+            rows={2}
+            placeholder="e.g. I sleep hot and wake around 3am sweating. Prioritise deep sleep."
+            className="field resize-none"
+          />
+        </div>
+
+        <div className="px-2 pt-3">
+          <label
+            htmlFor="maxDailyShift"
+            className="mb-1.5 flex items-baseline justify-between text-sm font-medium"
+            style={{ color: "var(--text-headline)" }}
+          >
+            Most it may change in one day
+            <span className="tabular text-sm" style={{ color: "var(--accent)" }}>
+              {maxDailyShift / 10}°C
+            </span>
+          </label>
+          <input
+            id="maxDailyShift"
+            type="range"
+            min="5"
+            max="40"
+            step="5"
+            value={maxDailyShift}
+            onChange={(e) => {
+              setMaxDailyShift(Number(e.target.value));
+              mark();
+            }}
+            className="slider"
+          />
+        </div>
+
+        <div className="flex items-center gap-3 px-2 pt-4">
+          <button
+            type="button"
+            onClick={() =>
+              updateSettingsMutation.mutate({
+                aiEnabled,
+                autoApply,
+                liveTuningEnabled,
+                displayUnit,
+                sleepGoal: sleepGoal.trim() === "" ? null : sleepGoal.trim(),
+                maxDailyShift,
+              })
+            }
+            disabled={!dirty || updateSettingsMutation.isPending}
+            className="btn btn-primary"
+          >
+            {updateSettingsMutation.isPending ? "Saving…" : "Save settings"}
+          </button>
+          {savedAt != null && (
+            <span
+              className="text-sm"
+              style={{ color: "var(--success)", animation: "fadeIn 180ms" }}
+            >
+              Saved
+            </span>
+          )}
+          {updateSettingsMutation.isError && (
+            <span className="text-sm" style={{ color: "var(--danger)" }}>
+              {updateSettingsMutation.error.message}
+            </span>
+          )}
+        </div>
+      </div>
+    </Disclosure>
   );
 };

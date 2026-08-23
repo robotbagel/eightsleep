@@ -452,11 +452,18 @@ export const userRouter = createTRPCRouter({
 
       let sessionInfo: {
         night: string;
+        /** Session start (first presence), which is where `stages` begins. */
+        sessionStart: string | null;
         sleepStart: string | null;
         sleepEnd: string | null;
         tnt: [string, number][];
         tempBedC: [string, number][];
+        tempRoomC: [string, number][];
         heartRate: [string, number][];
+        hrv: [string, number][];
+        shortAwakes: [string, number][];
+        /** Hypnogram: consecutive runs from sessionStart, seconds each. */
+        stages: { stage: string; duration: number }[];
         stageHours: Record<string, number>;
       } | null = null;
 
@@ -492,11 +499,19 @@ export const userRouter = createTRPCRouter({
               night: new Date(chosen.sleepEnd!).toLocaleDateString("en-CA", {
                 timeZone: timezone,
               }),
+              sessionStart: chosen.ts ?? chosen.sleepStart ?? null,
               sleepStart: chosen.sleepStart ?? null,
               sleepEnd: chosen.sleepEnd ?? null,
               tnt: chosen.timeseries?.tnt ?? [],
               tempBedC: chosen.timeseries?.tempBedC ?? [],
+              tempRoomC: chosen.timeseries?.tempRoomC ?? [],
               heartRate: chosen.timeseries?.heartRate ?? [],
+              hrv: chosen.timeseries?.rmssd ?? chosen.timeseries?.hrv ?? [],
+              shortAwakes: chosen.timeseries?.shortAwakes ?? [],
+              stages: (chosen.stages ?? []).map((s) => ({
+                stage: s.stage,
+                duration: s.duration,
+              })),
               stageHours,
             };
           }
