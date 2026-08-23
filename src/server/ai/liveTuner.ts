@@ -12,6 +12,7 @@
 import { db } from "~/server/db";
 import {
   aiLiveAdjustments,
+  temperatureEvents,
   userAiSettings,
   userTemperatureProfile,
   users,
@@ -128,6 +129,15 @@ export async function runLiveTuningPass(): Promise<void> {
         newOffset,
         appliedLevel,
         reason: nudge.reason,
+      });
+      await db.insert(temperatureEvents).values({
+        email,
+        night,
+        at: now,
+        stage,
+        level: appliedLevel,
+        source: "live",
+        note: nudge.reason,
       });
       console.log(
         `Live tuning for ${email}: ${nudge.reason} ${rawToCelsius(plannedLevel)}°C -> ${rawToCelsius(appliedLevel)}°C (offset ${newOffset / 10}°C).`,

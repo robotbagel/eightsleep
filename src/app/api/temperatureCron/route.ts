@@ -12,7 +12,36 @@ import {
   getActiveLiveOffset,
   runLiveTuningPass,
 } from "~/server/ai/liveTuner";
-import { userAiSettings } from "~/server/db/schema";
+import { temperatureEvents, userAiSettings } from "~/server/db/schema";
+import { nightKeyFor } from "~/server/ai/time";
+
+async function logTemperatureEvent(
+  email: string,
+  timezone: string,
+  wakeupTime: string,
+  now: Date,
+  stage: string,
+  level: number | null,
+  source: string,
+  note?: string,
+): Promise<void> {
+  try {
+    await db.insert(temperatureEvents).values({
+      email,
+      night: nightKeyFor(now, timezone, wakeupTime),
+      at: now,
+      stage,
+      level,
+      source,
+      note: note ?? null,
+    });
+  } catch (error) {
+    console.error(
+      `Failed to log temperature event for ${email}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
 
 export const runtime = "nodejs";
 
@@ -272,6 +301,15 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
             } else {
               await retryApiCall(() => setHeatingLevel(token, profile.users.eightUserId, targetLevel));
               console.log(`Heating level set to ${targetLevel} for user ${profile.users.email}`);
+              await logTemperatureEvent(
+                profile.users.email,
+                userTemperatureProfile.timezoneTZ,
+                userTemperatureProfile.wakeupTime.slice(0, 5),
+                now,
+                sleepStage,
+                targetLevel,
+                "scheduled",
+              );
             }
           }
         } else if (heatingStatus.isHeating && userNow > adjustedCycle.wakeupTime && !isWithinTimeRange(userNow, adjustedCycle.wakeupTime, 15)) {
@@ -281,6 +319,16 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
           } else {
             await retryApiCall(() => turnOffSide(token, profile.users.eightUserId));
             console.log(`Heating turned off for user ${profile.users.email}`);
+            await logTemperatureEvent(
+              profile.users.email,
+              userTemperatureProfile.timezoneTZ,
+              userTemperatureProfile.wakeupTime.slice(0, 5),
+              now,
+              "wake",
+              null,
+              "off",
+              "Heating turned off after wake-up",
+            );
           }
         } else {
           console.log(`No temperature change needed for user ${profile.users.email}`);

@@ -19,6 +19,7 @@ import {
   aiLiveAdjustments,
   pushSubscriptions,
   healthNights,
+  temperatureEvents,
 } from "~/server/db/schema";
 import { getVapidKeys } from "~/server/push";
 import {
@@ -29,7 +30,7 @@ import {
   getFreshToken,
 } from "~/server/ai/advisor";
 import { AiError, isAiConfigured } from "~/server/ai/gemini";
-import { collectSleepContext } from "~/server/ai/sleepData";
+import { collectSleepContext, fetchPodSessions } from "~/server/ai/sleepData";
 
 class DatabaseError extends Error {
   constructor(message: string) {
@@ -433,6 +434,92 @@ export const userRouter = createTRPCRouter({
         )
         .execute();
       return { success: true };
+    }),
+
+  // Timeline of one night: every temperature change we sent to the pod, plus
+  // the pod's own measurements for that night (tosses, bed temp, heart rate).
+  getNightTimeline: publicProcedure
+    .input(z.object({ night: z.string().max(10).optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const decoded = await checkAuthCookie(ctx.headers);
+      const user = await db.query.users.findFirst({
+        where: eq(users.email, decoded.email),
+      });
+      const profile = await db.query.userTemperatureProfile.findFirst({
+        where: eq(userTemperatureProfile.email, decoded.email),
+      });
+      const timezone = profile?.timezoneTZ ?? "UTC";
+
+      let sessionInfo: {
+        night: string;
+        sleepStart: string | null;
+        sleepEnd: string | null;
+        tnt: [string, number][];
+        tempBedC: [string, number][];
+        heartRate: [string, number][];
+        stageHours: Record<string, number>;
+      } | null = null;
+
+      if (user) {
+        try {
+          const token = await getFreshToken(user);
+          const sessions = await fetchPodSessions(token, user.eightUserId);
+          const completed = sessions
+            .filter((s) => s.sleepEnd)
+            .sort((a, b) => (a.sleepEnd! < b.sleepEnd! ? -1 : 1));
+          const chosen = input?.night
+            ? completed.find(
+                (s) =>
+                  new Date(s.sleepEnd!).toLocaleDateString("en-CA", {
+                    timeZone: timezone,
+                  }) === input.night,
+              )
+            : completed[completed.length - 1];
+          if (chosen) {
+            const summary = chosen.stageSummary ?? {};
+            const stageHours: Record<string, number> = {};
+            for (const [k, seconds] of [
+              ["deep", summary.deepDuration],
+              ["rem", summary.remDuration],
+              ["light", summary.lightDuration],
+              ["awake", summary.awakeDuration],
+            ] as [string, number | null | undefined][]) {
+              if (seconds != null) {
+                stageHours[k] = Math.round((seconds / 3600) * 10) / 10;
+              }
+            }
+            sessionInfo = {
+              night: new Date(chosen.sleepEnd!).toLocaleDateString("en-CA", {
+                timeZone: timezone,
+              }),
+              sleepStart: chosen.sleepStart ?? null,
+              sleepEnd: chosen.sleepEnd ?? null,
+              tnt: chosen.timeseries?.tnt ?? [],
+              tempBedC: chosen.timeseries?.tempBedC ?? [],
+              heartRate: chosen.timeseries?.heartRate ?? [],
+              stageHours,
+            };
+          }
+        } catch (error) {
+          console.error("Night timeline: pod fetch failed:", error);
+        }
+      }
+
+      const night = input?.night ?? sessionInfo?.night ?? null;
+      const events = night
+        ? await db
+            .select()
+            .from(temperatureEvents)
+            .where(
+              and(
+                eq(temperatureEvents.email, decoded.email),
+                eq(temperatureEvents.night, night),
+              ),
+            )
+            .orderBy(temperatureEvents.at)
+        : [];
+
+      return { night, timezone, events, session: sessionInfo };
     }),
 
   getLiveAdjustments: publicProcedure.query(async ({ ctx }) => {

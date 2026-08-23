@@ -17,9 +17,85 @@
 // works, the cloud just doesn't process sessions for them.
 import { z } from "zod";
 import { fetchWithAuth } from "../eight/eight";
-import { CLIENT_API_URL } from "../eight/constants";
+import { APP_API_URL, CLIENT_API_URL } from "../eight/constants";
 import { type Token } from "../eight/types";
 import { getHealthContext } from "./health";
+import {
+  circularMeanMinutes,
+  minutesOfDayInZone,
+  scoreNight,
+} from "./score";
+
+// ---------------------------------------------------------------------------
+// Pod sessions (app-api /v1/users/{id}/sessions)
+//
+// This endpoint is NOT subscription-gated (unlike /trends and /intervals,
+// which return empty arrays without an Autopilot membership) and carries the
+// pod's own raw measurements: full hypnogram, toss-and-turn timestamps, bed
+// and room temperature, heart rate, HRV/RMSSD, respiratory rate and short
+// awakenings. Only `score` is withheld (always 0), so we compute our own.
+// ---------------------------------------------------------------------------
+
+const series = z.array(z.tuple([z.string(), z.number()])).nullish();
+
+const PodSessionSchema = z
+  .object({
+    id: z.string().nullish(),
+    ts: z.string().nullish(),
+    deviceTimeAtUpdate: z.string().nullish(),
+    sleepStart: z.string().nullish(),
+    sleepEnd: z.string().nullish(),
+    presenceEnd: z.string().nullish(),
+    duration: z.number().nullish(),
+    incomplete: z.boolean().nullish(),
+    timezone: z.string().nullish(),
+    stageSummary: z
+      .object({
+        totalDuration: z.number().nullish(),
+        sleepDuration: z.number().nullish(),
+        awakeDuration: z.number().nullish(),
+        lightDuration: z.number().nullish(),
+        deepDuration: z.number().nullish(),
+        remDuration: z.number().nullish(),
+        outDuration: z.number().nullish(),
+      })
+      .catchall(z.unknown())
+      .nullish(),
+    timeseries: z
+      .object({
+        tnt: series,
+        tempRoomC: series,
+        tempBedC: series,
+        heartRate: series,
+        hrv: series,
+        rmssd: series,
+        respiratoryRate: series,
+        nemeanRespiratoryRate: series,
+        shortAwakes: series,
+        heating: series,
+      })
+      .catchall(z.unknown())
+      .nullish(),
+  })
+  .catchall(z.unknown());
+
+const PodSessionsSchema = z
+  .object({ sessions: z.array(PodSessionSchema).nullish() })
+  .catchall(z.unknown());
+
+export type PodSession = z.infer<typeof PodSessionSchema>;
+
+export async function fetchPodSessions(
+  token: Token,
+  userId: string,
+): Promise<PodSession[]> {
+  const data = await fetchWithAuth(
+    `${APP_API_URL}v1/users/${userId}/sessions`,
+    token,
+    PodSessionsSchema,
+  );
+  return data.sessions ?? [];
+}
 
 const timeseriesPoint = z.tuple([z.string(), z.number()]);
 
@@ -241,22 +317,133 @@ function buildSessionDetail(
   };
 }
 
+// Builds nights + per-session detail from the pod's own session records.
+export function buildContextFromPodSessions(
+  sessions: PodSession[],
+  timezone: string,
+  limitNights = 7,
+): SleepContext {
+  const context: SleepContext = { nights: [], recentSessions: [] };
+
+  const usable = sessions
+    .filter((s) => (s.stageSummary?.sleepDuration ?? 0) > 0 && s.sleepEnd)
+    .sort((a, b) => (a.sleepEnd! < b.sleepEnd! ? -1 : 1))
+    .slice(-limitNights);
+  if (usable.length === 0) return context;
+
+  // Reference bedtime = circular mean of these nights' sleep starts.
+  const bedtimes = usable
+    .map((s) => (s.sleepStart ? new Date(s.sleepStart) : null))
+    .filter((d): d is Date => d != null && !isNaN(d.getTime()))
+    .map((d) => minutesOfDayInZone(d, timezone));
+  const referenceBedtime = circularMeanMinutes(bedtimes);
+
+  for (const session of usable) {
+    const summary = session.stageSummary ?? {};
+    const asleepHours = (summary.sleepDuration ?? 0) / 3600;
+    const awakeHours = (summary.awakeDuration ?? 0) / 3600;
+    const shortAwakes = session.timeseries?.shortAwakes ?? [];
+    const wakeCount = shortAwakes.length > 0 ? shortAwakes.length : null;
+    const startDate = session.sleepStart ? new Date(session.sleepStart) : null;
+    const bedtimeMinutes =
+      startDate && !isNaN(startDate.getTime())
+        ? minutesOfDayInZone(startDate, timezone)
+        : null;
+
+    const date = new Date(session.sleepEnd!).toLocaleDateString("en-CA", {
+      timeZone: timezone,
+    });
+    const hrvSeries = session.timeseries?.rmssd ?? session.timeseries?.hrv ?? [];
+    const heartRates = (session.timeseries?.heartRate ?? []).map(([, v]) => v);
+    const respiratory = (
+      session.timeseries?.respiratoryRate ??
+      session.timeseries?.nemeanRespiratoryRate ??
+      []
+    ).map(([, v]) => v);
+
+    context.nights.push({
+      date,
+      score: scoreNight({
+        asleepHours,
+        awakeHours,
+        wakeCount,
+        bedtimeMinutes,
+        referenceBedtimeMinutes: referenceBedtime,
+      }),
+      sleepDurationHours: round1(asleepHours),
+      hrv: average(hrvSeries.map(([, v]) => v)),
+      restingHeartRate:
+        heartRates.length > 0 ? round1(Math.min(...heartRates)) : null,
+      respiratoryRate: average(respiratory),
+    });
+  }
+
+  // Per-session detail (newest first) for the three most recent nights.
+  for (const session of usable.slice(-3).reverse()) {
+    const summary = session.stageSummary ?? {};
+    const date = new Date(session.sleepEnd!).toLocaleDateString("en-CA", {
+      timeZone: timezone,
+    });
+    const stageHours: Record<string, number> = {};
+    const stageMap: [string, number | null | undefined][] = [
+      ["deep", summary.deepDuration],
+      ["rem", summary.remDuration],
+      ["light", summary.lightDuration],
+      ["awake", summary.awakeDuration],
+    ];
+    for (const [stage, seconds] of stageMap) {
+      if (seconds != null) stageHours[stage] = round1(seconds / 3600);
+    }
+    const night = context.nights.find((n) => n.date === date);
+    const heartRates = (session.timeseries?.heartRate ?? []).map(([, v]) => v);
+
+    context.recentSessions.push({
+      date,
+      score: night?.score ?? null,
+      stageHours,
+      tossesAndTurns: byThirds(session.timeseries?.tnt, "sum"),
+      avgBedTempC: byThirds(session.timeseries?.tempBedC, "mean"),
+      avgRoomTempC: average(
+        (session.timeseries?.tempRoomC ?? []).map(([, v]) => v),
+      ),
+      avgHeartRate: average(heartRates),
+    });
+  }
+
+  return context;
+}
+
 export async function collectSleepContext(
   token: Token,
   userId: string,
   timezone: string,
   email?: string,
 ): Promise<SleepContext> {
-  const context: SleepContext = { nights: [], recentSessions: [] };
+  let context: SleepContext = { nights: [], recentSessions: [] };
 
-  let days: TrendDay[] = [];
+  // Primary source: the pod's own session records (works without a
+  // subscription and carries tosses, bed temp, HR, HRV and breathing).
   try {
-    days = await fetchTrendDays(token, userId, timezone, 7);
+    const sessions = await fetchPodSessions(token, userId);
+    context = buildContextFromPodSessions(sessions, timezone);
   } catch (error) {
     console.error(
-      "AI sleep context: trends fetch failed:",
+      "AI sleep context: pod sessions fetch failed:",
       error instanceof Error ? error.message : String(error),
     );
+  }
+
+  let days: TrendDay[] = [];
+  if (context.nights.length === 0) {
+    // Fall back to trends (populated only for subscribed accounts).
+    try {
+      days = await fetchTrendDays(token, userId, timezone, 7);
+    } catch (error) {
+      console.error(
+        "AI sleep context: trends fetch failed:",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   for (const day of days) {
@@ -333,39 +520,54 @@ export interface LiveSessionWindow {
   recentAvgBedTempC: number | null;
 }
 
-// Reads the in-progress (incomplete) session from today's trends and
-// summarizes the last `windowMinutes` of it for the live tuner. Returns null
-// when no session is currently running or it carries no timeseries yet.
+// Reads the in-progress session from the pod and summarizes the last
+// `windowMinutes` for the live tuner. Returns null when no session is
+// currently running (or its data is stale, i.e. the night already ended).
 export async function fetchCurrentSessionWindow(
   token: Token,
   userId: string,
-  timezone: string,
+  _timezone: string,
   windowMinutes = 45,
 ): Promise<LiveSessionWindow | null> {
-  const days = await fetchTrendDays(token, userId, timezone, 1);
-  const nowMs = Date.now();
+  const sessions = await fetchPodSessions(token, userId);
+  if (sessions.length === 0) return null;
 
-  let current: z.infer<typeof ForgivingSessionSchema> | null = null;
-  for (const day of days) {
-    for (const session of day.sessions ?? []) {
-      const tsMs = session.ts ? new Date(session.ts).getTime() : NaN;
-      if (
-        session.incomplete === true &&
-        (isNaN(tsMs) || nowMs - tsMs < 16 * 60 * 60 * 1000)
-      ) {
-        current = session;
-      }
+  // Newest session by update time.
+  const current = sessions
+    .slice()
+    .sort((a, b) =>
+      (a.deviceTimeAtUpdate ?? a.ts ?? "") < (b.deviceTimeAtUpdate ?? b.ts ?? "")
+        ? -1
+        : 1,
+    )
+    .pop();
+  if (!current?.timeseries) return null;
+
+  const nowMs = Date.now();
+  const heartRate: [string, number][] = current.timeseries.heartRate ?? [];
+  const bedTemp: [string, number][] = current.timeseries.tempBedC ?? [];
+  const tnt: [string, number][] = current.timeseries.tnt ?? [];
+
+  // Freshness gate: the newest sample must be recent, otherwise this is a
+  // finished night and there is nothing live to tune.
+  const sampleTimes: number[] = [];
+  const groups: [string, number][][] = [heartRate, bedTemp, tnt];
+  for (const group of groups) {
+    for (const point of group) {
+      sampleTimes.push(new Date(point[0]).getTime());
     }
   }
-  if (!current?.timeseries) return null;
+  if (current.deviceTimeAtUpdate) {
+    sampleTimes.push(new Date(current.deviceTimeAtUpdate).getTime());
+  }
+  const newestSample = sampleTimes.length > 0 ? Math.max(...sampleTimes) : NaN;
+  if (!isFinite(newestSample) || nowMs - newestSample > 90 * 60 * 1000) {
+    return null;
+  }
 
   const cutoff = nowMs - windowMinutes * 60 * 1000;
   const inWindow = (point: [string, number]) =>
     new Date(point[0]).getTime() >= cutoff;
-
-  const tnt = current.timeseries.tnt ?? [];
-  const heartRate = current.timeseries.heartRate ?? [];
-  const bedTemp = current.timeseries.tempBedC ?? [];
 
   return {
     recentTosses: tnt.filter(inWindow).reduce((sum, [, v]) => sum + v, 0),

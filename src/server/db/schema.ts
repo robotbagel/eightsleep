@@ -148,6 +148,29 @@ export const healthNights = createTable(
   }),
 );
 
+// Every temperature change this app actually sends to the pod, so the app can
+// show a truthful timeline of the night (scheduled stage changes, AI live
+// nudges, and turn on/off events).
+export const temperatureEvents = createTable(
+  "temperatureEvents",
+  {
+    id: serial("id").primaryKey(),
+    email: varchar("email", { length: 255 }).references(() => users.email).notNull(),
+    night: varchar("night", { length: 10 }).notNull(),
+    at: timestamp("at").defaultNow().notNull(),
+    stage: varchar("stage", { length: 16 }).notNull(),
+    level: integer("level"),
+    source: varchar("source", { length: 16 }).notNull(),
+    note: text("note"),
+  },
+  (table) => ({
+    emailNightIdx: index("temperatureEvents_email_night_idx").on(
+      table.email,
+      table.night,
+    ),
+  }),
+);
+
 export const pushSubscriptions = createTable("pushSubscriptions", {
   id: serial("id").primaryKey(),
   email: varchar("email", { length: 255 }).references(() => users.email).notNull(),

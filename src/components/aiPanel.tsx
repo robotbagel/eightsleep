@@ -4,6 +4,7 @@ import { apiR } from "~/trpc/react";
 import { Button } from "./ui/button";
 import { formatRawByUnit, type DisplayUnit } from "~/lib/temperature";
 import { buildSleepShortcutPlist } from "~/lib/sleepShortcut";
+import { NightTimeline } from "./nightTimeline";
 
 const STAGE_LABELS: Record<string, string> = {
   deep: "Deep",
@@ -562,6 +563,7 @@ export const AiPanel: React.FC = () => {
   return (
     <>
       <SleepSummaryCard />
+      <NightTimeline displayUnit={displayUnit} />
 
       <div className="mx-auto mt-4 w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
         <h2 className="mb-1 text-center text-2xl font-bold text-gray-800">
