@@ -1,0 +1,98 @@
+// aiDebug: CRON_SECRET-guarded diagnostic for the AI data pipeline. Fetches
+// the raw Eight Sleep trends and intervals responses per user (status + a
+// truncated body) alongside the parsed sleep context, so schema/param
+// mismatches can be diagnosed without guessing.
+import type { NextRequest } from "next/server";
+import { db } from "~/server/db";
+import { users, userTemperatureProfile } from "~/server/db/schema";
+import { eq } from "drizzle-orm";
+import { getFreshToken } from "~/server/ai/advisor";
+import { collectSleepContext } from "~/server/ai/sleepData";
+import { CLIENT_API_URL, DEFAULT_API_HEADERS } from "~/server/eight/constants";
+
+export const runtime = "nodejs";
+
+async function rawProbe(
+  url: string,
+  accessToken: string,
+): Promise<{ status: number; body: string }> {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        ...DEFAULT_API_HEADERS,
+        authorization: `Bearer ${accessToken}`,
+      },
+    });
+    const body = await response.text();
+    return { status: response.status, body: body.slice(0, 800) };
+  } catch (error) {
+    return {
+      status: 0,
+      body: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export async function GET(request: NextRequest): Promise<Response> {
+  const authHeader = request.headers.get("authorization");
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const report = [];
+  const allUsers = await db.select().from(users);
+  for (const user of allUsers) {
+    try {
+      const profile = await db.query.userTemperatureProfile.findFirst({
+        where: eq(userTemperatureProfile.email, user.email),
+      });
+      const timezone = profile?.timezoneTZ ?? "UTC";
+      const token = await getFreshToken(user);
+
+      const to = new Date().toLocaleDateString("en-CA", { timeZone: timezone });
+      const from = new Date(
+        Date.now() - 7 * 24 * 60 * 60 * 1000,
+      ).toLocaleDateString("en-CA", { timeZone: timezone });
+      const params = new URLSearchParams({
+        tz: timezone,
+        from,
+        to,
+        "include-main": "false",
+        "include-all-sessions": "false",
+        "model-version": "v2",
+      });
+
+      const trends = await rawProbe(
+        `${CLIENT_API_URL}/users/${user.eightUserId}/trends?${params.toString()}`,
+        token.eightAccessToken,
+      );
+      const intervals = await rawProbe(
+        `${CLIENT_API_URL}/users/${user.eightUserId}/intervals`,
+        token.eightAccessToken,
+      );
+
+      const context = await collectSleepContext(
+        token,
+        user.eightUserId,
+        timezone,
+      );
+
+      report.push({
+        email: user.email,
+        trendsStatus: trends.status,
+        trendsBody: trends.body,
+        intervalsStatus: intervals.status,
+        intervalsBody: intervals.body,
+        parsedNights: context.nights.length,
+        parsedSessions: context.recentSessions.length,
+      });
+    } catch (error) {
+      report.push({
+        email: user.email,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return Response.json({ generatedAt: new Date().toISOString(), users: report });
+}
