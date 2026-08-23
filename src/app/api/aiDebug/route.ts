@@ -24,7 +24,7 @@ async function rawProbe(
       },
     });
     const body = await response.text();
-    return { status: response.status, body: body.slice(0, 800) };
+    return { status: response.status, body: body.slice(0, 6000) };
   } catch (error) {
     return {
       status: 0,
@@ -49,7 +49,11 @@ export async function GET(request: NextRequest): Promise<Response> {
       const timezone = profile?.timezoneTZ ?? "UTC";
       const token = await getFreshToken(user);
 
-      const to = new Date().toLocaleDateString("en-CA", { timeZone: timezone });
+      const search = request.nextUrl.searchParams;
+      const to = new Date(Date.now() + 24 * 60 * 60 * 1000).toLocaleDateString(
+        "en-CA",
+        { timeZone: timezone },
+      );
       const from = new Date(
         Date.now() - 7 * 24 * 60 * 60 * 1000,
       ).toLocaleDateString("en-CA", { timeZone: timezone });
@@ -57,8 +61,8 @@ export async function GET(request: NextRequest): Promise<Response> {
         tz: timezone,
         from,
         to,
-        "include-main": "false",
-        "include-all-sessions": "false",
+        "include-main": search.get("main") ?? "false",
+        "include-all-sessions": search.get("all") ?? "false",
         "model-version": "v2",
       });
 
