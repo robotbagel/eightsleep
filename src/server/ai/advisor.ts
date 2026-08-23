@@ -10,7 +10,7 @@ import {
   userTemperatureProfile,
   users,
 } from "~/server/db/schema";
-import { and, desc, eq, gte, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, ne } from "drizzle-orm";
 import { obtainFreshAccessToken } from "~/server/eight/auth";
 import { type Token } from "~/server/eight/types";
 import {
@@ -552,6 +552,7 @@ export async function triggerAssessmentAfterImport(email: string): Promise<void>
       eq(aiRecommendations.email, email),
       eq(aiRecommendations.forDate, forDate),
       eq(aiRecommendations.source, "cron"),
+      ne(aiRecommendations.status, "dismissed"),
     ),
   });
   if (existing) return;
@@ -572,6 +573,66 @@ export async function triggerAssessmentAfterImport(email: string): Promise<void>
       error instanceof Error ? error.message : String(error),
     );
   }
+}
+
+// Voids today's assessment and regenerates it from current data: rolls the
+// temperature profile back to its pre-assessment levels if the bad
+// recommendation was applied, marks it dismissed, generates a fresh one, and
+// re-sends the morning report. For when an assessment ran on bad input.
+export async function reassessToday(
+  email: string,
+): Promise<typeof aiRecommendations.$inferSelect> {
+  const settings = await getAiSettingsOrDefaults(email);
+  const profile = await db.query.userTemperatureProfile.findFirst({
+    where: eq(userTemperatureProfile.email, email),
+  });
+  if (!profile) throw new AiError("No temperature profile found.");
+
+  const forDate = new Date().toLocaleDateString("en-CA", {
+    timeZone: profile.timezoneTZ,
+  });
+  const existing = await db.query.aiRecommendations.findFirst({
+    where: and(
+      eq(aiRecommendations.email, email),
+      eq(aiRecommendations.forDate, forDate),
+      eq(aiRecommendations.source, "cron"),
+      ne(aiRecommendations.status, "dismissed"),
+    ),
+  });
+  if (existing) {
+    if (existing.status === "auto_applied" || existing.status === "applied") {
+      await db
+        .update(userTemperatureProfile)
+        .set({
+          initialSleepLevel: existing.previousInitialLevel,
+          deepSleepLevel: existing.previousDeepLevel,
+          midStageSleepLevel: existing.previousMidLevel,
+          finalSleepLevel: existing.previousFinalLevel,
+          updatedAt: new Date(),
+        })
+        .where(eq(userTemperatureProfile.email, email));
+      console.log(`reassessToday: rolled back applied levels for ${email}`);
+    }
+    await db
+      .update(aiRecommendations)
+      .set({ status: "dismissed", updatedAt: new Date() })
+      .where(eq(aiRecommendations.id, existing.id));
+  }
+
+  const recommendation = await generateRecommendationForUser(email, "cron");
+  try {
+    await sendMorningReport(
+      email,
+      recommendation,
+      settings.displayUnit === "level" ? "level" : "celsius",
+    );
+  } catch (error) {
+    console.error(
+      `Morning report push failed for ${email}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  return recommendation;
 }
 
 // Runs from the 30-minute temperature cron. For every user with AI enabled,
@@ -613,6 +674,7 @@ export async function runDailyAiPass(): Promise<void> {
           eq(aiRecommendations.email, email),
           eq(aiRecommendations.forDate, forDate),
           eq(aiRecommendations.source, "cron"),
+          ne(aiRecommendations.status, "dismissed"),
         ),
       });
       if (existing) {

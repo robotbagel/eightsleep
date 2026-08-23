@@ -6,7 +6,7 @@ import type { NextRequest } from "next/server";
 import { db } from "~/server/db";
 import { users, userTemperatureProfile } from "~/server/db/schema";
 import { eq } from "drizzle-orm";
-import { getFreshToken } from "~/server/ai/advisor";
+import { getFreshToken, reassessToday } from "~/server/ai/advisor";
 import { collectSleepContext } from "~/server/ai/sleepData";
 import {
   APP_API_URL,
@@ -34,6 +34,36 @@ async function rawProbe(
       status: 0,
       body: error instanceof Error ? error.message : String(error),
     };
+  }
+}
+
+// Operator action: void today's assessment for one user and regenerate it
+// from current (corrected) data. POST /api/aiDebug?action=reassess&email=...
+export async function POST(request: NextRequest): Promise<Response> {
+  const authHeader = request.headers.get("authorization");
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  const action = request.nextUrl.searchParams.get("action");
+  const email = request.nextUrl.searchParams.get("email");
+  if (action !== "reassess" || !email) {
+    return Response.json({ error: "Unknown action" }, { status: 400 });
+  }
+  try {
+    const rec = await reassessToday(email);
+    return Response.json({
+      success: true,
+      id: rec.id,
+      forDate: rec.forDate,
+      status: rec.status,
+      confidence: rec.confidence,
+      reasoning: rec.reasoning,
+    });
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 500 },
+    );
   }
 }
 
