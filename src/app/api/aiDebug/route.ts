@@ -8,7 +8,11 @@ import { users, userTemperatureProfile } from "~/server/db/schema";
 import { eq } from "drizzle-orm";
 import { getFreshToken } from "~/server/ai/advisor";
 import { collectSleepContext } from "~/server/ai/sleepData";
-import { CLIENT_API_URL, DEFAULT_API_HEADERS } from "~/server/eight/constants";
+import {
+  APP_API_URL,
+  CLIENT_API_URL,
+  DEFAULT_API_HEADERS,
+} from "~/server/eight/constants";
 
 export const runtime = "nodejs";
 
@@ -103,9 +107,16 @@ export async function GET(request: NextRequest): Promise<Response> {
         timezone,
       );
 
+      const temperatureState = await rawProbe(
+        `${APP_API_URL}v1/users/${user.eightUserId}/temperature`,
+        token.eightAccessToken,
+      );
+
       report.push({
         email: user.email,
         profileFlags,
+        profileBody: profileProbe.body.slice(0, 2500),
+        temperatureState: temperatureState.body.slice(0, 1200),
         trendsStatus: trends.status,
         trendsBody: trends.body,
         intervalsStatus: intervals.status,
