@@ -66,6 +66,28 @@ export async function GET(request: NextRequest): Promise<Response> {
         "model-version": "v2",
       });
 
+      const profileProbe = await rawProbe(
+        `${CLIENT_API_URL}/users/me`,
+        token.eightAccessToken,
+      );
+      let profileFlags: unknown = null;
+      try {
+        const parsed = JSON.parse(profileProbe.body) as {
+          user?: Record<string, unknown>;
+        };
+        const u = parsed.user ?? {};
+        profileFlags = {
+          sleepTracking: u.sleepTracking ?? null,
+          features: u.features ?? null,
+          autopilotEnabled: u.autopilotEnabled ?? null,
+          tempPreference: u.tempPreference ?? null,
+          currentDevice: u.currentDevice ?? null,
+          hotelGuest: u.hotelGuest ?? null,
+        };
+      } catch {
+        profileFlags = { parseError: profileProbe.body.slice(0, 300) };
+      }
+
       const trends = await rawProbe(
         `${CLIENT_API_URL}/users/${user.eightUserId}/trends?${params.toString()}`,
         token.eightAccessToken,
@@ -83,6 +105,7 @@ export async function GET(request: NextRequest): Promise<Response> {
 
       report.push({
         email: user.email,
+        profileFlags,
         trendsStatus: trends.status,
         trendsBody: trends.body,
         intervalsStatus: intervals.status,
