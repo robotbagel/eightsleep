@@ -67,11 +67,61 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 }
 
+// Research probe: fetch an arbitrary Eight Sleep API path with the user's
+// token, to map which endpoints still carry data without a subscription.
+// Restricted to Eight Sleep hosts so this can't act as an open proxy.
+// GET /api/aiDebug?probe=<path>&email=<user>   (path may contain {u} = userId,
+// {d} = deviceId; host defaults to client-api, prefix "app:" for app-api)
+async function handleProbe(
+  request: NextRequest,
+  rawPath: string,
+): Promise<Response> {
+  const email =
+    request.nextUrl.searchParams.get("email") ?? "getnathan@outlook.com";
+  const user = await db.query.users.findFirst({ where: eq(users.email, email) });
+  if (!user) return Response.json({ error: "user not found" }, { status: 404 });
+  const token = await getFreshToken(user);
+
+  const profile = await db.query.userTemperatureProfile.findFirst({
+    where: eq(userTemperatureProfile.email, email),
+  });
+  const timezone = profile?.timezoneTZ ?? "UTC";
+  const me = await rawProbe(`${CLIENT_API_URL}/users/me`, token.eightAccessToken);
+  let deviceId = "";
+  try {
+    deviceId =
+      (JSON.parse(me.body) as { user?: { currentDevice?: { id?: string } } })
+        .user?.currentDevice?.id ?? "";
+  } catch {
+    /* ignore */
+  }
+
+  const results = [];
+  for (const entry of rawPath.split("|")) {
+    let path = entry.trim();
+    if (!path) continue;
+    const useApp = path.startsWith("app:");
+    if (useApp) path = path.slice(4);
+    path = path
+      .replace(/\{u\}/g, user.eightUserId)
+      .replace(/\{d\}/g, deviceId)
+      .replace(/\{tz\}/g, encodeURIComponent(timezone));
+    const base = useApp ? APP_API_URL : `${CLIENT_API_URL}/`;
+    const url = `${base}${path.replace(/^\//, "")}`;
+    const res = await rawProbe(url, token.eightAccessToken);
+    results.push({ url, status: res.status, body: res.body.slice(0, 3000) });
+  }
+  return Response.json({ deviceId, results });
+}
+
 export async function GET(request: NextRequest): Promise<Response> {
   const authHeader = request.headers.get("authorization");
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return new Response("Unauthorized", { status: 401 });
   }
+
+  const probe = request.nextUrl.searchParams.get("probe");
+  if (probe) return handleProbe(request, probe);
 
   const report = [];
   const allUsers = await db.select().from(users);
