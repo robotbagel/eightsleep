@@ -139,7 +139,9 @@ async function handleProbe(
       }
       results.push({ url, status: res.status, shape });
     } else {
-      results.push({ url, status: res.status, body: res.body.slice(0, 3000) });
+      const cap =
+        request.nextUrl.searchParams.get("full") === "1" ? 400_000 : 3000;
+      results.push({ url, status: res.status, body: res.body.slice(0, cap) });
     }
   }
   return Response.json({ deviceId, results });
