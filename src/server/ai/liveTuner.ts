@@ -86,6 +86,7 @@ export async function runLiveTuningPass(): Promise<void> {
       const window = await fetchCurrentSessionWindow(
         token,
         row.users.eightUserId,
+        profile.timezoneTZ,
       );
       if (!window) continue;
 
