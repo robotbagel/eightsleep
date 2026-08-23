@@ -48,6 +48,72 @@ function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+// iOS Shortcuts renders a Date magic variable in the device's locale, not ISO
+// 8601 — e.g. "24/08/2026, 05:00", "8/24/2026, 5:00 AM", or "24 Aug 2026 at
+// 05:00". This parses the common shapes; day-first vs month-first is
+// disambiguated by any component > 12, defaulting to day-first (most non-US
+// locales) when ambiguous.
+function parseFlexibleDate(raw: string): number {
+  const s = raw.trim();
+  if (!s) return NaN;
+
+  const native = new Date(s).getTime();
+  if (!isNaN(native)) return native;
+
+  // Replace " at " (localized date-time joiner) with a space and retry.
+  const deAt = new Date(s.replace(/\s+at\s+/i, " ")).getTime();
+  if (!isNaN(deAt)) return deAt;
+
+  // Numeric D/M/Y or M/D/Y with optional time and AM/PM.
+  const m = s.match(
+    /^(\d{1,4})[/.\-](\d{1,2})[/.\-](\d{1,4})(?:[,\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?)?/i,
+  );
+  if (m) {
+    let a = Number(m[1]);
+    let b = Number(m[2]);
+    let year = Number(m[3]);
+    // ISO-ish YYYY/MM/DD when the first field is the 4-digit year.
+    if (m[1]!.length === 4) {
+      year = a;
+      const month = b;
+      const day = Number(m[3]);
+      return buildDate(year, month, day, m);
+    }
+    let day: number;
+    let month: number;
+    if (a > 12 && b <= 12) {
+      day = a;
+      month = b;
+    } else if (b > 12 && a <= 12) {
+      day = b;
+      month = a;
+    } else {
+      // Ambiguous → day-first (non-US default).
+      day = a;
+      month = b;
+    }
+    if (year < 100) year += 2000;
+    return buildDate(year, month, day, m);
+  }
+  return NaN;
+}
+
+function buildDate(
+  year: number,
+  month: number,
+  day: number,
+  m: RegExpMatchArray,
+): number {
+  let hour = m[4] != null ? Number(m[4]) : 0;
+  const minute = m[5] != null ? Number(m[5]) : 0;
+  const second = m[6] != null ? Number(m[6]) : 0;
+  const ampm = m[7]?.toLowerCase();
+  if (ampm === "pm" && hour < 12) hour += 12;
+  if (ampm === "am" && hour === 12) hour = 0;
+  const d = new Date(year, month - 1, day, hour, minute, second);
+  return d.getTime();
+}
+
 function parseSampleLines(samples: string): ParsedNight | null {
   const totals: Record<string, number> = {};
   let wakeCount = 0;
@@ -58,10 +124,22 @@ function parseSampleLines(samples: string): ParsedNight | null {
     const line = rawLine.trim();
     if (!line) continue;
     const parts = line.split(",").map((part) => part.trim());
+    // Locale dates can contain a comma ("24/08/2026, 05:00"), which splits
+    // into extra fields. First field is the stage; the rest rejoin into the
+    // two dates around the midpoint.
     if (parts.length < 3) continue;
     const stageRaw = parts[0]!.toLowerCase();
-    const from = new Date(parts[1]!).getTime();
-    const to = new Date(parts[2]!).getTime();
+    let from: number;
+    let to: number;
+    if (parts.length === 3) {
+      from = parseFlexibleDate(parts[1]!);
+      to = parseFlexibleDate(parts[2]!);
+    } else {
+      const rest = parts.slice(1);
+      const mid = Math.floor(rest.length / 2);
+      from = parseFlexibleDate(rest.slice(0, mid).join(", "));
+      to = parseFlexibleDate(rest.slice(mid).join(", "));
+    }
     if (isNaN(from) || isNaN(to) || to <= from) continue;
 
     let stage: string | null = null;
