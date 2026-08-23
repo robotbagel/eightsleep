@@ -103,6 +103,24 @@ export const aiRecommendations = createTable(
   }),
 );
 
+export const pushSubscriptions = createTable("pushSubscriptions", {
+  id: serial("id").primaryKey(),
+  email: varchar("email", { length: 255 }).references(() => users.email).notNull(),
+  endpoint: text("endpoint").notNull().unique(),
+  p256dh: text("p256dh").notNull(),
+  auth: text("auth").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Small key/value store for server-generated configuration (e.g. the VAPID
+// keypair for web push, created once on first use so no manual env setup is
+// needed).
+export const appConfig = createTable("appConfig", {
+  key: varchar("key", { length: 64 }).primaryKey(),
+  value: text("value").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const usersRelations = relations(users, ({ one }) => ({
   temperatureProfile: one(userTemperatureProfile, {
     fields: [users.email],

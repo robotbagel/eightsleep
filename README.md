@@ -73,6 +73,8 @@ Settings:
 - **Optimize Now** generates a recommendation on demand.
 - The optional `GEMINI_MODEL` environment variable overrides the model (default `gemini-3.7-flash`). The daily call costs a fraction of a cent.
 
+**Morning report notifications.** Flip on "Morning report notification" in the AI card and each morning, shortly after the nightly assessment runs, you get a push notification with your score, sleep duration, deep sleep, toss count and heart rate, plus what the AI changed and how often live tuning nudged you overnight. Tapping opens the app. On iPhone: add the app to your Home Screen first (Share → Add to Home Screen), open it from there, then enable the toggle. No configuration needed — the push keys are generated and stored by the app itself.
+
 The rules encode findings from sleep-thermoregulation research: mild bed warmth at bedtime shortens sleep onset; heat above the comfort band suppresses deep sleep and REM, while mild within-comfort warming can deepen sleep and prevent early-morning waking ([Raymann, Swaab & Van Someren, Brain 2008](https://academic.oup.com/brain/article/131/2/500/407617)); slightly warmer late-night temperatures support REM; and stage-aware adjustment measurably improves deep sleep, HRV, and resting heart rate ([Eight Sleep / SLEEP 2025 abstract](https://academic.oup.com/sleep/article/48/Supplement_1/A202/8135278)).
 
 ## How to Upgrade from an older Version?

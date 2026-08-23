@@ -8,7 +8,7 @@ import {
   obtainFreshAccessToken,
   AuthError,
 } from "~/server/eight/auth";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { type Token } from "~/server/eight/types";
 import { TRPCError } from "@trpc/server";
 import { adjustTemperature } from "~/app/api/temperatureCron/route";
@@ -17,7 +17,9 @@ import {
   userAiSettings,
   aiRecommendations,
   aiLiveAdjustments,
+  pushSubscriptions,
 } from "~/server/db/schema";
+import { getVapidKeys } from "~/server/push";
 import {
   applyRecommendation,
   dismissRecommendation,
@@ -341,6 +343,63 @@ export const userRouter = createTRPCRouter({
             updatedAt: new Date(),
           },
         })
+        .execute();
+      return { success: true };
+    }),
+
+  getPushPublicKey: publicProcedure.query(async ({ ctx }) => {
+    const decoded = await checkAuthCookie(ctx.headers);
+    const keys = await getVapidKeys();
+    const existing = await db
+      .select()
+      .from(pushSubscriptions)
+      .where(eq(pushSubscriptions.email, decoded.email))
+      .limit(1);
+    return { publicKey: keys.publicKey, subscribed: existing.length > 0 };
+  }),
+
+  subscribePush: publicProcedure
+    .input(
+      z.object({
+        endpoint: z.string().url().max(1000),
+        p256dh: z.string().min(1).max(500),
+        auth: z.string().min(1).max(500),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const decoded = await checkAuthCookie(ctx.headers);
+      await db
+        .insert(pushSubscriptions)
+        .values({
+          email: decoded.email,
+          endpoint: input.endpoint,
+          p256dh: input.p256dh,
+          auth: input.auth,
+        })
+        .onConflictDoUpdate({
+          target: pushSubscriptions.endpoint,
+          set: {
+            email: decoded.email,
+            p256dh: input.p256dh,
+            auth: input.auth,
+          },
+        })
+        .execute();
+      return { success: true };
+    }),
+
+  unsubscribePush: publicProcedure
+    .input(z.object({ endpoint: z.string().max(1000) }))
+    .mutation(async ({ input, ctx }) => {
+      const decoded = await checkAuthCookie(ctx.headers);
+      await db
+        .delete(pushSubscriptions)
+        .where(
+          and(
+            eq(pushSubscriptions.email, decoded.email),
+            eq(pushSubscriptions.endpoint, input.endpoint),
+          ),
+        )
         .execute();
       return { success: true };
     }),

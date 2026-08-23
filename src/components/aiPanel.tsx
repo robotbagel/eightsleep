@@ -253,6 +253,132 @@ function SleepSummaryCard() {
   );
 }
 
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = window.atob(base64);
+  const output = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; ++i) output[i] = raw.charCodeAt(i);
+  return output;
+}
+
+function NotificationsToggle() {
+  const pushKeyQuery = apiR.user.getPushPublicKey.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+  });
+  const subscribeMutation = apiR.user.subscribePush.useMutation();
+  const unsubscribeMutation = apiR.user.unsubscribePush.useMutation();
+  const [browserSubscribed, setBrowserSubscribed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const supported =
+    typeof window !== "undefined" &&
+    "serviceWorker" in navigator &&
+    "PushManager" in window;
+  const isIos =
+    typeof navigator !== "undefined" &&
+    /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const isStandalone =
+    typeof window !== "undefined" &&
+    (window.matchMedia("(display-mode: standalone)").matches ||
+      (navigator as { standalone?: boolean }).standalone === true);
+
+  useEffect(() => {
+    if (!supported) return;
+    void navigator.serviceWorker
+      .getRegistration()
+      .then((registration) => registration?.pushManager.getSubscription())
+      .then((subscription) => setBrowserSubscribed(!!subscription))
+      .catch(() => setBrowserSubscribed(false));
+  }, [supported]);
+
+  if (!supported || (isIos && !isStandalone)) {
+    return (
+      <div className="rounded-md bg-blue-50 p-3 text-xs text-blue-900">
+        <span className="font-medium">Morning report notifications:</span>{" "}
+        {isIos
+          ? "add this app to your Home Screen first (Share button, then 'Add to Home Screen'), then open it from there and this becomes a toggle."
+          : "not supported in this browser."}
+      </div>
+    );
+  }
+
+  const enable = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const registration = await navigator.serviceWorker.register("/sw.js");
+      await navigator.serviceWorker.ready;
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        throw new Error("Notification permission was not granted.");
+      }
+      const publicKey = pushKeyQuery.data?.publicKey;
+      if (!publicKey) throw new Error("Push key not loaded yet — try again.");
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+      const json = subscription.toJSON();
+      await subscribeMutation.mutateAsync({
+        endpoint: subscription.endpoint,
+        p256dh: json.keys?.p256dh ?? "",
+        auth: json.keys?.auth ?? "",
+      });
+      setBrowserSubscribed(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disable = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const registration = await navigator.serviceWorker.getRegistration();
+      const subscription = await registration?.pushManager.getSubscription();
+      if (subscription) {
+        await unsubscribeMutation.mutateAsync({
+          endpoint: subscription.endpoint,
+        });
+        await subscription.unsubscribe();
+      }
+      setBrowserSubscribed(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <label className="flex items-center justify-between">
+        <span className="text-sm font-medium text-gray-700">
+          Morning report notification
+          <span className="block text-xs font-normal text-gray-500">
+            A push after each night: score, stats, and what the AI changed.
+          </span>
+        </span>
+        <input
+          type="checkbox"
+          checked={browserSubscribed}
+          disabled={busy}
+          onChange={(e) => {
+            if (e.target.checked) void enable();
+            else void disable();
+          }}
+          className="h-5 w-5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+        />
+      </label>
+      {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+    </div>
+  );
+}
+
 export const AiPanel: React.FC = () => {
   const utils = apiR.useUtils();
   const settingsQuery = apiR.user.getAiSettings.useQuery(undefined, {
@@ -406,6 +532,8 @@ export const AiPanel: React.FC = () => {
               className="h-5 w-5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
             />
           </label>
+
+          <NotificationsToggle />
 
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium text-gray-700">

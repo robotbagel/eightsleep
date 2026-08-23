@@ -15,7 +15,16 @@ const fontSans = FontSans({
 export const metadata: Metadata = {
   title: "8 App",
   description: "8 App",
-  icons: [{ rel: "icon", url: "/favicon.ico" }],
+  icons: [
+    { rel: "icon", url: "/favicon.ico" },
+    { rel: "apple-touch-icon", url: "/apple-touch-icon.png" },
+  ],
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "8sleep",
+  },
 };
 
 export default function RootLayout({

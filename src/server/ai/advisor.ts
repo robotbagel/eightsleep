@@ -27,6 +27,7 @@ import {
 } from "./gemini";
 import { deriveNightSignals, REGRESSION_SCORE_DROP } from "./rules";
 import { minutesSinceTimeOfDay } from "./time";
+import { sendPushToUser } from "~/server/push";
 import {
   celsiusToRaw,
   formatRawByUnit,
@@ -432,6 +433,94 @@ export async function dismissRecommendation(
     .where(eq(aiRecommendations.id, recommendationId));
 }
 
+// Builds and sends the push-notification morning report for a freshly
+// generated recommendation: last night's stats, what the AI changed and why,
+// and what live tuning did overnight.
+async function sendMorningReport(
+  email: string,
+  rec: typeof aiRecommendations.$inferSelect,
+  displayUnit: DisplayUnit,
+): Promise<void> {
+  const fmt = (raw: number) => formatRawByUnit(raw, displayUnit);
+
+  let statsLine = "";
+  try {
+    const context = rec.sleepContextJson
+      ? (JSON.parse(rec.sleepContextJson) as SleepContext)
+      : null;
+    const session = context?.recentSessions?.[0];
+    const nights = context?.nights ?? [];
+    const lastNight = nights[nights.length - 1];
+    const parts: string[] = [];
+    if (lastNight?.score != null) parts.push(`Score ${lastNight.score}`);
+    if (lastNight?.sleepDurationHours != null)
+      parts.push(`${lastNight.sleepDurationHours}h sleep`);
+    if (session?.stageHours?.deep != null)
+      parts.push(`deep ${session.stageHours.deep}h`);
+    if (session) {
+      const tosses =
+        (session.tossesAndTurns.firstThird ?? 0) +
+        (session.tossesAndTurns.middleThird ?? 0) +
+        (session.tossesAndTurns.finalThird ?? 0);
+      parts.push(`${tosses} tosses`);
+    }
+    if (lastNight?.restingHeartRate != null)
+      parts.push(`HR ${lastNight.restingHeartRate}`);
+    statsLine = parts.join(" · ");
+  } catch {
+    // stats stay empty; the report still carries the AI assessment
+  }
+
+  const stagePairs: [string, number | null, number | null][] = [
+    ["initial", rec.previousInitialLevel, rec.recommendedInitialLevel],
+    ["deep", rec.previousDeepLevel, rec.recommendedDeepLevel],
+    ["mid", rec.previousMidLevel, rec.recommendedMidLevel],
+    ["final", rec.previousFinalLevel, rec.recommendedFinalLevel],
+  ];
+  const changes = stagePairs
+    .filter(
+      ([, previous, recommended]) =>
+        previous != null && recommended != null && previous !== recommended,
+    )
+    .map(
+      ([stage, previous, recommended]) =>
+        `${stage} ${fmt(previous!)}→${fmt(recommended!)}`,
+    );
+  const action =
+    changes.length === 0
+      ? "AI: no change tonight."
+      : `AI ${rec.status === "auto_applied" ? "applied" : "suggests"}: ${changes.join(", ")}.`;
+
+  // Live nudges from the completed night (which started the evening before
+  // the recommendation date).
+  let liveLine = "";
+  try {
+    const nightStart = new Date(`${rec.forDate}T12:00:00Z`);
+    nightStart.setDate(nightStart.getDate() - 1);
+    const night = nightStart.toISOString().slice(0, 10);
+    const nudges = await db
+      .select()
+      .from(aiLiveAdjustments)
+      .where(
+        and(
+          eq(aiLiveAdjustments.email, email),
+          eq(aiLiveAdjustments.night, night),
+        ),
+      );
+    if (nudges.length > 0) {
+      liveLine = ` Live tuning nudged ${nudges.length}x overnight.`;
+    }
+  } catch {
+    // omit the live line
+  }
+
+  await sendPushToUser(email, {
+    title: statsLine === "" ? "Your morning sleep report" : statsLine,
+    body: `${action}${liveLine} Open for the full report.`,
+    url: "/",
+  });
+}
+
 // Runs from the 30-minute temperature cron. For every user with AI enabled,
 // generates (and optionally auto-applies) one recommendation per day in the
 // window 30 minutes to 4 hours after their wake-up time.
@@ -481,6 +570,19 @@ export async function runDailyAiPass(): Promise<void> {
       console.log(
         `AI daily pass generated recommendation ${recommendation.id} for ${email} (status: ${recommendation.status})`,
       );
+      try {
+        const settings = await getAiSettingsOrDefaults(email);
+        await sendMorningReport(
+          email,
+          recommendation,
+          settings.displayUnit === "level" ? "level" : "celsius",
+        );
+      } catch (error) {
+        console.error(
+          `Morning report push failed for ${email}:`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     } catch (error) {
       console.error(
         `AI daily pass failed for ${email}:`,
