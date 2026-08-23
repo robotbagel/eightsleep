@@ -16,7 +16,7 @@ import {
 import { desc, eq } from "drizzle-orm";
 import { isAiConfigured, GEMINI_MODEL } from "~/server/ai/gemini";
 import { rawToCelsius } from "~/lib/temperature";
-import { healthNights } from "~/server/db/schema";
+import { appConfig, healthNights } from "~/server/db/schema";
 import { desc as descOrder } from "drizzle-orm";
 
 export const runtime = "nodejs";
@@ -85,9 +85,16 @@ export async function GET(request: NextRequest): Promise<Response> {
         .orderBy(descOrder(healthNights.night))
         .limit(1);
       const hn = latestHealth[0];
+      const rawRow =
+        request.nextUrl.searchParams.get("raw") === "1"
+          ? await db.query.appConfig.findFirst({
+              where: eq(appConfig.key, `lastRaw:${email}`),
+            })
+          : null;
 
       report.push({
         email,
+        lastRawSamples: rawRow?.value ?? null,
         latestHealthNight: hn
           ? {
               night: hn.night,

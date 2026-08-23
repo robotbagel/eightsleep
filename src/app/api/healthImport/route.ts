@@ -8,6 +8,7 @@ import { userAiSettings, userTemperatureProfile } from "~/server/db/schema";
 import { eq } from "drizzle-orm";
 import { HealthImportSchema, storeHealthImport } from "~/server/ai/health";
 import { triggerAssessmentAfterImport } from "~/server/ai/advisor";
+import { appConfig } from "~/server/db/schema";
 
 export const runtime = "nodejs";
 
@@ -29,13 +30,16 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   let payload;
+  let rawSamples = "";
   try {
     const contentType = request.headers.get("content-type") ?? "";
     if (contentType.includes("json")) {
       payload = HealthImportSchema.parse(await request.json());
+      rawSamples = payload.samples ?? "";
     } else {
       // Raw text body = sample lines straight from the Shortcut.
-      payload = HealthImportSchema.parse({ samples: await request.text() });
+      rawSamples = await request.text();
+      payload = HealthImportSchema.parse({ samples: rawSamples });
     }
   } catch (error) {
     return Response.json(
@@ -50,6 +54,24 @@ export async function POST(request: NextRequest): Promise<Response> {
     where: eq(userTemperatureProfile.email, settings.email),
   });
   const timezone = profile?.timezoneTZ ?? "UTC";
+
+  // Debug: keep the last raw payload (the user's own data, on their own
+  // server) so parsing can be diagnosed. Truncated; overwritten each import.
+  try {
+    await db
+      .insert(appConfig)
+      .values({
+        key: `lastRaw:${settings.email}`,
+        value: rawSamples.slice(0, 12000),
+      })
+      .onConflictDoUpdate({
+        target: appConfig.key,
+        set: { value: rawSamples.slice(0, 12000) },
+      })
+      .execute();
+  } catch {
+    // debug capture is best-effort
+  }
 
   try {
     const stored = await storeHealthImport(settings.email, payload, timezone);
