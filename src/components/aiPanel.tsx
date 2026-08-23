@@ -253,6 +253,69 @@ function SleepSummaryCard() {
   );
 }
 
+function HealthImportSection() {
+  const [open, setOpen] = useState(false);
+  const infoQuery = apiR.user.getHealthImportInfo.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+    enabled: open,
+  });
+  const endpoint =
+    typeof window !== "undefined"
+      ? `${window.location.origin}/api/healthImport`
+      : "/api/healthImport";
+
+  return (
+    <div className="rounded-md bg-gray-50 p-3">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center justify-between text-sm font-medium text-gray-700"
+      >
+        <span>
+          Apple Watch import
+          {infoQuery.data?.lastImportNight && (
+            <span className="ml-2 rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800">
+              last: {infoQuery.data.lastImportNight} (score{" "}
+              {infoQuery.data.lastImportScore})
+            </span>
+          )}
+        </span>
+        <span className="text-gray-400">{open ? "−" : "+"}</span>
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2 text-xs text-gray-600">
+          <p>
+            Feeds the AI with your Watch&apos;s sleep stages when the pod
+            provides no data. Set up an iPhone Shortcut that runs each
+            morning:
+          </p>
+          <ol className="list-decimal space-y-1 pl-4">
+            <li>Shortcuts app → new Automation → &quot;At 08:00, daily&quot; → Run Immediately.</li>
+            <li>Add action <span className="font-medium">Find Health Samples</span>: type Sleep, Start Date is in the last 1 day.</li>
+            <li>Add <span className="font-medium">Repeat with Each</span>; inside it add <span className="font-medium">Text</span> with: Sleep Value, comma, Start Date (ISO 8601), comma, End Date (ISO 8601) — using the magic variables of the repeat item.</li>
+            <li>After the repeat, add <span className="font-medium">Combine Text</span> (Repeat Results, new lines).</li>
+            <li>Add <span className="font-medium">Get Contents of URL</span>: POST to the URL below, Request Body = the combined text, and a Header <span className="font-mono">Authorization</span> = <span className="font-mono">Bearer &lt;your token&gt;</span>.</li>
+          </ol>
+          {infoQuery.data && (
+            <div className="space-y-1">
+              <p className="break-all rounded bg-white p-2 font-mono text-[11px]">
+                {endpoint}
+              </p>
+              <p className="break-all rounded bg-white p-2 font-mono text-[11px]">
+                Bearer {infoQuery.data.token}
+              </p>
+            </div>
+          )}
+          <p>
+            The import instantly triggers that morning&apos;s AI assessment
+            and your push notification.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
@@ -534,6 +597,8 @@ export const AiPanel: React.FC = () => {
           </label>
 
           <NotificationsToggle />
+
+          <HealthImportSection />
 
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium text-gray-700">

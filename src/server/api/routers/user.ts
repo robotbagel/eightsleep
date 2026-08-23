@@ -18,6 +18,7 @@ import {
   aiRecommendations,
   aiLiveAdjustments,
   pushSubscriptions,
+  healthNights,
 } from "~/server/db/schema";
 import { getVapidKeys } from "~/server/push";
 import {
@@ -347,6 +348,36 @@ export const userRouter = createTRPCRouter({
       return { success: true };
     }),
 
+  getHealthImportInfo: publicProcedure.query(async ({ ctx }) => {
+    const decoded = await checkAuthCookie(ctx.headers);
+    const existing = await db.query.userAiSettings.findFirst({
+      where: eq(userAiSettings.email, decoded.email),
+    });
+    let token = existing?.healthImportToken ?? null;
+    if (!token) {
+      token = crypto.randomUUID().replace(/-/g, "");
+      await db
+        .insert(userAiSettings)
+        .values({ email: decoded.email, healthImportToken: token })
+        .onConflictDoUpdate({
+          target: userAiSettings.email,
+          set: { healthImportToken: token, updatedAt: new Date() },
+        })
+        .execute();
+    }
+    const lastNight = await db
+      .select()
+      .from(healthNights)
+      .where(eq(healthNights.email, decoded.email))
+      .orderBy(desc(healthNights.night))
+      .limit(1);
+    return {
+      token,
+      lastImportNight: lastNight[0]?.night ?? null,
+      lastImportScore: lastNight[0]?.score ?? null,
+    };
+  }),
+
   getPushPublicKey: publicProcedure.query(async ({ ctx }) => {
     const decoded = await checkAuthCookie(ctx.headers);
     const keys = await getVapidKeys();
@@ -428,7 +459,12 @@ export const userRouter = createTRPCRouter({
     const timezone = profile?.timezoneTZ ?? "UTC";
     try {
       const token = await getFreshToken(user);
-      return await collectSleepContext(token, user.eightUserId, timezone);
+      return await collectSleepContext(
+        token,
+        user.eightUserId,
+        timezone,
+        decoded.email,
+      );
     } catch (error) {
       console.error("Error fetching sleep summary:", error);
       throw new TRPCError({

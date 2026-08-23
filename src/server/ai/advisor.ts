@@ -262,6 +262,7 @@ export async function generateRecommendationForUser(
     token,
     user.eightUserId,
     profile.timezoneTZ,
+    email,
   );
   if (!hasSleepData(sleepContext)) {
     throw new AiError(
@@ -302,6 +303,16 @@ export async function generateRecommendationForUser(
       ...deriveNightSignals(sleepContext),
       ...(await buildLiveTuningSignals(email)),
     ];
+    const watchOnly =
+      sleepContext.recentSessions.length > 0 &&
+      sleepContext.recentSessions.every(
+        (session) => session.tossesAndTurns.firstThird == null,
+      );
+    if (watchOnly) {
+      signals.push(
+        "Sleep data comes from an Apple Watch import: toss-and-turn counts and bed-temperature curves are unavailable, so reason from sleep stages, heart rate, HRV and the score history instead.",
+      );
+    }
     recommendation = await generateTemperatureRecommendation({
       currentProfile: {
         bedTime: profile.bedTime.slice(0, 5),
@@ -519,6 +530,48 @@ async function sendMorningReport(
     body: `${action}${liveLine} Open for the full report.`,
     url: "/",
   });
+}
+
+// Called right after a successful Apple Health import: if the AI is enabled
+// and today's assessment hasn't happened yet, run it now — the import IS the
+// signal that the night is over, regardless of the usual wake-up window.
+export async function triggerAssessmentAfterImport(email: string): Promise<void> {
+  const settings = await getAiSettingsOrDefaults(email);
+  if (!settings.aiEnabled || !isAiConfigured()) return;
+
+  const profile = await db.query.userTemperatureProfile.findFirst({
+    where: eq(userTemperatureProfile.email, email),
+  });
+  if (!profile) return;
+
+  const forDate = new Date().toLocaleDateString("en-CA", {
+    timeZone: profile.timezoneTZ,
+  });
+  const existing = await db.query.aiRecommendations.findFirst({
+    where: and(
+      eq(aiRecommendations.email, email),
+      eq(aiRecommendations.forDate, forDate),
+      eq(aiRecommendations.source, "cron"),
+    ),
+  });
+  if (existing) return;
+
+  const recommendation = await generateRecommendationForUser(email, "cron");
+  console.log(
+    `Assessment triggered by health import for ${email}: recommendation ${recommendation.id} (${recommendation.status})`,
+  );
+  try {
+    await sendMorningReport(
+      email,
+      recommendation,
+      settings.displayUnit === "level" ? "level" : "celsius",
+    );
+  } catch (error) {
+    console.error(
+      `Morning report push failed for ${email}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 }
 
 // Runs from the 30-minute temperature cron. For every user with AI enabled,

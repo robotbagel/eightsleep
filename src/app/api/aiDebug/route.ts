@@ -105,6 +105,7 @@ export async function GET(request: NextRequest): Promise<Response> {
         token,
         user.eightUserId,
         timezone,
+        user.email,
       );
 
       const temperatureState = await rawProbe(

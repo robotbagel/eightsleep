@@ -19,6 +19,7 @@ import { z } from "zod";
 import { fetchWithAuth } from "../eight/eight";
 import { CLIENT_API_URL } from "../eight/constants";
 import { type Token } from "../eight/types";
+import { getHealthContext } from "./health";
 
 const timeseriesPoint = z.tuple([z.string(), z.number()]);
 
@@ -244,6 +245,7 @@ export async function collectSleepContext(
   token: Token,
   userId: string,
   timezone: string,
+  email?: string,
 ): Promise<SleepContext> {
   const context: SleepContext = { nights: [], recentSessions: [] };
 
@@ -255,7 +257,6 @@ export async function collectSleepContext(
       "AI sleep context: trends fetch failed:",
       error instanceof Error ? error.message : String(error),
     );
-    return context;
   }
 
   for (const day of days) {
@@ -286,6 +287,36 @@ export async function collectSleepContext(
     context.recentSessions.push(
       buildSessionDetail(day, completed[completed.length - 1]),
     );
+  }
+
+  // Merge in Apple Health nights (imported via the Shortcut endpoint). Pod
+  // data wins per date; the watch fills the gaps — or carries the whole
+  // context for accounts whose pod data is subscription-gated.
+  if (email) {
+    try {
+      const health = await getHealthContext(email);
+      const podNightDates = new Set(context.nights.map((n) => n.date));
+      for (const night of health.nights) {
+        if (!podNightDates.has(night.date)) context.nights.push(night);
+      }
+      context.nights.sort((a, b) => a.date.localeCompare(b.date));
+
+      const podSessionDates = new Set(
+        context.recentSessions.map((s) => s.date),
+      );
+      for (const session of health.recentSessions) {
+        if (!podSessionDates.has(session.date)) {
+          context.recentSessions.push(session);
+        }
+      }
+      context.recentSessions.sort((a, b) => b.date.localeCompare(a.date));
+      context.recentSessions = context.recentSessions.slice(0, 3);
+    } catch (error) {
+      console.error(
+        "AI sleep context: health merge failed:",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   return context;

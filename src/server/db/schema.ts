@@ -8,6 +8,7 @@ import {
   text,
   time,
   timestamp,
+  uniqueIndex,
   varchar,
 } from "drizzle-orm/pg-core";
 
@@ -39,17 +40,30 @@ export const userTemperatureProfile = createTable("userTemperatureProfiles", {
   timezoneTZ: varchar("timezone", { length: 50 }).notNull(),
 });
 
-export const userAiSettings = createTable("userAiSettings", {
-  email: varchar("email", { length: 255 }).references(() => users.email).primaryKey(),
-  aiEnabled: boolean("aiEnabled").notNull().default(false),
-  autoApply: boolean("autoApply").notNull().default(false),
-  liveTuningEnabled: boolean("liveTuningEnabled").notNull().default(false),
-  displayUnit: varchar("displayUnit", { length: 10 }).notNull().default("celsius"),
-  sleepGoal: text("sleepGoal"),
-  maxDailyShift: integer("maxDailyShift").notNull().default(20),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+export const userAiSettings = createTable(
+  "userAiSettings",
+  {
+    email: varchar("email", { length: 255 }).references(() => users.email).primaryKey(),
+    aiEnabled: boolean("aiEnabled").notNull().default(false),
+    autoApply: boolean("autoApply").notNull().default(false),
+    liveTuningEnabled: boolean("liveTuningEnabled").notNull().default(false),
+    displayUnit: varchar("displayUnit", { length: 10 }).notNull().default("celsius"),
+    // Bearer token for the Apple Health import endpoint (per user, generated
+    // on demand). Plain index, not unique: a unique constraint on a new
+    // column makes drizzle push prompt interactively, which would hang the
+    // Vercel build. UUID collisions are not a practical concern.
+    healthImportToken: varchar("healthImportToken", { length: 64 }),
+    sleepGoal: text("sleepGoal"),
+    maxDailyShift: integer("maxDailyShift").notNull().default(20),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    healthTokenIdx: index("userAiSettings_healthImportToken_idx").on(
+      table.healthImportToken,
+    ),
+  }),
+);
 
 export const aiLiveAdjustments = createTable(
   "aiLiveAdjustments",
@@ -99,6 +113,37 @@ export const aiRecommendations = createTable(
     emailDateIdx: index("aiRecommendations_email_forDate_idx").on(
       table.email,
       table.forDate,
+    ),
+  }),
+);
+
+// One row per imported night from Apple Health (per account). Hours are
+// stored as tenths of an hour (integers) to keep the schema int-only.
+export const healthNights = createTable(
+  "healthNights",
+  {
+    id: serial("id").primaryKey(),
+    email: varchar("email", { length: 255 }).references(() => users.email).notNull(),
+    night: varchar("night", { length: 10 }).notNull(),
+    asleepTenthHours: integer("asleepTenthHours").notNull(),
+    deepTenthHours: integer("deepTenthHours"),
+    remTenthHours: integer("remTenthHours"),
+    coreTenthHours: integer("coreTenthHours"),
+    awakeTenthHours: integer("awakeTenthHours"),
+    wakeCount: integer("wakeCount"),
+    avgHeartRate: integer("avgHeartRate"),
+    hrv: integer("hrv"),
+    respiratoryRateTenths: integer("respiratoryRateTenths"),
+    score: integer("score").notNull(),
+    sleepStart: timestamp("sleepStart"),
+    sleepEnd: timestamp("sleepEnd"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    emailNightIdx: uniqueIndex("healthNights_email_night_idx").on(
+      table.email,
+      table.night,
     ),
   }),
 );
