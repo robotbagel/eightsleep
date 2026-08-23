@@ -19,6 +19,7 @@ export const runtime = "nodejs";
 async function rawProbe(
   url: string,
   accessToken: string,
+  limit = 6000,
 ): Promise<{ status: number; body: string }> {
   try {
     const response = await fetch(url, {
@@ -28,7 +29,7 @@ async function rawProbe(
       },
     });
     const body = await response.text();
-    return { status: response.status, body: body.slice(0, 6000) };
+    return { status: response.status, body: body.slice(0, limit) };
   } catch (error) {
     return {
       status: 0,
@@ -108,8 +109,38 @@ async function handleProbe(
       .replace(/\{tz\}/g, encodeURIComponent(timezone));
     const base = useApp ? APP_API_URL : `${CLIENT_API_URL}/`;
     const url = `${base}${path.replace(/^\//, "")}`;
-    const res = await rawProbe(url, token.eightAccessToken);
-    results.push({ url, status: res.status, body: res.body.slice(0, 3000) });
+    const res = await rawProbe(url, token.eightAccessToken, 400_000);
+    if (request.nextUrl.searchParams.get("summary") === "1") {
+      // Structural summary instead of the raw body: keys, array lengths, and
+      // first/last samples — so large payloads can be mapped without
+      // truncation.
+      let shape: unknown = null;
+      try {
+        const describe = (value: unknown, depth = 0): unknown => {
+          if (Array.isArray(value)) {
+            return {
+              array: value.length,
+              first: depth < 3 ? describe(value[0], depth + 1) : "…",
+              last: depth < 3 ? describe(value[value.length - 1], depth + 1) : "…",
+            };
+          }
+          if (value && typeof value === "object") {
+            const out: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(value)) {
+              out[k] = depth < 3 ? describe(v, depth + 1) : typeof v;
+            }
+            return out;
+          }
+          return value;
+        };
+        shape = describe(JSON.parse(res.body));
+      } catch (error) {
+        shape = { parseError: String(error), head: res.body.slice(0, 300) };
+      }
+      results.push({ url, status: res.status, shape });
+    } else {
+      results.push({ url, status: res.status, body: res.body.slice(0, 3000) });
+    }
   }
   return Response.json({ deviceId, results });
 }
