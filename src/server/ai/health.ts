@@ -114,12 +114,42 @@ function buildDate(
   return d.getTime();
 }
 
-function parseSampleLines(samples: string): ParsedNight | null {
-  const totals: Record<string, number> = {};
-  let wakeCount = 0;
-  let start: number | null = null;
-  let end: number | null = null;
+interface Interval {
+  from: number;
+  to: number;
+  stage: string;
+}
 
+// Merges overlapping/adjacent intervals (within `gapMs`) into a union and
+// returns the merged blocks. Input need not be sorted.
+function mergeIntervals(
+  intervals: { from: number; to: number }[],
+  gapMs = 60_000,
+): { from: number; to: number }[] {
+  if (intervals.length === 0) return [];
+  const sorted = intervals.slice().sort((a, b) => a.from - b.from);
+  const merged = [{ ...sorted[0]! }];
+  for (const current of sorted.slice(1)) {
+    const last = merged[merged.length - 1]!;
+    if (current.from <= last.to + gapMs) {
+      last.to = Math.max(last.to, current.to);
+    } else {
+      merged.push({ ...current });
+    }
+  }
+  return merged;
+}
+
+function unionHours(intervals: { from: number; to: number }[]): number {
+  return (
+    mergeIntervals(intervals, 0).reduce((sum, i) => sum + (i.to - i.from), 0) /
+    3_600_000
+  );
+}
+
+function parseSampleLines(samples: string): ParsedNight | null {
+  // 1. Parse every line into a stage interval.
+  const intervals: Interval[] = [];
   for (const rawLine of samples.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
@@ -148,54 +178,85 @@ function parseSampleLines(samples: string): ParsedNight | null {
     else if (stageRaw.includes("core")) stage = "core";
     else if (stageRaw.includes("awake") || stageRaw.includes("wake")) stage = "awake";
     else if (stageRaw.includes("asleep")) stage = "asleep";
-    else if (stageRaw.includes("bed")) continue; // InBed wraps everything — skip
-    else continue;
+    else continue; // InBed wraps everything — skip
 
-    const hours = (to - from) / 3_600_000;
-    totals[stage] = (totals[stage] ?? 0) + hours;
-    if (stage === "awake") wakeCount += 1;
-    if (stage !== "awake") {
-      start = start === null ? from : Math.min(start, from);
-      end = end === null ? to : Math.max(end, to);
-    }
+    intervals.push({ from, to, stage });
   }
+  if (intervals.length === 0) return null;
 
-  const staged =
-    (totals.deep ?? 0) + (totals.rem ?? 0) + (totals.core ?? 0);
-  const asleep = staged > 0 ? staged : (totals.asleep ?? 0);
+  // 2. The "last 1 day" filter can span TWO nights — cluster all samples by
+  // time gaps (> 4h apart = separate night) and keep the most recent
+  // cluster only.
+  const clusters = mergeIntervals(intervals, 4 * 60 * 60 * 1000);
+  const lastCluster = clusters[clusters.length - 1]!;
+  const night = intervals.filter(
+    (i) => i.from >= lastCluster.from && i.to <= lastCluster.to,
+  );
+
+  // 3. Watch + iPhone both write sleep data, producing overlapping duplicate
+  // segments. Compute every figure as an interval UNION, never a sum.
+  const byStage = (stage: string) => night.filter((i) => i.stage === stage);
+  const deepH = unionHours(byStage("deep"));
+  const remH = unionHours(byStage("rem"));
+  const coreH = unionHours(byStage("core"));
+  const plainAsleepH = unionHours(byStage("asleep"));
+  const awakeBlocks = mergeIntervals(byStage("awake"), 2 * 60_000);
+  const awakeH = awakeBlocks.reduce((s, i) => s + (i.to - i.from), 0) / 3_600_000;
+
+  const asleepIntervals = night.filter((i) => i.stage !== "awake");
+  const asleep =
+    deepH + remH + coreH > 0 ? unionHours(asleepIntervals.filter((i) => i.stage !== "asleep")) : plainAsleepH;
   if (asleep <= 0) return null;
+
+  const start = Math.min(...asleepIntervals.map((i) => i.from));
+  const end = Math.max(...asleepIntervals.map((i) => i.to));
+  const hasStages = deepH + remH + coreH > 0;
 
   return {
     asleepHours: round1(asleep),
-    deepHours: totals.deep != null ? round1(totals.deep) : null,
-    remHours: totals.rem != null ? round1(totals.rem) : null,
-    coreHours: totals.core != null ? round1(totals.core) : null,
-    awakeHours: totals.awake != null ? round1(totals.awake) : null,
-    wakeCount: wakeCount > 0 ? wakeCount : null,
-    sleepStart: start !== null ? new Date(start) : null,
-    sleepEnd: end !== null ? new Date(end) : null,
+    deepHours: hasStages ? round1(deepH) : null,
+    remHours: hasStages ? round1(remH) : null,
+    coreHours: hasStages ? round1(coreH) : null,
+    awakeHours: awakeBlocks.length > 0 ? round1(awakeH) : null,
+    wakeCount: awakeBlocks.length > 0 ? awakeBlocks.length : null,
+    sleepStart: new Date(start),
+    sleepEnd: new Date(end),
   };
 }
 
-// Transparent score, 0-100:
-// - up to 40 pts for duration (full marks at 7.5h asleep)
-// - up to 25 pts for deep sleep (full marks at 1.3h)
-// - up to 25 pts for REM (full marks at 1.6h)
-// - 10 pts minus 2 per awakening (floor 0); full 10 when unknown wakeCount
-//   but no awake time was recorded.
-export function computeSleepScore(night: ParsedNight): number {
-  const duration = 40 * Math.min(night.asleepHours / 7.5, 1);
-  const deep =
-    night.deepHours != null ? 25 * Math.min(night.deepHours / 1.3, 1) : 15;
-  const rem =
-    night.remHours != null ? 25 * Math.min(night.remHours / 1.6, 1) : 15;
-  const wakes =
+// Transparent score, 0-100, mirroring the Apple Watch Sleep Score rubric
+// (Duration up to 50, Bedtime consistency up to 30, Interruptions up to 20):
+// - Duration: 50 x min(asleep / 8.5h, 1)
+// - Bedtime: 30 minus 1 point per 6 minutes of deviation from the reference
+//   bedtime (the trailing average of past imports, or the scheduled bedtime
+//   for the first night); floor 0.
+// - Interruptions: 20 minus 1 per merged awakening minus 5 per awake hour;
+//   floor 0. Neutral 14 when awakenings are unknown.
+export function computeSleepScore(
+  night: ParsedNight,
+  referenceBedtimeMs: number | null = null,
+): number {
+  const duration = 50 * Math.min(night.asleepHours / 8.5, 1);
+
+  let bedtime = 24; // neutral when no reference is available
+  if (referenceBedtimeMs != null && night.sleepStart != null) {
+    const minutesOfDay = (ms: number) => {
+      const d = new Date(ms);
+      return d.getHours() * 60 + d.getMinutes();
+    };
+    let dev = Math.abs(
+      minutesOfDay(night.sleepStart.getTime()) - minutesOfDay(referenceBedtimeMs),
+    );
+    if (dev > 12 * 60) dev = 24 * 60 - dev; // wrap around midnight
+    bedtime = Math.max(30 - dev / 6, 0);
+  }
+
+  const interruptions =
     night.wakeCount != null
-      ? Math.max(10 - 2 * night.wakeCount, 0)
-      : night.awakeHours != null
-        ? Math.max(10 - 10 * Math.min(night.awakeHours / 1, 1), 0)
-        : 6;
-  return Math.round(duration + deep + rem + wakes);
+      ? Math.max(20 - night.wakeCount - 5 * (night.awakeHours ?? 0), 0)
+      : 14;
+
+  return Math.round(duration + bedtime + interruptions);
 }
 
 export interface StoredHealthNight {
@@ -234,7 +295,35 @@ export async function storeHealthImport(
     parsed.sleepEnd ??
     (payload.sleepEnd ? new Date(payload.sleepEnd) : new Date());
   const night = reference.toLocaleDateString("en-CA", { timeZone: timezone });
-  const score = computeSleepScore(parsed);
+
+  // Bedtime reference: circular mean of the last 14 imported bedtimes.
+  let referenceBedtimeMs: number | null = null;
+  const prior = await db
+    .select()
+    .from(healthNights)
+    .where(eq(healthNights.email, email))
+    .orderBy(desc(healthNights.night))
+    .limit(14);
+  const starts = prior
+    .filter((row) => row.night !== night && row.sleepStart != null)
+    .map((row) => row.sleepStart!.getTime());
+  if (starts.length > 0) {
+    let sx = 0;
+    let sy = 0;
+    for (const ms of starts) {
+      const d = new Date(ms);
+      const angle = ((d.getHours() * 60 + d.getMinutes()) / 1440) * 2 * Math.PI;
+      sx += Math.cos(angle);
+      sy += Math.sin(angle);
+    }
+    let meanMinutes = (Math.atan2(sy, sx) / (2 * Math.PI)) * 1440;
+    if (meanMinutes < 0) meanMinutes += 1440;
+    const ref = new Date();
+    ref.setHours(Math.floor(meanMinutes / 60), Math.round(meanMinutes % 60), 0, 0);
+    referenceBedtimeMs = ref.getTime();
+  }
+
+  const score = computeSleepScore(parsed, referenceBedtimeMs);
 
   const tenth = (hours: number | null) =>
     hours != null ? Math.round(hours * 10) : null;
