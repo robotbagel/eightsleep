@@ -16,6 +16,8 @@ import {
 import { desc, eq } from "drizzle-orm";
 import { isAiConfigured, GEMINI_MODEL } from "~/server/ai/gemini";
 import { rawToCelsius } from "~/lib/temperature";
+import { healthNights } from "~/server/db/schema";
+import { desc as descOrder } from "drizzle-orm";
 
 export const runtime = "nodejs";
 
@@ -76,8 +78,28 @@ export async function GET(request: NextRequest): Promise<Response> {
         counts[rec.status] = (counts[rec.status] ?? 0) + 1;
       }
 
+      const latestHealth = await db
+        .select()
+        .from(healthNights)
+        .where(eq(healthNights.email, email))
+        .orderBy(descOrder(healthNights.night))
+        .limit(1);
+      const hn = latestHealth[0];
+
       report.push({
         email,
+        latestHealthNight: hn
+          ? {
+              night: hn.night,
+              asleepH: hn.asleepTenthHours / 10,
+              deepH: hn.deepTenthHours != null ? hn.deepTenthHours / 10 : null,
+              remH: hn.remTenthHours != null ? hn.remTenthHours / 10 : null,
+              coreH: hn.coreTenthHours != null ? hn.coreTenthHours / 10 : null,
+              awakeH: hn.awakeTenthHours != null ? hn.awakeTenthHours / 10 : null,
+              wakeCount: hn.wakeCount,
+              score: hn.score,
+            }
+          : null,
         // Last 4 chars of the Eight Sleep user id: proof each app account
         // drives a distinct Eight identity (and therefore a distinct side).
         eightUserIdSuffix: user.eightUserId.slice(-4),
