@@ -15,6 +15,7 @@ import { NightNav } from "~/components/nightNav";
 import { useSwipe } from "~/components/useSwipe";
 import { CompareView, type CompareData } from "~/components/compareCard";
 import { PlanBanner, Reasoning } from "~/components/aiPanel";
+import { SettingsHistory } from "~/components/settingsHistory";
 import allNights from "./nights.json";
 import { TemperatureCurve } from "~/components/temperatureCurve";
 import { clockIn, formatHours, type Point } from "~/components/charts/chartUtils";
@@ -317,6 +318,21 @@ export default function PreviewClient() {
                 </div>
               }
             />
+            <div className="mb-5">
+              <SettingsHistory
+                unit="celsius"
+                todayKey="2026-01-18"
+                history={[
+                  { night: "2026-01-12", initial: 17, deep: -8, mid: 0, final: 11, aiChanged: false, aiStatus: "auto_applied", liveNudges: 0 },
+                  { night: "2026-01-13", initial: 17, deep: -8, mid: 0, final: 11, aiChanged: false, aiStatus: "auto_applied", liveNudges: 0 },
+                  { night: "2026-01-14", initial: 17, deep: -8, mid: 6, final: 11, aiChanged: true, aiStatus: "auto_applied", liveNudges: 1 },
+                  { night: "2026-01-15", initial: 17, deep: -8, mid: 6, final: 11, aiChanged: false, aiStatus: null, liveNudges: 0 },
+                  { night: "2026-01-16", initial: 11, deep: -17, mid: 6, final: 11, aiChanged: true, aiStatus: "auto_applied", liveNudges: 0 },
+                  { night: "2026-01-17", initial: 17, deep: -8, mid: 0, final: 11, aiChanged: true, aiStatus: "auto_applied", liveNudges: 2 },
+                  { night: "2026-01-18", initial: 11, deep: -17, mid: 0, final: 17, aiChanged: true, aiStatus: "auto_applied", liveNudges: 0 },
+                ]}
+              />
+            </div>
             <PlanCurve
               bedTime="23:00"
               wakeupTime="07:10"

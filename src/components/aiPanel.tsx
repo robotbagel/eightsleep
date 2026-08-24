@@ -7,6 +7,7 @@ import { Card, CardHeader, Disclosure, Skeleton } from "./ui/card";
 import LordIcon from "./ui/lordIcon";
 import { StageChangeChart, type StageChange } from "./charts/stageChangeChart";
 import { PlanCurve } from "./charts/planCurve";
+import { SettingsHistory } from "./settingsHistory";
 
 // ---------------------------------------------------------------------------
 // Small shared pieces
@@ -430,9 +431,10 @@ export const AiAdvisorCard: React.FC<{
   const settingsQuery = apiR.user.getAiSettings.useQuery(undefined, {
     refetchOnWindowFocus: false,
   });
-  const planQuery = apiR.user.getTemperaturePlan.useQuery(undefined, {
-    refetchOnWindowFocus: false,
-  });
+  const planQuery = apiR.user.getTemperaturePlan.useQuery(
+    { days: 7 },
+    { refetchOnWindowFocus: false },
+  );
   const recommendationsQuery = apiR.user.getAiRecommendations.useQuery(
     undefined,
     { refetchOnWindowFocus: false },
@@ -529,9 +531,21 @@ export const AiAdvisorCard: React.FC<{
             anyChanged={anyChanged}
             hasProposal={hasProposal}
             hasLastNight={plan.lastNight != null}
+            assessedToday={plan.assessedToday}
+            aiEnabled={settingsQuery.data?.aiEnabled ?? false}
+            busy={generateMutation.isPending}
+            onAssess={() => generateMutation.mutate()}
           />
 
-          <div className="mt-4">
+          <div className="mt-5">
+            <SettingsHistory
+              history={plan.history}
+              todayKey={plan.todayKey}
+              unit={displayUnit}
+            />
+          </div>
+
+          <div className="mt-5">
             <PlanCurve
               bedTime={plan.bedTime}
               wakeupTime={plan.wakeupTime}
@@ -540,7 +554,7 @@ export const AiAdvisorCard: React.FC<{
                   ? [
                       {
                         key: "lastNight" as const,
-                        label: "Last night (what ran)",
+                        label: `Last night${plan.lastNight.night ? ` (${nightLabel(plan.lastNight.night)})` : ""}`,
                         levels: plan.lastNight,
                         color: "var(--text-faint)",
                         dashed: true,
@@ -549,7 +563,7 @@ export const AiAdvisorCard: React.FC<{
                   : []),
                 {
                   key: "tonight" as const,
-                  label: "Tonight (loaded)",
+                  label: `Tonight${plan.todayKey ? ` (${nightLabel(plan.todayKey)})` : ""} — loaded`,
                   levels: plan.tonight,
                   color: "var(--accent)",
                   emphasis: true,
@@ -572,6 +586,15 @@ export const AiAdvisorCard: React.FC<{
           <div className="mt-5">
             <StageChangeChart changes={changes} unit={displayUnit} />
           </div>
+
+          <p
+            className="mt-3 text-xs"
+            style={{ color: "var(--text-faint)" }}
+          >
+            {plan.assessedToday
+              ? `Tonight's plan is settled. The next one is decided tomorrow morning, about half an hour after you wake, once the pod has finished uploading the night.`
+              : `Tonight's plan has not been assessed yet today. It runs automatically about half an hour after you wake.`}
+          </p>
         </>
       )}
 
@@ -702,6 +725,14 @@ export const AiAdvisorCard: React.FC<{
   );
 };
 
+function nightLabel(night: string): string {
+  return new Date(`${night}T12:00:00Z`).toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
+}
+
 /** One line that settles "did it change, and is it live?". */
 export const PlanBanner: React.FC<{
   status: string | null;
@@ -709,7 +740,21 @@ export const PlanBanner: React.FC<{
   anyChanged: boolean;
   hasProposal: boolean;
   hasLastNight: boolean;
-}> = ({ status, updatedAt, anyChanged, hasProposal, hasLastNight }) => {
+  assessedToday?: boolean;
+  aiEnabled?: boolean;
+  busy?: boolean;
+  onAssess?: () => void;
+}> = ({
+  status,
+  updatedAt,
+  anyChanged,
+  hasProposal,
+  hasLastNight,
+  assessedToday = true,
+  aiEnabled = true,
+  busy = false,
+  onAssess,
+}) => {
   const stamp = updatedAt
     ? new Date(updatedAt).toLocaleString("en-GB", {
         day: "numeric",
@@ -722,6 +767,35 @@ export const PlanBanner: React.FC<{
   let text: string;
   let color = "var(--text)";
   let background = "var(--surface-sunken)";
+
+  // A missing assessment used to be invisible: the card simply kept showing
+  // yesterday's plan as if it were today's.
+  if (aiEnabled && !assessedToday) {
+    return (
+      <div
+        className="flex flex-wrap items-center justify-between gap-3 rounded-xl p-3 text-sm"
+        style={{
+          backgroundColor: "var(--warning-soft)",
+          color: "var(--warning)",
+        }}
+      >
+        <span>
+          No assessment has run today, so tonight is still last night&apos;s
+          profile.
+        </span>
+        {onAssess && (
+          <button
+            type="button"
+            onClick={onAssess}
+            disabled={busy}
+            className="btn btn-secondary shrink-0"
+          >
+            {busy ? "Assessing…" : "Assess now"}
+          </button>
+        )}
+      </div>
+    );
+  }
 
   if (hasProposal) {
     text = `A change is waiting for you — tonight still runs the profile below until you apply it.`;

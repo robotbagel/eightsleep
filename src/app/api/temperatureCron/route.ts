@@ -6,7 +6,7 @@ import { obtainFreshAccessToken } from "~/server/eight/auth";
 import { type Token } from "~/server/eight/types";
 import { setHeatingLevel, turnOnSide, turnOffSide } from "~/server/eight/eight";
 import { getCurrentHeatingStatus } from "~/server/eight/user";
-import { runDailyAiPass } from "~/server/ai/advisor";
+import { recordCronHeartbeat, runDailyAiPass } from "~/server/ai/advisor";
 import {
   applyOffsetToLevel,
   getActiveLiveOffset,
@@ -360,11 +360,21 @@ export async function GET(request: NextRequest): Promise<Response> {
         console.log(`[TEST MODE] Running temperature adjustment cron job with test time: ${testTime.toISOString()}`);
         await adjustTemperature({ enabled: true, currentTime: testTime });
       } else {
-        await adjustTemperature();
-        // The AI layers piggyback on this cron and must never break the
-        // temperature adjustment itself. Live tuning nudges the in-progress
-        // night; the daily pass turns the finished night into a
-        // recommendation once per day after wake-up.
+        // Every stage is isolated. The temperature adjustment is the critical
+        // path, but a failure in it must not take the AI passes down with it:
+        // that is how a whole day of recommendations went missing without a
+        // single user-visible signal.
+        await recordCronHeartbeat();
+        try {
+          await adjustTemperature();
+        } catch (error) {
+          console.error(
+            "Temperature adjustment failed:",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        // Live tuning nudges the in-progress night; the daily pass turns the
+        // finished night into a recommendation once per day after wake-up.
         try {
           await runLiveTuningPass();
         } catch (error) {

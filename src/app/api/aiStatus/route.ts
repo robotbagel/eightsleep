@@ -9,6 +9,7 @@ import { db } from "~/server/db";
 import {
   aiLiveAdjustments,
   aiRecommendations,
+  aiRunLog,
   userAiSettings,
   userTemperatureProfile,
   users,
@@ -77,6 +78,12 @@ export async function GET(request: NextRequest): Promise<Response> {
         .where(eq(aiRecommendations.email, email))
         .orderBy(desc(aiRecommendations.id))
         .limit(30);
+      const runs = await db
+        .select()
+        .from(aiRunLog)
+        .where(eq(aiRunLog.email, email))
+        .orderBy(desc(aiRunLog.id))
+        .limit(8);
       const liveAdjustments = await db
         .select()
         .from(aiLiveAdjustments)
@@ -161,6 +168,15 @@ export async function GET(request: NextRequest): Promise<Response> {
               updatedAt: profile.updatedAt,
             }
           : null,
+        // Why a day is missing: whether the pass was attempted at all, and
+        // what it said if it failed.
+        dailyPassRuns: runs.map((run) => ({
+          forDate: run.forDate,
+          at: run.at,
+          phase: run.phase,
+          ok: run.ok,
+          detail: run.detail,
+        })),
         latestRecommendation: latest
           ? {
               forDate: latest.forDate,
@@ -205,10 +221,28 @@ export async function GET(request: NextRequest): Promise<Response> {
       });
     }
 
+    // The heartbeat separates "the external cron stopped calling us" from
+    // "the cron ran and the pass failed" — two very different problems that
+    // used to produce the same symptom.
+    let cronLastRunAt: string | null = null;
+    try {
+      const row = await db.query.appConfig.findFirst({
+        where: eq(appConfig.key, "cron:lastRunAt"),
+      });
+      cronLastRunAt = row?.value ?? null;
+    } catch {
+      cronLastRunAt = null;
+    }
+
     return Response.json({
       aiConfigured: isAiConfigured(),
       model: GEMINI_MODEL,
       generatedAt: new Date().toISOString(),
+      cronLastRunAt,
+      cronStaleMinutes:
+        cronLastRunAt == null
+          ? null
+          : Math.round((Date.now() - new Date(cronLastRunAt).getTime()) / 60000),
       users: report,
     });
   } catch (error) {

@@ -6,6 +6,8 @@ import { db } from "~/server/db";
 import {
   aiLiveAdjustments,
   aiRecommendations,
+  aiRunLog,
+  appConfig,
   userAiSettings,
   userTemperatureProfile,
   users,
@@ -667,9 +669,61 @@ export async function reassessToday(
   return recommendation;
 }
 
-// Runs from the 30-minute temperature cron. For every user with AI enabled,
-// generates (and optionally auto-applies) one recommendation per day in the
-// window 30 minutes to 4 hours after their wake-up time.
+/** Records one daily-pass attempt. Never throws — logging must not break the
+ *  thing it is logging. */
+async function recordRun(
+  email: string,
+  forDate: string,
+  phase: string,
+  ok: boolean,
+  detail?: string,
+): Promise<void> {
+  try {
+    await db.insert(aiRunLog).values({
+      email,
+      forDate,
+      phase,
+      ok,
+      detail: detail?.slice(0, 500) ?? null,
+    });
+  } catch (error) {
+    console.error(
+      `Failed to record AI run for ${email}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
+/** Heartbeat so "the cron never fired" is distinguishable from "it fired and
+ *  the pass failed". Written on every tick, read by /api/aiStatus. */
+export async function recordCronHeartbeat(): Promise<void> {
+  try {
+    const at = new Date().toISOString();
+    await db
+      .insert(appConfig)
+      .values({ key: "cron:lastRunAt", value: at })
+      .onConflictDoUpdate({
+        target: appConfig.key,
+        set: { value: at },
+      });
+  } catch (error) {
+    console.error(
+      "Failed to record cron heartbeat:",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
+/**
+ * Runs from the 30-minute temperature cron. For every user with AI enabled,
+ * generates (and optionally auto-applies) one recommendation per day.
+ *
+ * The window opens 30 minutes after wake-up (the night has to be finished and
+ * uploaded) and stays open until an hour before bedtime. It used to close
+ * after four hours, which meant a handful of failed ticks in the morning cost
+ * the whole day silently — a plan produced at 15:00 still governs tonight, so
+ * there is no reason to give up at 11:00.
+ */
 export async function runDailyAiPass(): Promise<void> {
   if (!isAiConfigured()) {
     return;
@@ -694,7 +748,15 @@ export async function runDailyAiPass(): Promise<void> {
         profile.timezoneTZ,
         profile.wakeupTime.slice(0, 5),
       );
-      if (isNaN(sinceWakeup) || sinceWakeup < 30 || sinceWakeup > 240) {
+      const sinceBedtime = minutesSinceTimeOfDay(
+        now,
+        profile.timezoneTZ,
+        profile.bedTime.slice(0, 5),
+      );
+      // Closes an hour before bedtime: after that the plan would land as the
+      // pod is already pre-heating for the night it is meant to govern.
+      const beforeBedtime = isNaN(sinceBedtime) || sinceBedtime <= -60;
+      if (isNaN(sinceWakeup) || sinceWakeup < 30 || !beforeBedtime) {
         continue;
       }
 
@@ -714,6 +776,13 @@ export async function runDailyAiPass(): Promise<void> {
       }
 
       const recommendation = await generateRecommendationForUser(email, "cron");
+      await recordRun(
+        email,
+        forDate,
+        "recommendation",
+        true,
+        `id ${recommendation.id} (${recommendation.status})`,
+      );
       console.log(
         `AI daily pass generated recommendation ${recommendation.id} for ${email} (status: ${recommendation.status})`,
       );
@@ -731,10 +800,12 @@ export async function runDailyAiPass(): Promise<void> {
         );
       }
     } catch (error) {
-      console.error(
-        `AI daily pass failed for ${email}:`,
-        error instanceof Error ? error.message : String(error),
-      );
+      const detail = error instanceof Error ? error.message : String(error);
+      const forDate = new Date().toLocaleDateString("en-CA", {
+        timeZone: row.userTemperatureProfiles.timezoneTZ,
+      });
+      await recordRun(email, forDate, "recommendation", false, detail);
+      console.error(`AI daily pass failed for ${email}:`, detail);
     }
   }
 }

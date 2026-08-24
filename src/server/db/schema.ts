@@ -121,6 +121,29 @@ export const aiRecommendations = createTable(
   }),
 );
 
+// One row per attempt of the daily AI pass, per user per day. Without this a
+// failed pass is invisible: the app simply keeps showing yesterday's plan and
+// nothing says why. The monitor reads it to tell "the cron never ran" apart
+// from "the cron ran and Gemini refused".
+export const aiRunLog = createTable(
+  "aiRunLog",
+  {
+    id: serial("id").primaryKey(),
+    email: varchar("email", { length: 255 }).references(() => users.email).notNull(),
+    forDate: varchar("forDate", { length: 10 }).notNull(),
+    at: timestamp("at").defaultNow().notNull(),
+    phase: varchar("phase", { length: 24 }).notNull(),
+    ok: boolean("ok").notNull(),
+    detail: text("detail"),
+  },
+  (table) => ({
+    emailDateIdx: index("aiRunLog_email_forDate_idx").on(
+      table.email,
+      table.forDate,
+    ),
+  }),
+);
+
 // One row per night per account: the metrics we extract from the pod's own
 // session record, cached so the 7/14/30-day comparison does not re-page the
 // Eight Sleep API on every view (and so history outlives what the API keeps).

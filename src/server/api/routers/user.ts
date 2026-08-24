@@ -703,116 +703,204 @@ export const userRouter = createTRPCRouter({
       };
     }),
 
-  // The three temperature profiles worth comparing: what actually ran last
-  // night, what is loaded for tonight, and what the AI proposes but has not
-  // applied. This is the answer to "did it change, or am I looking at
-  // yesterday's numbers?".
-  getTemperaturePlan: publicProcedure.query(async ({ ctx }) => {
-    const decoded = await checkAuthCookie(ctx.headers);
-    const profile = await db.query.userTemperatureProfile.findFirst({
-      where: eq(userTemperatureProfile.email, decoded.email),
-    });
-    if (!profile) {
-      return {
-        timezone: "UTC",
-        tonight: null,
-        lastNight: null,
-        proposed: null,
-        latest: null,
-      };
-    }
-    const timezone = profile.timezoneTZ;
-
-    const tonight = {
-      initial: profile.initialSleepLevel,
-      deep: profile.deepSleepLevel ?? profile.midStageSleepLevel,
-      mid: profile.midStageSleepLevel,
-      final: profile.finalSleepLevel,
-    };
-
-    // What actually ran: the scheduled level we logged for each stage during
-    // the most recent night that has events. Ground truth, not an inference.
-    const recentEvents = await db
-      .select()
-      .from(temperatureEvents)
-      .where(eq(temperatureEvents.email, decoded.email))
-      .orderBy(desc(temperatureEvents.at))
-      .limit(120);
-
-    let lastNight: {
-      night: string;
-      initial: number | null;
-      deep: number | null;
-      mid: number | null;
-      final: number | null;
-    } | null = null;
-    const nightsSeen = [...new Set(recentEvents.map((e) => e.night))].sort();
-    // The newest night key belongs to the night now beginning; the completed
-    // one is the key before it, unless there is only one.
-    const targetNight =
-      nightsSeen.length > 1
-        ? nightsSeen[nightsSeen.length - 2]!
-        : nightsSeen[nightsSeen.length - 1];
-    if (targetNight) {
-      const forNight = recentEvents
-        .filter((e) => e.night === targetNight && e.source !== "live")
-        .sort((a, b) => a.at.getTime() - b.at.getTime());
-      const levelFor = (stage: string): number | null => {
-        const match = forNight.find((e) => e.stage === stage);
-        return match?.level ?? null;
-      };
-      lastNight = {
-        night: targetNight,
-        initial: levelFor("initial"),
-        deep: levelFor("deep"),
-        mid: levelFor("mid"),
-        final: levelFor("final"),
-      };
-      if (
-        lastNight.initial == null &&
-        lastNight.deep == null &&
-        lastNight.mid == null &&
-        lastNight.final == null
-      ) {
-        lastNight = null;
+  // What the pod has actually been running, night by night, plus what is
+  // loaded for tonight and anything the AI is proposing.
+  //
+  // Both `temperatureEvents.night` and `aiRecommendations.forDate` are keyed
+  // by the date a night STARTED, so they line up with each other directly —
+  // it is only the pod's own sessions (keyed by the wake date) that need the
+  // time-range treatment.
+  getTemperaturePlan: publicProcedure
+    .input(z.object({ days: z.number().int().min(3).max(21) }).optional())
+    .query(async ({ input, ctx }) => {
+      const decoded = await checkAuthCookie(ctx.headers);
+      const profile = await db.query.userTemperatureProfile.findFirst({
+        where: eq(userTemperatureProfile.email, decoded.email),
+      });
+      if (!profile) {
+        return {
+          timezone: "UTC",
+          bedTime: null,
+          wakeupTime: null,
+          todayKey: null,
+          tonight: null,
+          lastNight: null,
+          proposed: null,
+          latest: null,
+          history: [],
+        };
       }
-    }
+      const timezone = profile.timezoneTZ;
+      const days = input?.days ?? 7;
 
-    const [latest] = await db
-      .select()
-      .from(aiRecommendations)
-      .where(eq(aiRecommendations.email, decoded.email))
-      .orderBy(desc(aiRecommendations.id))
-      .limit(1);
+      const tonight = {
+        initial: profile.initialSleepLevel,
+        deep: profile.deepSleepLevel ?? profile.midStageSleepLevel,
+        mid: profile.midStageSleepLevel,
+        final: profile.finalSleepLevel,
+      };
 
-    const proposed =
-      latest && latest.status === "pending"
-        ? {
-            initial: latest.recommendedInitialLevel,
-            deep: latest.recommendedDeepLevel ?? latest.recommendedMidLevel,
-            mid: latest.recommendedMidLevel,
-            final: latest.recommendedFinalLevel,
+      // The night that begins this evening is keyed by today's local date,
+      // the same key nightKeyFor() writes for events sent after wake-up.
+      const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: timezone });
+      const from = shiftDate(todayKey, -(days + 1));
+
+      const events = await db
+        .select()
+        .from(temperatureEvents)
+        .where(
+          and(
+            eq(temperatureEvents.email, decoded.email),
+            gte(temperatureEvents.night, from),
+          ),
+        )
+        .orderBy(temperatureEvents.at);
+
+      const recommendations = await db
+        .select()
+        .from(aiRecommendations)
+        .where(
+          and(
+            eq(aiRecommendations.email, decoded.email),
+            gte(aiRecommendations.forDate, from),
+          ),
+        )
+        .orderBy(aiRecommendations.id);
+
+      type Row = {
+        night: string;
+        initial: number | null;
+        deep: number | null;
+        mid: number | null;
+        final: number | null;
+        /** Did a recommendation actually take effect for this night? */
+        aiChanged: boolean;
+        aiStatus: string | null;
+        liveNudges: number;
+      };
+
+      const byNight = new Map<string, Row>();
+      for (const event of events) {
+        const row = byNight.get(event.night) ?? {
+          night: event.night,
+          initial: null,
+          deep: null,
+          mid: null,
+          final: null,
+          aiChanged: false,
+          aiStatus: null,
+          liveNudges: 0,
+        };
+        if (event.source === "live") {
+          row.liveNudges += 1;
+        } else if (event.level != null) {
+          // First scheduled value wins: later ones for the same stage are
+          // re-sends of the same setting within the 15-minute window.
+          const stage = event.stage === "pre-heating" ? "initial" : event.stage;
+          if (
+            (stage === "initial" || stage === "deep" || stage === "mid" || stage === "final") &&
+            row[stage] == null
+          ) {
+            row[stage] = event.level;
           }
-        : null;
+        }
+        byNight.set(event.night, row);
+      }
 
-    return {
-      timezone,
-      bedTime: profile.bedTime.slice(0, 5),
-      wakeupTime: profile.wakeupTime.slice(0, 5),
-      tonight,
-      lastNight,
-      proposed,
-      latest: latest
-        ? {
-            id: latest.id,
-            forDate: latest.forDate,
-            status: latest.status,
-            confidence: latest.confidence,
-            updatedAt: latest.updatedAt,
-          }
-        : null,
-    };
-  }),
+      for (const rec of recommendations) {
+        const row = byNight.get(rec.forDate);
+        const applied = rec.status === "applied" || rec.status === "auto_applied";
+        const changed =
+          applied &&
+          (rec.previousInitialLevel !== rec.recommendedInitialLevel ||
+            (rec.previousDeepLevel ?? rec.previousMidLevel) !==
+              (rec.recommendedDeepLevel ?? rec.recommendedMidLevel) ||
+            rec.previousMidLevel !== rec.recommendedMidLevel ||
+            rec.previousFinalLevel !== rec.recommendedFinalLevel);
+        if (row) {
+          row.aiChanged = changed;
+          row.aiStatus = rec.status;
+        } else if (rec.forDate === todayKey) {
+          byNight.set(rec.forDate, {
+            night: rec.forDate,
+            initial: null,
+            deep: null,
+            mid: null,
+            final: null,
+            aiChanged: changed,
+            aiStatus: rec.status,
+            liveNudges: 0,
+          });
+        }
+      }
+
+      // Tonight has not run yet, so its row is the loaded profile rather than
+      // anything the pod has been told.
+      const todayRow = byNight.get(todayKey);
+      byNight.set(todayKey, {
+        night: todayKey,
+        ...tonight,
+        aiChanged: todayRow?.aiChanged ?? false,
+        aiStatus: todayRow?.aiStatus ?? null,
+        liveNudges: 0,
+      });
+
+      const history = [...byNight.values()]
+        .filter((row) => row.night <= todayKey)
+        .sort((a, b) => a.night.localeCompare(b.night))
+        .slice(-(days + 1));
+
+      const lastNightRow = history.find(
+        (row) => row.night === shiftDate(todayKey, -1),
+      );
+      const lastNight =
+        lastNightRow &&
+        (lastNightRow.initial != null ||
+          lastNightRow.deep != null ||
+          lastNightRow.mid != null ||
+          lastNightRow.final != null)
+          ? {
+              night: lastNightRow.night,
+              initial: lastNightRow.initial,
+              deep: lastNightRow.deep,
+              mid: lastNightRow.mid,
+              final: lastNightRow.final,
+            }
+          : null;
+
+      const latest = recommendations[recommendations.length - 1];
+      const proposed =
+        latest && latest.status === "pending"
+          ? {
+              initial: latest.recommendedInitialLevel,
+              deep: latest.recommendedDeepLevel ?? latest.recommendedMidLevel,
+              mid: latest.recommendedMidLevel,
+              final: latest.recommendedFinalLevel,
+            }
+          : null;
+
+      return {
+        timezone,
+        bedTime: profile.bedTime.slice(0, 5),
+        wakeupTime: profile.wakeupTime.slice(0, 5),
+        todayKey,
+        tonight,
+        lastNight,
+        proposed,
+        latest: latest
+          ? {
+              id: latest.id,
+              forDate: latest.forDate,
+              status: latest.status,
+              confidence: latest.confidence,
+              updatedAt: latest.updatedAt,
+            }
+          : null,
+        /** Whether today's assessment has happened at all. */
+        assessedToday: recommendations.some((r) => r.forDate === todayKey),
+        history,
+      };
+    }),
 
   getLiveAdjustments: publicProcedure.query(async ({ ctx }) => {
     const decoded = await checkAuthCookie(ctx.headers);
