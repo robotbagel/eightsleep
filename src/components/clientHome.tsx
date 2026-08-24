@@ -10,6 +10,7 @@ import { AiAdvisorCard, AiSettingsCard } from "~/components/aiPanel";
 import { NightSummaryCard } from "~/components/nightSummaryCard";
 import { NightTimeline } from "~/components/nightTimeline";
 import { CompareCard } from "~/components/compareCard";
+import { OutlookCard } from "~/components/outlookCard";
 import { Disclosure } from "~/components/ui/card";
 import LordIcon from "~/components/ui/lordIcon";
 import { useSwipe } from "~/components/useSwipe";
@@ -164,20 +165,27 @@ const SignedIn: React.FC = () => {
           </div>
         </div>
 
-        <CompareCard index={2} />
-        <AiAdvisorCard displayUnit={displayUnit} index={3} />
+        {/* Where the night sits in the run: last two nights measured, tonight
+            predicted. Outside the swipe container on purpose — it is about the
+            trend, not the night you happen to be paging through. */}
+        <div className="lg:col-span-2">
+          <OutlookCard index={2} />
+        </div>
+
+        <CompareCard index={3} />
+        <AiAdvisorCard displayUnit={displayUnit} index={4} />
 
         <div className="space-y-4 lg:col-span-2">
           <Disclosure
             icon="bed"
             title="Tonight's schedule"
             summary="Bed time, wake-up, and the four stage temperatures."
-            index={4}
+            index={5}
           >
             <TemperatureProfileForm />
           </Disclosure>
 
-          <AiSettingsCard index={5} />
+          <AiSettingsCard index={6} />
         </div>
       </div>
     </div>

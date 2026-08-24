@@ -325,6 +325,13 @@ export async function generateRecommendationForUser(
       expectation: `Scores should return toward ${history.bestScore} within a night or two now that the profile is back at ${bestFormatted}.`,
       principle:
         "When an experiment makes things worse two nights running, return to the best-known setting before trying anything new — otherwise you cannot tell which change caused what.",
+      forecast:
+        history.bestScore != null
+          ? {
+              expectedScoreLow: Math.max(0, history.bestScore - 8),
+              expectedScoreHigh: Math.min(100, history.bestScore + 2),
+            }
+          : null,
     };
   } else {
     const signals = [
@@ -391,6 +398,7 @@ export async function generateRecommendationForUser(
         evidence: recommendation.evidence ?? [],
         expectation: recommendation.expectation ?? "",
         principle: recommendation.principle ?? "",
+        forecast: recommendation.forecast ?? null,
       }),
       sleepContextJson: JSON.stringify(sleepContext),
       status: autoApplied ? "auto_applied" : "pending",

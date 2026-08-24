@@ -49,6 +49,16 @@ export const STAGE_KEYS = ["initial", "deep", "mid", "final"] as const;
 // summary) so the app can show the evidence, the per-stage logic, the
 // prediction and the underlying principle as their own things — the point
 // being that the sleeper can learn the rule, not just read a verdict.
+const ForecastSchema = z.object({
+  // A range, never a point: the model must not imply precision it lacks.
+  expectedScoreLow: z.number(),
+  expectedScoreHigh: z.number(),
+  expectedDeepHours: z.number().nullish(),
+  expectedTosses: z.number().nullish(),
+});
+
+export type RecommendationForecast = z.infer<typeof ForecastSchema>;
+
 const RationaleSchema = z.object({
   perStage: z
     .array(
@@ -62,6 +72,7 @@ const RationaleSchema = z.object({
   evidence: z.array(z.string()).default([]),
   expectation: z.string().default(""),
   principle: z.string().default(""),
+  forecast: ForecastSchema.nullish(),
 });
 
 export type RecommendationRationale = z.infer<typeof RationaleSchema>;
@@ -77,6 +88,7 @@ const RecommendationSchema = z.object({
   evidence: RationaleSchema.shape.evidence,
   expectation: RationaleSchema.shape.expectation,
   principle: RationaleSchema.shape.principle,
+  forecast: ForecastSchema.nullish(),
 });
 
 export type AiRecommendation = z.infer<typeof RecommendationSchema>;
@@ -170,6 +182,7 @@ function buildPrompt(input: AdvisorInput): string {
     "- evidence: 2 to 5 short factual lines, each a number straight from the data (\"11 tosses in the first third, 4 more than the 7-night average\", \"deep sleep 1h12m against a 1h35m average\"). No advice in these — evidence only.",
     "- expectation: one sentence stating what should measurably improve tomorrow morning if this change is right, so the prediction can be checked (\"fewer than 6 tosses before 01:00 and 15+ minutes more deep sleep\").",
     "- principle: one sentence of the general sleep-physiology rule at work here, phrased so it is worth remembering on its own.",
+    "- forecast: what tonight should actually come out at, so the prediction can be checked against tomorrow's measurements. Give expectedScoreLow and expectedScoreHigh as a realistic RANGE for the sleep score shown in the data above (typically 6-12 points wide; widen it when confidence is low), plus expectedDeepHours and expectedTosses. Base the range on this sleeper's own recent nights, not on an ideal — if the change is small, the range should sit close to last night's number.",
   ]
     .filter((line) => line !== "")
     .join("\n");
@@ -228,6 +241,16 @@ export async function generateTemperatureRecommendation(
             evidence: { type: "ARRAY", items: { type: "STRING" } },
             expectation: { type: "STRING" },
             principle: { type: "STRING" },
+            forecast: {
+              type: "OBJECT",
+              properties: {
+                expectedScoreLow: { type: "NUMBER" },
+                expectedScoreHigh: { type: "NUMBER" },
+                expectedDeepHours: { type: "NUMBER" },
+                expectedTosses: { type: "NUMBER" },
+              },
+              required: ["expectedScoreLow", "expectedScoreHigh"],
+            },
           },
           required: [
             "initialSleepC",
@@ -240,6 +263,7 @@ export async function generateTemperatureRecommendation(
             "evidence",
             "expectation",
             "principle",
+            "forecast",
           ],
         },
         thinkingConfig: { thinkingLevel: "LOW" },

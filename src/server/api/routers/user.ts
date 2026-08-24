@@ -703,6 +703,135 @@ export const userRouter = createTRPCRouter({
       };
     }),
 
+  // The three nights that matter to the question "how did I sleep, and how
+  // will I sleep tonight": the night before last, last night, and tonight —
+  // the last of which is a PREDICTION, carried by the recommendation that
+  // governs it.
+  //
+  // Night keys are wake dates, recommendation `forDate` is a night-START
+  // date, so the recommendation made on D governs the night you wake from on
+  // D+1. Getting that offset wrong silently compares a plan with the night
+  // that preceded it.
+  getNightOutlook: publicProcedure.query(async ({ ctx }) => {
+    const decoded = await checkAuthCookie(ctx.headers);
+    const user = await db.query.users.findFirst({
+      where: eq(users.email, decoded.email),
+    });
+    const profile = await db.query.userTemperatureProfile.findFirst({
+      where: eq(userTemperatureProfile.email, decoded.email),
+    });
+    const timezone = profile?.timezoneTZ ?? "UTC";
+    const todayKey = new Date().toLocaleDateString("en-CA", {
+      timeZone: timezone,
+    });
+
+    let nights = await readNightMetrics(
+      decoded.email,
+      shiftDate(todayKey, -10),
+      todayKey,
+    );
+    // The cache is filled by every night fetch, but a cold session (or a
+    // brand-new night) can beat it, so top it up rather than show nothing.
+    if (nights.length < 2 && user) {
+      try {
+        const token = await getFreshToken(user);
+        await syncNightMetrics(
+          decoded.email,
+          token,
+          user.eightUserId,
+          timezone,
+          1,
+        );
+        nights = await readNightMetrics(
+          decoded.email,
+          shiftDate(todayKey, -10),
+          todayKey,
+        );
+      } catch (error) {
+        console.error("Night outlook: pod sync failed:", error);
+      }
+    }
+
+    const lastNight = nights[nights.length - 1] ?? null;
+    const nightBefore = nights[nights.length - 2] ?? null;
+
+    const recommendations = await db
+      .select()
+      .from(aiRecommendations)
+      .where(eq(aiRecommendations.email, decoded.email))
+      .orderBy(desc(aiRecommendations.id))
+      .limit(10);
+
+    const parse = (json: string | null) => {
+      if (!json) return null;
+      try {
+        return JSON.parse(json) as {
+          expectation?: string;
+          forecast?: {
+            expectedScoreLow: number;
+            expectedScoreHigh: number;
+            expectedDeepHours?: number | null;
+            expectedTosses?: number | null;
+          } | null;
+        };
+      } catch {
+        return null;
+      }
+    };
+
+    const ranFor = (nightKey: string) =>
+      recommendations.find(
+        (r) =>
+          r.forDate === shiftDate(nightKey, -1) &&
+          (r.status === "applied" || r.status === "auto_applied"),
+      ) ?? null;
+
+    // Tonight begins this evening, so it is governed by today's assessment.
+    const forTonight =
+      recommendations.find(
+        (r) =>
+          r.forDate === todayKey &&
+          (r.status === "applied" ||
+            r.status === "auto_applied" ||
+            r.status === "pending"),
+      ) ?? null;
+    const tonightRationale = parse(forTonight?.rationaleJson ?? null);
+
+    // How the previous prediction actually landed.
+    const lastNightRec = lastNight ? ranFor(lastNight.night) : null;
+    const lastNightForecast = parse(lastNightRec?.rationaleJson ?? null)
+      ?.forecast;
+    const accuracy =
+      lastNight?.score != null && lastNightForecast
+        ? {
+            night: lastNight.night,
+            low: lastNightForecast.expectedScoreLow,
+            high: lastNightForecast.expectedScoreHigh,
+            actual: lastNight.score,
+            hit:
+              lastNight.score >= lastNightForecast.expectedScoreLow &&
+              lastNight.score <= lastNightForecast.expectedScoreHigh,
+          }
+        : null;
+
+    return {
+      timezone,
+      todayKey,
+      nightBefore,
+      lastNight,
+      tonight: {
+        /** The night starting this evening, keyed by the date you will wake. */
+        night: shiftDate(todayKey, 1),
+        planned: forTonight != null,
+        status: forTonight?.status ?? null,
+        confidence: forTonight?.confidence ?? null,
+        forecast: tonightRationale?.forecast ?? null,
+        expectation: tonightRationale?.expectation ?? null,
+      },
+      accuracy,
+    };
+  }),
+
   // What the pod has actually been running, night by night, plus what is
   // loaded for tonight and anything the AI is proposing.
   //

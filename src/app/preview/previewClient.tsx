@@ -16,6 +16,8 @@ import { useSwipe } from "~/components/useSwipe";
 import { CompareView, type CompareData } from "~/components/compareCard";
 import { PlanBanner, Reasoning } from "~/components/aiPanel";
 import { SettingsHistory } from "~/components/settingsHistory";
+import { StageComparison } from "~/components/stageComparison";
+import { OutlookView } from "~/components/outlookCard";
 import allNights from "./nights.json";
 import { TemperatureCurve } from "~/components/temperatureCurve";
 import { clockIn, formatHours, type Point } from "~/components/charts/chartUtils";
@@ -291,6 +293,41 @@ export default function PreviewClient() {
             </div>
           </div>
 
+          {/* ---- Outlook ---------------------------------------------- */}
+          <div className="lg:col-span-2">
+            <OutlookView
+              loading={false}
+              index={2}
+              data={{
+                timezone: "Europe/Brussels",
+                todayKey: "2026-01-18",
+                nightBefore: allNights[allNights.length - 2]!,
+                lastNight: allNights[allNights.length - 1]!,
+                tonight: {
+                  night: "2026-01-19",
+                  planned: true,
+                  status: "auto_applied",
+                  confidence: "high",
+                  forecast: {
+                    expectedScoreLow: 72,
+                    expectedScoreHigh: 80,
+                    expectedDeepHours: 1.35,
+                    expectedTosses: 13,
+                  },
+                  expectation:
+                    "Fewer than six tosses before 01:00 and at least 15 minutes more deep sleep, with no wake-ups in the final hour.",
+                },
+                accuracy: {
+                  night: "2026-01-18",
+                  low: 64,
+                  high: 74,
+                  actual: 68,
+                  hit: true,
+                },
+              } as React.ComponentProps<typeof OutlookView>["data"]}
+            />
+          </div>
+
           {/* ---- Trend ------------------------------------------------ */}
           <CompareView
             index={2}
@@ -318,6 +355,15 @@ export default function PreviewClient() {
                 </div>
               }
             />
+            <div className="mb-5">
+              <StageComparison
+                unit="celsius"
+                twoNightsAgo={{ night: "2026-01-16", initial: 11, deep: -17, mid: 6, final: 11, aiChanged: true, aiStatus: "auto_applied", liveNudges: 0 }}
+                lastNight={{ night: "2026-01-17", initial: 17, deep: -8, mid: 0, final: 11, aiChanged: true, aiStatus: "auto_applied", liveNudges: 2 }}
+                tonight={{ night: "2026-01-18", initial: 11, deep: -17, mid: 0, final: 17, aiChanged: true, aiStatus: "auto_applied", liveNudges: 0 }}
+                proposed={null}
+              />
+            </div>
             <div className="mb-5">
               <SettingsHistory
                 unit="celsius"

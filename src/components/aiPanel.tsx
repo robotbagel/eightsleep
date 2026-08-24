@@ -8,6 +8,7 @@ import LordIcon from "./ui/lordIcon";
 import { StageChangeChart, type StageChange } from "./charts/stageChangeChart";
 import { PlanCurve } from "./charts/planCurve";
 import { SettingsHistory } from "./settingsHistory";
+import { StageComparison } from "./stageComparison";
 
 // ---------------------------------------------------------------------------
 // Small shared pieces
@@ -538,12 +539,33 @@ export const AiAdvisorCard: React.FC<{
           />
 
           <div className="mt-5">
-            <SettingsHistory
-              history={plan.history}
-              todayKey={plan.todayKey}
+            <StageComparison
+              twoNightsAgo={pickNight(plan.history, plan.todayKey, -2)}
+              lastNight={pickNight(plan.history, plan.todayKey, -1)}
+              tonight={pickNight(plan.history, plan.todayKey, 0)}
+              proposed={plan.proposed}
               unit={displayUnit}
             />
           </div>
+
+          <details className="mt-4 group">
+            <summary
+              className="cursor-pointer list-none text-xs font-semibold"
+              style={{ color: "var(--text-muted)" }}
+            >
+              <span className="group-open:hidden">Show the last 7 nights</span>
+              <span className="hidden group-open:inline">
+                Hide the last 7 nights
+              </span>
+            </summary>
+            <div className="mt-3">
+              <SettingsHistory
+                history={plan.history}
+                todayKey={plan.todayKey}
+                unit={displayUnit}
+              />
+            </div>
+          </details>
 
           <div className="mt-5">
             <PlanCurve
@@ -724,6 +746,26 @@ export const AiAdvisorCard: React.FC<{
     </Card>
   );
 };
+
+/** Picks the row `offset` nights from today out of the settings history,
+ *  by date rather than by position — history has gaps on nights the pod (or
+ *  the cron) recorded nothing, and counting backwards would silently show the
+ *  wrong night. */
+function pickNight(
+  history: { night: string }[],
+  todayKey: string | null,
+  offset: number,
+) {
+  if (!todayKey) return null;
+  const target = new Date(`${todayKey}T12:00:00Z`);
+  target.setUTCDate(target.getUTCDate() + offset);
+  const key = target.toISOString().slice(0, 10);
+  return (
+    (history.find((row) => row.night === key) as
+      | Parameters<typeof StageComparison>[0]["tonight"]
+      | undefined) ?? null
+  );
+}
 
 function nightLabel(night: string): string {
   return new Date(`${night}T12:00:00Z`).toLocaleDateString("en-GB", {
