@@ -519,3 +519,34 @@
     stroke-dashoffset: 0 !important;
   }
 }
+
+/* Night paging: the incoming night slides in from the side it came from. */
+@keyframes slide-from-left {
+  from {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes slide-from-right {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.enter-prev {
+  animation: slide-from-left var(--motion-base) var(--ease-out-snap) both;
+}
+
+.enter-next {
+  animation: slide-from-right var(--motion-base) var(--ease-out-snap) both;
+}

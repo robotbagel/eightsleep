@@ -9,8 +9,13 @@ import { ScoreRing } from "~/components/charts/scoreRing";
 import { StageBar } from "~/components/charts/stageBar";
 import { Sparkline } from "~/components/charts/sparkline";
 import { NightChart, type NightEvent } from "~/components/charts/nightChart";
-import { TrendChart } from "~/components/charts/trendChart";
 import { StageChangeChart } from "~/components/charts/stageChangeChart";
+import { PlanCurve } from "~/components/charts/planCurve";
+import { NightNav } from "~/components/nightNav";
+import { useSwipe } from "~/components/useSwipe";
+import { CompareView, type CompareData } from "~/components/compareCard";
+import { PlanBanner, Reasoning } from "~/components/aiPanel";
+import allNights from "./nights.json";
 import { TemperatureCurve } from "~/components/temperatureCurve";
 import { clockIn, formatHours, type Point } from "~/components/charts/chartUtils";
 
@@ -40,8 +45,86 @@ const EVENTS: NightEvent[] = [
   { at: ms("2026-01-18T05:45:00.000Z"), label: "Wake-up → off", detail: "Scheduled off", source: "off" },
 ];
 
+type PreviewNight = (typeof allNights)[number];
+
+// Recreates what the server's getSleepHistory returns, so the compare card
+// renders here exactly as it does with live data.
+function buildCompareData(days: 7 | 14 | 30): CompareData {
+  const nights: PreviewNight[] = allNights.slice(-days);
+  const previous: PreviewNight[] = allNights.slice(-days * 2, -days);
+  const keys = [
+    "score",
+    "asleepHours",
+    "deepHours",
+    "remHours",
+    "awakeHours",
+    "tosses",
+    "restingHeartRate",
+    "hrv",
+    "respiratoryRate",
+    "avgBedTempC",
+    "bedtimeMinutes",
+  ] as const;
+  const avg = (rows: PreviewNight[], key: (typeof keys)[number]) => {
+    const values = rows
+      .map((n) => n[key])
+      .filter((v): v is number => typeof v === "number");
+    return values.length === 0
+      ? null
+      : values.reduce((a, b) => a + b, 0) / values.length;
+  };
+  const weekdayAvg = (key: "score" | "asleepHours" | "deepHours") => {
+    const buckets: number[][] = Array.from({ length: 7 }, () => []);
+    for (const night of nights) {
+      const value = night[key];
+      if (typeof value !== "number") continue;
+      buckets[new Date(`${night.night}T12:00:00Z`).getUTCDay()]!.push(value);
+    }
+    return buckets.map((b) =>
+      b.length === 0 ? null : b.reduce((x, y) => x + y, 0) / b.length,
+    );
+  };
+  return {
+    days,
+    timezone: "Europe/Brussels",
+    from: nights[0]!.night,
+    to: nights[nights.length - 1]!.night,
+    nights,
+    previousNights: previous,
+    aggregates: keys.map((key) => {
+      const values = nights
+        .map((n) => n[key])
+        .filter((v): v is number => typeof v === "number");
+      return {
+        key,
+        average: avg(nights, key),
+        best: values.length ? Math.max(...values) : null,
+        worst: values.length ? Math.min(...values) : null,
+        nights: values.length,
+        previousAverage: avg(previous, key),
+      };
+    }),
+    weekday: {
+      score: weekdayAvg("score"),
+      asleepHours: weekdayAvg("asleepHours"),
+      deepHours: weekdayAvg("deepHours"),
+    },
+  } as CompareData;
+}
+
 export default function PreviewClient() {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [days, setDays] = useState<7 | 14 | 30>(7);
+  const [nightIndex, setNightIndex] = useState(allNights.length - 1);
+  const goPrev = () => setNightIndex((i) => Math.max(0, i - 1));
+  const goNext = () =>
+    setNightIndex((i) => Math.min(allNights.length - 1, i + 1));
+  const swipe = useSwipe({
+    onPrev: goPrev,
+    onNext: goNext,
+    canPrev: nightIndex > 0,
+    canNext: nightIndex < allNights.length - 1,
+  });
 
   const summary = fixture.stageSummary;
   const stageHours = {
@@ -94,18 +177,46 @@ export default function PreviewClient() {
       <div className="mx-auto max-w-5xl px-4 pt-5">
         <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
           {/* ---- Last night ------------------------------------------- */}
-          <div className="space-y-4 lg:col-span-2">
+          <div
+            className="space-y-4 lg:col-span-2"
+            data-testid="night-swipe"
+            style={{ touchAction: "pan-y" }}
+            {...swipe.bind}
+          >
+            <div
+              className={
+                swipe.entering === "prev"
+                  ? "enter-prev space-y-4"
+                  : swipe.entering === "next"
+                    ? "enter-next space-y-4"
+                    : "space-y-4"
+              }
+              style={{
+                transform:
+                  swipe.dx !== 0 ? `translateX(${swipe.dx}px)` : undefined,
+                transition: swipe.dragging
+                  ? "none"
+                  : "transform var(--motion-base) cubic-bezier(0.2, 0.9, 0.3, 1)",
+              }}
+            >
             <Card index={0}>
-              <CardHeader
-                icon="sleep"
-                title="Last night"
-                subtitle="Sunday, 18 January"
-                right={
-                  <span className="chip" style={{ backgroundColor: "var(--warning-soft)", color: "var(--warning)" }}>
-                    Decent night
-                  </span>
-                }
-              />
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1">
+                  <NightNav
+                    night={allNights[nightIndex]!.night}
+                    isLatest={nightIndex === allNights.length - 1}
+                    canPrev={nightIndex > 0}
+                    canNext={nightIndex < allNights.length - 1}
+                    onPrev={goPrev}
+                    onNext={goNext}
+                    onLatest={() => setNightIndex(allNights.length - 1)}
+                  />
+                </div>
+                <span className="chip shrink-0" style={{ backgroundColor: "var(--warning-soft)", color: "var(--warning)" }}>
+                  Decent night
+                </span>
+              </div>
+              <div className="mt-5" />
               <div className="flex flex-col items-center gap-5 sm:flex-row">
                 <ScoreRing score={68} />
                 <div className="w-full flex-1">
@@ -176,13 +287,18 @@ export default function PreviewClient() {
                 events={EVENTS}
               />
             </Card>
+            </div>
           </div>
 
           {/* ---- Trend ------------------------------------------------ */}
-          <Card index={2}>
-            <CardHeader icon="chart" title="Recent nights" subtitle="Best so far: 82 on 13 Jan" />
-            <TrendChart nights={NIGHTS} />
-          </Card>
+          <CompareView
+            index={2}
+            days={days}
+            onDays={setDays}
+            data={buildCompareData(days)}
+            loading={false}
+            fetching={false}
+          />
 
           {/* ---- Advisor ---------------------------------------------- */}
           <Card index={3}>
@@ -201,15 +317,46 @@ export default function PreviewClient() {
                 </div>
               }
             />
-            <StageChangeChart
-              unit="celsius"
-              changes={[
-                { label: "Falling asleep", previous: 17, recommended: 11 },
-                { label: "Deep sleep", previous: -8, recommended: -17 },
-                { label: "Middle of the night", previous: 0, recommended: 0 },
-                { label: "REM and wake-up", previous: 11, recommended: 17 },
+            <PlanCurve
+              bedTime="23:00"
+              wakeupTime="07:10"
+              series={[
+                {
+                  key: "lastNight",
+                  label: "Last night (what ran)",
+                  levels: { initial: 17, deep: -8, mid: 0, final: 11 },
+                  color: "var(--text-faint)",
+                  dashed: true,
+                },
+                {
+                  key: "tonight",
+                  label: "Tonight (loaded)",
+                  levels: { initial: 11, deep: -17, mid: 0, final: 17 },
+                  color: "var(--accent)",
+                  emphasis: true,
+                },
               ]}
             />
+            <div className="mt-5">
+              <StageChangeChart
+                unit="celsius"
+                changes={[
+                  { label: "Falling asleep", lastNight: 17, tonight: 11 },
+                  { label: "Deep sleep", lastNight: -8, tonight: -17 },
+                  { label: "Middle of the night", lastNight: 0, tonight: 0 },
+                  { label: "REM and wake-up", lastNight: 11, tonight: 17, proposed: 22 },
+                ]}
+              />
+            </div>
+            <div className="mb-4">
+              <PlanBanner
+                status="auto_applied"
+                updatedAt="2026-01-18T07:12:00.000Z"
+                anyChanged
+                hasProposal={false}
+                hasLastNight
+              />
+            </div>
             <p
               className="mt-4 rounded-xl p-3 text-sm leading-relaxed"
               style={{ backgroundColor: "var(--surface-sunken)", color: "var(--text)" }}
@@ -219,7 +366,45 @@ export default function PreviewClient() {
               too warm going in. Deep sleep drops a full degree tonight and the
               wake-up stage warms to protect the REM block that ended your night.
             </p>
-            <div className="mt-3 flex gap-2">
+            <Reasoning
+              displayUnit="celsius"
+              outcome={{ before: 68, after: 79, delta: 11 }}
+              rationale={{
+                perStage: [
+                  {
+                    stage: "initial",
+                    direction: "cooler",
+                    why: "You took 36 minutes to fall asleep against a 19-minute average, with the bed at 31.9°C — warm enough at onset to slow the core-temperature drop.",
+                  },
+                  {
+                    stage: "deep",
+                    direction: "cooler",
+                    why: "Nine of your 21 tosses landed in the first third, the window where deep sleep should be consolidating.",
+                  },
+                  {
+                    stage: "mid",
+                    direction: "unchanged",
+                    why: "The middle of the night was quiet — two tosses, heart rate flat at 49 bpm — so there is nothing here to fix.",
+                  },
+                  {
+                    stage: "final",
+                    direction: "warmer",
+                    why: "Your last REM block ended 40 minutes before your alarm and you woke twice after it, a pattern that usually means the bed cooled too far before waking.",
+                  },
+                ],
+                evidence: [
+                  "21 tosses, 6 above your 14-night average of 15.",
+                  "Deep sleep 1h 24m against a 1h 38m average.",
+                  "Bed temperature averaged 31.9°C in the first third, 1.4°C above your best-scoring night.",
+                  "Two brief wake-ups in the last hour before the alarm.",
+                ],
+                expectation:
+                  "Fewer than six tosses before 01:00 and at least 15 minutes more deep sleep, with no wake-ups in the final hour.",
+                principle:
+                  "Skin warmth helps you fall asleep, but the core still has to cool for deep sleep — so warmth belongs at the very start and the very end of the night, not through the middle of it.",
+              }}
+            />
+            <div className="mt-4 flex gap-2">
               <button type="button" className="btn btn-primary flex-1">
                 Apply tonight
               </button>

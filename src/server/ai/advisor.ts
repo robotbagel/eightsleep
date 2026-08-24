@@ -297,6 +297,32 @@ export async function generateRecommendationForUser(
       finalSleepC: rawToCelsius(best.final),
       reasoning: `The last two nights scored at least ${REGRESSION_SCORE_DROP} points below your best night (${history.bestScore}), so this reverts to the best-known configuration (${bestFormatted}) before experimenting further.`,
       confidence: "high",
+      // This branch is the deterministic guardrail, not the model, so the
+      // rationale is written here rather than generated.
+      perStage: (
+        [
+          ["initial", best.initial],
+          ["deep", best.deep],
+          ["mid", best.mid],
+          ["final", best.final],
+        ] as const
+      ).map(([stage, level]) => ({
+        stage,
+        direction:
+          level === currentLevels[stage]
+            ? ("unchanged" as const)
+            : level < currentLevels[stage]
+              ? ("cooler" as const)
+              : ("warmer" as const),
+        why: `Back to ${formatRawByUnit(level, unit)}, the value this stage held on your best-scoring night.`,
+      })),
+      evidence: [
+        `Best night on record scored ${history.bestScore}.`,
+        `The last two nights fell at least ${REGRESSION_SCORE_DROP} points short of it.`,
+      ],
+      expectation: `Scores should return toward ${history.bestScore} within a night or two now that the profile is back at ${bestFormatted}.`,
+      principle:
+        "When an experiment makes things worse two nights running, return to the best-known setting before trying anything new — otherwise you cannot tell which change caused what.",
     };
   } else {
     const signals = [
@@ -358,6 +384,12 @@ export async function generateRecommendationForUser(
       recommendedFinalLevel: recommendedLevels.final,
       reasoning: recommendation.reasoning,
       confidence: recommendation.confidence,
+      rationaleJson: JSON.stringify({
+        perStage: recommendation.perStage ?? [],
+        evidence: recommendation.evidence ?? [],
+        expectation: recommendation.expectation ?? "",
+        principle: recommendation.principle ?? "",
+      }),
       sleepContextJson: JSON.stringify(sleepContext),
       status: autoApplied ? "auto_applied" : "pending",
       source,

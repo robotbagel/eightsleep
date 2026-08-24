@@ -6,6 +6,7 @@ import { buildSleepShortcutPlist } from "~/lib/sleepShortcut";
 import { Card, CardHeader, Disclosure, Skeleton } from "./ui/card";
 import LordIcon from "./ui/lordIcon";
 import { StageChangeChart, type StageChange } from "./charts/stageChangeChart";
+import { PlanCurve } from "./charts/planCurve";
 
 // ---------------------------------------------------------------------------
 // Small shared pieces
@@ -398,8 +399,28 @@ const HealthImportSection: React.FC = () => {
 };
 
 // ---------------------------------------------------------------------------
-// The advisor card — what the AI decided, and why
+// The advisor card — what is loaded for tonight, and why
 // ---------------------------------------------------------------------------
+
+const STAGE_LABEL: Record<string, string> = {
+  initial: "Falling asleep",
+  deep: "Deep sleep",
+  mid: "Middle of the night",
+  final: "REM and wake-up",
+};
+
+const DIRECTION_META: Record<
+  string,
+  { label: string; color: string; background: string }
+> = {
+  cooler: { label: "Cooler", color: "var(--cool)", background: "var(--cool-soft)" },
+  warmer: { label: "Warmer", color: "var(--warm)", background: "var(--warm-soft)" },
+  unchanged: {
+    label: "Unchanged",
+    color: "var(--text-muted)",
+    background: "var(--surface-sunken)",
+  },
+};
 
 export const AiAdvisorCard: React.FC<{
   displayUnit: DisplayUnit;
@@ -407,6 +428,9 @@ export const AiAdvisorCard: React.FC<{
 }> = ({ displayUnit, index = 0 }) => {
   const utils = apiR.useUtils();
   const settingsQuery = apiR.user.getAiSettings.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+  });
+  const planQuery = apiR.user.getTemperaturePlan.useQuery(undefined, {
     refetchOnWindowFocus: false,
   });
   const recommendationsQuery = apiR.user.getAiRecommendations.useQuery(
@@ -417,76 +441,63 @@ export const AiAdvisorCard: React.FC<{
     refetchOnWindowFocus: false,
   });
 
+  const invalidatePlan = async () => {
+    await Promise.all([
+      utils.user.getAiRecommendations.invalidate(),
+      utils.user.getTemperaturePlan.invalidate(),
+      utils.user.getUserTemperatureProfile.invalidate(),
+    ]);
+  };
+
   const generateMutation = apiR.user.generateAiRecommendation.useMutation({
-    onSuccess: async () => {
-      await utils.user.getAiRecommendations.invalidate();
-    },
+    onSuccess: invalidatePlan,
   });
   const applyMutation = apiR.user.applyAiRecommendation.useMutation({
-    onSuccess: async () => {
-      await Promise.all([
-        utils.user.getAiRecommendations.invalidate(),
-        utils.user.getUserTemperatureProfile.invalidate(),
-      ]);
-    },
+    onSuccess: invalidatePlan,
   });
   const dismissMutation = apiR.user.dismissAiRecommendation.useMutation({
-    onSuccess: async () => {
-      await utils.user.getAiRecommendations.invalidate();
-    },
+    onSuccess: invalidatePlan,
   });
 
   if (settingsQuery.isLoading || recommendationsQuery.isLoading) {
     return (
       <Card index={index}>
-        <CardHeader icon="ai" title="AI autopilot" />
-        <Skeleton className="h-40" />
+        <CardHeader icon="ai" title="Tonight's plan" />
+        <Skeleton className="h-56" />
       </Card>
     );
   }
 
   const aiAvailable = settingsQuery.data?.aiAvailable ?? false;
   const latest = recommendationsQuery.data?.[0];
+  const plan = planQuery.data;
   const nudges = liveAdjustmentsQuery.data ?? [];
 
-  const changes: StageChange[] = latest
-    ? [
-        {
-          label: "Falling asleep",
-          previous: latest.previousInitialLevel,
-          recommended: latest.recommendedInitialLevel,
-        },
-        ...(latest.previousDeepLevel != null &&
-        latest.recommendedDeepLevel != null
-          ? [
-              {
-                label: "Deep sleep",
-                previous: latest.previousDeepLevel,
-                recommended: latest.recommendedDeepLevel,
-              },
-            ]
-          : []),
-        {
-          label: "Middle of the night",
-          previous: latest.previousMidLevel,
-          recommended: latest.recommendedMidLevel,
-        },
-        {
-          label: "REM and wake-up",
-          previous: latest.previousFinalLevel,
-          recommended: latest.recommendedFinalLevel,
-        },
-      ]
-    : [];
+  const changes: StageChange[] =
+    plan?.tonight != null
+      ? (["initial", "deep", "mid", "final"] as const).map((stage) => ({
+          label: STAGE_LABEL[stage]!,
+          lastNight: plan.lastNight?.[stage] ?? null,
+          tonight: plan.tonight[stage],
+          proposed: plan.proposed?.[stage] ?? null,
+        }))
+      : [];
+
+  const anyChanged = changes.some(
+    (c) => c.lastNight != null && c.lastNight !== c.tonight,
+  );
+  const hasProposal = changes.some(
+    (c) => c.proposed != null && c.proposed !== c.tonight,
+  );
 
   return (
     <Card index={index}>
       <CardHeader
         icon="ai"
-        title="AI autopilot"
+        title="Tonight's plan"
         subtitle={
           latest
-            ? `Tonight's plan, decided ${new Date(`${latest.forDate}T12:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`
+            ? `Last assessed ${new Date(`${latest.forDate}T12:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`
             : "Tunes the four temperature stages from last night's data."
         }
         right={
@@ -510,10 +521,62 @@ export const AiAdvisorCard: React.FC<{
         </div>
       )}
 
+      {plan?.tonight && (
+        <>
+          <PlanBanner
+            status={latest?.status ?? null}
+            updatedAt={latest?.updatedAt ?? null}
+            anyChanged={anyChanged}
+            hasProposal={hasProposal}
+            hasLastNight={plan.lastNight != null}
+          />
+
+          <div className="mt-4">
+            <PlanCurve
+              bedTime={plan.bedTime}
+              wakeupTime={plan.wakeupTime}
+              series={[
+                ...(plan.lastNight
+                  ? [
+                      {
+                        key: "lastNight" as const,
+                        label: "Last night (what ran)",
+                        levels: plan.lastNight,
+                        color: "var(--text-faint)",
+                        dashed: true,
+                      },
+                    ]
+                  : []),
+                {
+                  key: "tonight" as const,
+                  label: "Tonight (loaded)",
+                  levels: plan.tonight,
+                  color: "var(--accent)",
+                  emphasis: true,
+                },
+                ...(plan.proposed
+                  ? [
+                      {
+                        key: "proposed" as const,
+                        label: "Proposed (not applied)",
+                        levels: plan.proposed,
+                        color: "var(--warm)",
+                        dashed: true,
+                      },
+                    ]
+                  : []),
+              ]}
+            />
+          </div>
+
+          <div className="mt-5">
+            <StageChangeChart changes={changes} unit={displayUnit} />
+          </div>
+        </>
+      )}
+
       {latest ? (
         <>
-          <StageChangeChart changes={changes} unit={displayUnit} />
-
           <p
             className="mt-4 rounded-xl p-3 text-sm leading-relaxed"
             style={{
@@ -524,8 +587,14 @@ export const AiAdvisorCard: React.FC<{
             {latest.reasoning}
           </p>
 
+          <Reasoning
+            rationale={latest.rationale}
+            outcome={latest.outcome}
+            displayUnit={displayUnit}
+          />
+
           {latest.status === "pending" && (
-            <div className="mt-3 flex gap-2">
+            <div className="mt-4 flex gap-2">
               <button
                 type="button"
                 onClick={() => applyMutation.mutate({ id: latest.id })}
@@ -615,7 +684,7 @@ export const AiAdvisorCard: React.FC<{
                     className="block text-sm font-medium"
                     style={{ color: "var(--text-headline)" }}
                   >
-                    {adjustment.stage} stage
+                    {STAGE_LABEL[adjustment.stage] ?? adjustment.stage}
                   </span>
                   <span
                     className="block text-xs"
@@ -630,6 +699,247 @@ export const AiAdvisorCard: React.FC<{
         </div>
       )}
     </Card>
+  );
+};
+
+/** One line that settles "did it change, and is it live?". */
+export const PlanBanner: React.FC<{
+  status: string | null;
+  updatedAt: Date | string | null;
+  anyChanged: boolean;
+  hasProposal: boolean;
+  hasLastNight: boolean;
+}> = ({ status, updatedAt, anyChanged, hasProposal, hasLastNight }) => {
+  const stamp = updatedAt
+    ? new Date(updatedAt).toLocaleString("en-GB", {
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : null;
+
+  let text: string;
+  let color = "var(--text)";
+  let background = "var(--surface-sunken)";
+
+  if (hasProposal) {
+    text = `A change is waiting for you — tonight still runs the profile below until you apply it.`;
+    color = "var(--warning)";
+    background = "var(--warning-soft)";
+  } else if (status === "auto_applied" && anyChanged) {
+    text = `The AI changed tonight's temperatures${stamp ? ` at ${stamp}` : ""}. They are live on the pod.`;
+    color = "var(--success)";
+    background = "var(--success-soft)";
+  } else if ((status === "applied" || status === "auto_applied") && !anyChanged) {
+    text = hasLastNight
+      ? `Assessed${stamp ? ` at ${stamp}` : ""} and left unchanged — tonight runs exactly what last night ran.`
+      : `Assessed${stamp ? ` at ${stamp}` : ""} and left unchanged.`;
+  } else if (status === "dismissed") {
+    text = `You kept your own profile; the last suggestion was dismissed.`;
+  } else {
+    text = hasLastNight
+      ? anyChanged
+        ? `Tonight differs from last night — the values below are what the pod will run.`
+        : `Tonight runs exactly what last night ran.`
+      : `The values below are what the pod will run tonight.`;
+  }
+
+  return (
+    <p
+      className="rounded-xl p-3 text-sm"
+      style={{ backgroundColor: background, color }}
+    >
+      {text}
+    </p>
+  );
+};
+
+/** The learning surface: per-stage logic, the numbers behind it, the
+ *  prediction to check tomorrow, and the principle worth remembering. */
+export const Reasoning: React.FC<{
+  rationale: {
+    perStage: { stage: string; direction: string; why: string }[];
+    evidence: string[];
+    expectation: string;
+    principle: string;
+  } | null;
+  outcome: { before: number; after: number; delta: number } | null;
+  displayUnit: DisplayUnit;
+}> = ({ rationale, outcome }) => {
+  const [open, setOpen] = useState(false);
+  const hasRationale =
+    rationale != null &&
+    ((rationale.perStage?.length ?? 0) > 0 ||
+      (rationale.evidence?.length ?? 0) > 0 ||
+      !!rationale.expectation ||
+      !!rationale.principle);
+
+  if (!hasRationale && !outcome) return null;
+
+  return (
+    <div className="mt-3">
+      {outcome && (
+        <div
+          className="mb-2 flex items-center gap-2 rounded-xl px-3 py-2 text-sm"
+          style={{
+            backgroundColor:
+              outcome.delta > 0 ? "var(--success-soft)" : "var(--surface-sunken)",
+            color: outcome.delta > 0 ? "var(--success)" : "var(--text-muted)",
+          }}
+        >
+          <span className="font-semibold">
+            {outcome.delta > 0 ? "It helped" : outcome.delta < 0 ? "It did not help" : "No change"}
+          </span>
+          <span className="tabular">
+            {outcome.before} → {outcome.after}
+            <span className="ml-1" style={{ color: "var(--text-faint)" }}>
+              the night after this change
+            </span>
+          </span>
+        </div>
+      )}
+
+      {hasRationale && (
+        <>
+          <button
+            id="why-toggle"
+            type="button"
+            onClick={() => setOpen(!open)}
+            aria-expanded={open}
+            className="btn btn-ghost w-full justify-between px-2 text-sm"
+          >
+            <span className="flex items-center gap-2">
+              <LordIcon
+                name="ai"
+                size={16}
+                trigger="hover"
+                target="#why-toggle"
+                color="var(--accent)"
+              />
+              Why these numbers
+            </span>
+            <span
+              className="transition-transform duration-fast ease-snap"
+              style={{ transform: open ? "rotate(180deg)" : undefined }}
+              aria-hidden="true"
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path
+                  d="M2.5 4.5 6 8l3.5-3.5"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </span>
+          </button>
+
+          <div
+            className="grid transition-[grid-template-rows] duration-base ease-snap"
+            style={{ gridTemplateRows: open ? "1fr" : "0fr" }}
+          >
+            <div className="overflow-hidden">
+              <div className="space-y-4 px-2 pt-2">
+                {(rationale?.perStage?.length ?? 0) > 0 && (
+                  <div className="space-y-1.5">
+                    {rationale.perStage.map((entry, i) => {
+                      const meta =
+                        DIRECTION_META[entry.direction] ??
+                        DIRECTION_META.unchanged!;
+                      return (
+                        <div
+                          key={`${entry.stage}-${i}`}
+                          className="enter flex gap-2.5"
+                          style={{ "--i": i } as React.CSSProperties}
+                        >
+                          <span
+                            className="chip mt-0.5 h-fit shrink-0 justify-center"
+                            style={{
+                              color: meta.color,
+                              backgroundColor: meta.background,
+                              minWidth: "5.5rem",
+                            }}
+                          >
+                            {meta.label}
+                          </span>
+                          <span className="flex-1">
+                            <span
+                              className="block text-xs font-semibold"
+                              style={{ color: "var(--text-headline)" }}
+                            >
+                              {STAGE_LABEL[entry.stage] ?? entry.stage}
+                            </span>
+                            <span
+                              className="block text-xs leading-relaxed"
+                              style={{ color: "var(--text-muted)" }}
+                            >
+                              {entry.why}
+                            </span>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {(rationale?.evidence?.length ?? 0) > 0 && (
+                  <div>
+                    <div className="card-title mb-1.5">What it read</div>
+                    <ul className="space-y-1">
+                      {rationale.evidence.map((line, i) => (
+                        <li
+                          key={i}
+                          className="flex gap-2 text-xs"
+                          style={{ color: "var(--text-muted)" }}
+                        >
+                          <span
+                            className="mt-1.5 h-1 w-1 shrink-0 rounded-full"
+                            style={{ backgroundColor: "var(--accent)" }}
+                          />
+                          {line}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {rationale?.expectation && (
+                  <div>
+                    <div className="card-title mb-1.5">What to watch tomorrow</div>
+                    <p
+                      className="rounded-lg p-2.5 text-xs leading-relaxed"
+                      style={{
+                        backgroundColor: "var(--cool-soft)",
+                        color: "var(--text)",
+                      }}
+                    >
+                      {rationale.expectation}
+                    </p>
+                  </div>
+                )}
+
+                {rationale?.principle && (
+                  <div>
+                    <div className="card-title mb-1.5">The rule behind it</div>
+                    <p
+                      className="border-l-2 pl-3 text-xs italic leading-relaxed"
+                      style={{
+                        borderColor: "var(--accent)",
+                        color: "var(--text-muted)",
+                      }}
+                    >
+                      {rationale.principle}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
   );
 };
 
@@ -677,6 +987,7 @@ const EmptyAdvisor: React.FC<{
     </div>
   </div>
 );
+
 
 // ---------------------------------------------------------------------------
 // Settings, folded away under a disclosure

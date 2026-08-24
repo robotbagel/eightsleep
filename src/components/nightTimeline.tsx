@@ -26,12 +26,16 @@ const SOURCE_META: Record<
 
 export const NightTimeline: React.FC<{
   displayUnit: DisplayUnit;
+  night: string | null;
   index?: number;
-}> = ({ displayUnit, index = 0 }) => {
+}> = ({ displayUnit, night: selectedNight, index = 0 }) => {
   const [showLog, setShowLog] = useState(false);
-  const timelineQuery = apiR.user.getNightTimeline.useQuery(undefined, {
-    refetchOnWindowFocus: false,
-  });
+  // Same query key as the summary card above, so both cards always show the
+  // same night and it costs one request.
+  const timelineQuery = apiR.user.getNightTimeline.useQuery(
+    selectedNight ? { night: selectedNight } : undefined,
+    { refetchOnWindowFocus: false },
+  );
 
   if (timelineQuery.isLoading) {
     return (

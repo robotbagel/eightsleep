@@ -103,6 +103,10 @@ export const aiRecommendations = createTable(
     reasoning: text("reasoning").notNull(),
     confidence: varchar("confidence", { length: 10 }).notNull(),
     sleepContextJson: text("sleepContextJson"),
+    // Structured "why": per-stage rationale, the evidence the model used,
+    // what it expects to improve, and the principle behind it. JSON so the
+    // shape can grow without a migration; see RecommendationRationale.
+    rationaleJson: text("rationaleJson"),
     status: varchar("status", { length: 20 }).notNull(),
     source: varchar("source", { length: 20 }).notNull(),
     model: varchar("model", { length: 50 }).notNull(),
@@ -113,6 +117,48 @@ export const aiRecommendations = createTable(
     emailDateIdx: index("aiRecommendations_email_forDate_idx").on(
       table.email,
       table.forDate,
+    ),
+  }),
+);
+
+// One row per night per account: the metrics we extract from the pod's own
+// session record, cached so the 7/14/30-day comparison does not re-page the
+// Eight Sleep API on every view (and so history outlives what the API keeps).
+// Fractional values are stored in tenths as integers, matching the rest of
+// the schema. Keyed by the WAKE date, like every other night key in the app.
+export const nightMetrics = createTable(
+  "nightMetrics",
+  {
+    id: serial("id").primaryKey(),
+    email: varchar("email", { length: 255 }).references(() => users.email).notNull(),
+    night: varchar("night", { length: 10 }).notNull(),
+    score: integer("score"),
+    asleepTenthHours: integer("asleepTenthHours"),
+    inBedTenthHours: integer("inBedTenthHours"),
+    deepTenthHours: integer("deepTenthHours"),
+    remTenthHours: integer("remTenthHours"),
+    lightTenthHours: integer("lightTenthHours"),
+    awakeTenthHours: integer("awakeTenthHours"),
+    tosses: integer("tosses"),
+    wakeCount: integer("wakeCount"),
+    restingHeartRate: integer("restingHeartRate"),
+    avgHeartRate: integer("avgHeartRate"),
+    hrv: integer("hrv"),
+    respiratoryTenth: integer("respiratoryTenth"),
+    avgBedTempTenthC: integer("avgBedTempTenthC"),
+    avgRoomTempTenthC: integer("avgRoomTempTenthC"),
+    bedtimeMinutes: integer("bedtimeMinutes"),
+    wakeMinutes: integer("wakeMinutes"),
+    source: varchar("source", { length: 16 }).notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    // Plain index, not unique: `pnpm db:push` prompts interactively when it
+    // adds a UNIQUE constraint and that hangs the Vercel build. Writes go
+    // through deleteThenInsert per night instead.
+    emailNightIdx: index("nightMetrics_email_night_idx").on(
+      table.email,
+      table.night,
     ),
   }),
 );

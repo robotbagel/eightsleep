@@ -43,6 +43,29 @@ const GeminiResponseSchema = z.object({
     .nullish(),
 });
 
+export const STAGE_KEYS = ["initial", "deep", "mid", "final"] as const;
+
+// The structured "why". Kept separate from `reasoning` (the one-paragraph
+// summary) so the app can show the evidence, the per-stage logic, the
+// prediction and the underlying principle as their own things — the point
+// being that the sleeper can learn the rule, not just read a verdict.
+const RationaleSchema = z.object({
+  perStage: z
+    .array(
+      z.object({
+        stage: z.enum(STAGE_KEYS),
+        direction: z.enum(["cooler", "warmer", "unchanged"]),
+        why: z.string(),
+      }),
+    )
+    .default([]),
+  evidence: z.array(z.string()).default([]),
+  expectation: z.string().default(""),
+  principle: z.string().default(""),
+});
+
+export type RecommendationRationale = z.infer<typeof RationaleSchema>;
+
 const RecommendationSchema = z.object({
   initialSleepC: z.number(),
   deepSleepC: z.number(),
@@ -50,6 +73,10 @@ const RecommendationSchema = z.object({
   finalSleepC: z.number(),
   reasoning: z.string(),
   confidence: z.enum(["low", "medium", "high"]),
+  perStage: RationaleSchema.shape.perStage,
+  evidence: RationaleSchema.shape.evidence,
+  expectation: RationaleSchema.shape.expectation,
+  principle: RationaleSchema.shape.principle,
 });
 
 export type AiRecommendation = z.infer<typeof RecommendationSchema>;
@@ -137,6 +164,12 @@ function buildPrompt(input: AdvisorInput): string {
     input.displayUnit === "level"
       ? "- In the reasoning, express all bed temperature SETTINGS on the Eight Sleep app slider scale from -10 (coldest) to +10 (warmest), using the exact slider levels given above for the current stages (do not convert degrees yourself; a change of about 1°C is roughly 0.5-1 slider step in the middle of the range). Measured temperatures from sensors (bed/room readings in the data) stay in °C. Cite the specific numbers that drove each change, in plain language, in at most 3 sentences. Set confidence low when data is sparse or mixed, high when the data and history clearly agree. The JSON response fields must still be in °C."
       : "- In the reasoning, talk in °C, cite the specific numbers that drove each change, in plain language, in at most 3 sentences. Set confidence low when data is sparse or mixed, high when the data and history clearly agree.",
+    "",
+    "The sleeper wants to LEARN from this, not just be told. Alongside the recommendation, return:",
+    "- perStage: one entry for EACH of the four stages (initial, deep, mid, final), its direction (cooler / warmer / unchanged) and one sentence of `why` naming the specific measurement that drove it. Say plainly when a stage is unchanged and why leaving it alone is the right call.",
+    "- evidence: 2 to 5 short factual lines, each a number straight from the data (\"11 tosses in the first third, 4 more than the 7-night average\", \"deep sleep 1h12m against a 1h35m average\"). No advice in these — evidence only.",
+    "- expectation: one sentence stating what should measurably improve tomorrow morning if this change is right, so the prediction can be checked (\"fewer than 6 tosses before 01:00 and 15+ minutes more deep sleep\").",
+    "- principle: one sentence of the general sleep-physiology rule at work here, phrased so it is worth remembering on its own.",
   ]
     .filter((line) => line !== "")
     .join("\n");
@@ -174,6 +207,27 @@ export async function generateTemperatureRecommendation(
               type: "STRING",
               enum: ["low", "medium", "high"],
             },
+            perStage: {
+              type: "ARRAY",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  stage: {
+                    type: "STRING",
+                    enum: ["initial", "deep", "mid", "final"],
+                  },
+                  direction: {
+                    type: "STRING",
+                    enum: ["cooler", "warmer", "unchanged"],
+                  },
+                  why: { type: "STRING" },
+                },
+                required: ["stage", "direction", "why"],
+              },
+            },
+            evidence: { type: "ARRAY", items: { type: "STRING" } },
+            expectation: { type: "STRING" },
+            principle: { type: "STRING" },
           },
           required: [
             "initialSleepC",
@@ -182,6 +236,10 @@ export async function generateTemperatureRecommendation(
             "finalSleepC",
             "reasoning",
             "confidence",
+            "perStage",
+            "evidence",
+            "expectation",
+            "principle",
           ],
         },
         thinkingConfig: { thinkingLevel: "LOW" },

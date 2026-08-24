@@ -1,17 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { apiR } from "~/trpc/react";
 import { EightLoginDialog } from "~/components/eightLogin";
 import { TemperatureProfileForm } from "~/components/temperatureProfileForm";
 import { LogoutButton } from "~/components/logout";
 import { ThemeToggle } from "~/components/themeToggle";
 import { AiAdvisorCard, AiSettingsCard } from "~/components/aiPanel";
-import { LastNightCard } from "~/components/lastNightCard";
+import { NightSummaryCard } from "~/components/nightSummaryCard";
 import { NightTimeline } from "~/components/nightTimeline";
-import { TrendsCard } from "~/components/trendsCard";
+import { CompareCard } from "~/components/compareCard";
 import { Disclosure } from "~/components/ui/card";
 import LordIcon from "~/components/ui/lordIcon";
+import { useSwipe } from "~/components/useSwipe";
 import { type DisplayUnit } from "~/lib/temperature";
 
 export default function ClientHome({
@@ -80,17 +81,90 @@ const SignedIn: React.FC = () => {
   const displayUnit: DisplayUnit =
     settingsQuery.data?.displayUnit === "level" ? "level" : "celsius";
 
+  // `null` means "whatever the newest night is" — so the page keeps following
+  // the latest night until you deliberately step back.
+  const [selectedNight, setSelectedNight] = useState<string | null>(null);
+
+  const nightQuery = apiR.user.getNightTimeline.useQuery(
+    selectedNight ? { night: selectedNight } : undefined,
+    { refetchOnWindowFocus: false },
+  );
+
+  const nights = useMemo(
+    () => nightQuery.data?.availableNights ?? [],
+    [nightQuery.data?.availableNights],
+  );
+  const currentNight = selectedNight ?? nightQuery.data?.night ?? null;
+  const position = currentNight ? nights.indexOf(currentNight) : -1;
+  const canPrev = position > 0;
+  const canNext = position >= 0 && position < nights.length - 1;
+  const isLatest =
+    currentNight != null && nights.length > 0
+      ? currentNight === nights[nights.length - 1]
+      : selectedNight == null;
+
+  const goPrev = useCallback(() => {
+    if (position > 0) setSelectedNight(nights[position - 1]!);
+  }, [nights, position]);
+  const goNext = useCallback(() => {
+    if (position >= 0 && position < nights.length - 1) {
+      setSelectedNight(nights[position + 1]!);
+    }
+  }, [nights, position]);
+  const goLatest = useCallback(() => setSelectedNight(null), []);
+
+  const swipe = useSwipe({
+    onPrev: goPrev,
+    onNext: goNext,
+    canPrev,
+    canNext,
+  });
+
+  const nav = {
+    night: currentNight,
+    isLatest,
+    canPrev,
+    canNext,
+    onPrev: goPrev,
+    onNext: goNext,
+    onLatest: goLatest,
+  };
+
   return (
     <div className="mx-auto max-w-5xl px-4 pt-5">
-      {/* The data first: last night, then the night itself, then the trend.
-          Everything you configure lives below, folded away. */}
+      {/* The data first: the selected night, then how it compares, then the
+          plan. Everything you configure lives below, folded away. */}
       <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
-        <div className="space-y-4 lg:col-span-2">
-          <LastNightCard index={0} />
-          <NightTimeline displayUnit={displayUnit} index={1} />
+        <div
+          className="space-y-4 lg:col-span-2"
+          style={{ touchAction: "pan-y" }}
+          {...swipe.bind}
+        >
+          <div
+            className={
+              swipe.entering === "prev"
+                ? "enter-prev space-y-4"
+                : swipe.entering === "next"
+                  ? "enter-next space-y-4"
+                  : "space-y-4"
+            }
+            style={{
+              transform: swipe.dx !== 0 ? `translateX(${swipe.dx}px)` : undefined,
+              transition: swipe.dragging
+                ? "none"
+                : "transform var(--motion-base) cubic-bezier(0.2, 0.9, 0.3, 1)",
+            }}
+          >
+            <NightSummaryCard night={selectedNight} nav={nav} index={0} />
+            <NightTimeline
+              displayUnit={displayUnit}
+              night={selectedNight}
+              index={1}
+            />
+          </div>
         </div>
 
-        <TrendsCard index={2} />
+        <CompareCard index={2} />
         <AiAdvisorCard displayUnit={displayUnit} index={3} />
 
         <div className="space-y-4 lg:col-span-2">

@@ -89,21 +89,54 @@ const PodSessionSchema = z
   .catchall(z.unknown());
 
 const PodSessionsSchema = z
-  .object({ sessions: z.array(PodSessionSchema).nullish() })
+  .object({
+    sessions: z.array(PodSessionSchema).nullish(),
+    next: z.string().nullish(),
+  })
   .catchall(z.unknown());
 
 export type PodSession = z.infer<typeof PodSessionSchema>;
 
+/**
+ * The sessions endpoint always returns the newest ~10 sessions and ignores
+ * `limit`, `size`, `from` and `to`. The ONLY parameter that pages backwards
+ * is `?next=<cursor>`, using the opaque `next` token from the previous page
+ * (verified live, 2026-08-24). `pages` therefore controls how far back the
+ * history reaches, roughly 10 nights per page.
+ */
 export async function fetchPodSessions(
   token: Token,
   userId: string,
+  pages = 1,
 ): Promise<PodSession[]> {
-  const data = await fetchWithAuth(
-    `${APP_API_URL}v1/users/${userId}/sessions`,
-    token,
-    PodSessionsSchema,
-  );
-  return data.sessions ?? [];
+  const all: PodSession[] = [];
+  let cursor: string | null = null;
+
+  for (let page = 0; page < Math.max(1, pages); page++) {
+    const url =
+      `${APP_API_URL}v1/users/${userId}/sessions` +
+      (cursor ? `?next=${encodeURIComponent(cursor)}` : "");
+    const data: z.infer<typeof PodSessionsSchema> = await fetchWithAuth(
+      url,
+      token,
+      PodSessionsSchema,
+    );
+    const batch = data.sessions ?? [];
+    all.push(...batch);
+    cursor = data.next ?? null;
+    // No cursor, or a page the API did not fill, means we reached the end.
+    if (!cursor || batch.length === 0) break;
+  }
+
+  // The same session can appear on two pages if a night rolls over between
+  // requests; keep one row per id (falling back to the timestamp).
+  const seen = new Set<string>();
+  return all.filter((session) => {
+    const key = session.id ?? session.ts ?? JSON.stringify(session.sleepEnd);
+    if (typeof key !== "string" || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 const timeseriesPoint = z.tuple([z.string(), z.number()]);

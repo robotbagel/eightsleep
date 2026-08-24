@@ -8,7 +8,7 @@ import {
   obtainFreshAccessToken,
   AuthError,
 } from "~/server/eight/auth";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte, lte } from "drizzle-orm";
 import { type Token } from "~/server/eight/types";
 import { TRPCError } from "@trpc/server";
 import { adjustTemperature } from "~/app/api/temperatureCron/route";
@@ -20,6 +20,7 @@ import {
   pushSubscriptions,
   healthNights,
   temperatureEvents,
+  nightMetrics,
 } from "~/server/db/schema";
 import { getVapidKeys } from "~/server/push";
 import {
@@ -29,8 +30,24 @@ import {
   getAiSettingsOrDefaults,
   getFreshToken,
 } from "~/server/ai/advisor";
-import { AiError, isAiConfigured } from "~/server/ai/gemini";
+import {
+  AiError,
+  isAiConfigured,
+  type RecommendationRationale,
+} from "~/server/ai/gemini";
 import { collectSleepContext, fetchPodSessions } from "~/server/ai/sleepData";
+import {
+  aggregate,
+  byWeekday,
+  pagesForDays,
+  persistNightMetrics,
+  readNightMetrics,
+  sessionsToMetrics,
+  shiftDate,
+  syncNightMetrics,
+  type MetricKey,
+  type NightMetric,
+} from "~/server/ai/history";
 
 class DatabaseError extends Error {
   constructor(message: string) {
@@ -436,8 +453,15 @@ export const userRouter = createTRPCRouter({
       return { success: true };
     }),
 
-  // Timeline of one night: every temperature change we sent to the pod, plus
-  // the pod's own measurements for that night (tosses, bed temp, heart rate).
+  // One night, whole: the pod's own record, the temperature changes we sent
+  // during it, and the list of nights either side so the view can be swiped.
+  //
+  // Event lookup is by TIME RANGE, not by night key. `temperatureEvents.night`
+  // comes from nightKeyFor(), which labels a night by the date it STARTED,
+  // while every other night key in the app (and the pod's own session) is the
+  // date you WOKE. Matching those two strings directly pulled in the wrong
+  // night's events entirely — an off-by-one-day bug that made it look as if
+  // the AI had not changed anything.
   getNightTimeline: publicProcedure
     .input(z.object({ night: z.string().max(10).optional() }).optional())
     .query(async ({ input, ctx }) => {
@@ -461,11 +485,14 @@ export const userRouter = createTRPCRouter({
         tempRoomC: [string, number][];
         heartRate: [string, number][];
         hrv: [string, number][];
+        respiratoryRate: [string, number][];
         shortAwakes: [string, number][];
         /** Hypnogram: consecutive runs from sessionStart, seconds each. */
         stages: { stage: string; duration: number }[];
         stageHours: Record<string, number>;
       } | null = null;
+      let metrics: NightMetric | null = null;
+      let availableNights: string[] = [];
 
       if (user) {
         try {
@@ -474,14 +501,20 @@ export const userRouter = createTRPCRouter({
           const completed = sessions
             .filter((s) => s.sleepEnd)
             .sort((a, b) => (a.sleepEnd! < b.sleepEnd! ? -1 : 1));
+
+          // Every fetch feeds the long-range cache, so the comparison view is
+          // already warm by the time it is opened.
+          const batch = sessionsToMetrics(completed, timezone);
+          void persistNightMetrics(decoded.email, batch);
+
+          const nightOf = (s: (typeof completed)[number]) =>
+            new Date(s.sleepEnd!).toLocaleDateString("en-CA", {
+              timeZone: timezone,
+            });
           const chosen = input?.night
-            ? completed.find(
-                (s) =>
-                  new Date(s.sleepEnd!).toLocaleDateString("en-CA", {
-                    timeZone: timezone,
-                  }) === input.night,
-              )
+            ? completed.find((s) => nightOf(s) === input.night)
             : completed[completed.length - 1];
+
           if (chosen) {
             const summary = chosen.stageSummary ?? {};
             const stageHours: Record<string, number> = {};
@@ -496,9 +529,7 @@ export const userRouter = createTRPCRouter({
               }
             }
             sessionInfo = {
-              night: new Date(chosen.sleepEnd!).toLocaleDateString("en-CA", {
-                timeZone: timezone,
-              }),
+              night: nightOf(chosen),
               sessionStart: chosen.ts ?? chosen.sleepStart ?? null,
               sleepStart: chosen.sleepStart ?? null,
               sleepEnd: chosen.sleepEnd ?? null,
@@ -507,6 +538,10 @@ export const userRouter = createTRPCRouter({
               tempRoomC: chosen.timeseries?.tempRoomC ?? [],
               heartRate: chosen.timeseries?.heartRate ?? [],
               hrv: chosen.timeseries?.rmssd ?? chosen.timeseries?.hrv ?? [],
+              respiratoryRate:
+                chosen.timeseries?.respiratoryRate ??
+                chosen.timeseries?.nemeanRespiratoryRate ??
+                [],
               shortAwakes: chosen.timeseries?.shortAwakes ?? [],
               stages: (chosen.stages ?? []).map((s) => ({
                 stage: s.stage,
@@ -514,15 +549,59 @@ export const userRouter = createTRPCRouter({
               })),
               stageHours,
             };
+            metrics = batch.find((m) => m.night === sessionInfo!.night) ?? null;
           }
         } catch (error) {
           console.error("Night timeline: pod fetch failed:", error);
         }
       }
 
+      // The navigable list comes from the cache, so swiping reaches further
+      // back than the single page of sessions this request fetched.
+      try {
+        const cached = await db
+          .select({ night: nightMetrics.night })
+          .from(nightMetrics)
+          .where(eq(nightMetrics.email, decoded.email));
+        availableNights = [...new Set(cached.map((row) => row.night))].sort();
+      } catch (error) {
+        console.error("Night timeline: night list failed:", error);
+      }
+      if (sessionInfo && !availableNights.includes(sessionInfo.night)) {
+        availableNights = [...availableNights, sessionInfo.night].sort();
+      }
+
       const night = input?.night ?? sessionInfo?.night ?? null;
-      const events = night
-        ? await db
+
+      let events: (typeof temperatureEvents.$inferSelect)[] = [];
+      try {
+        if (sessionInfo?.sleepEnd) {
+          // Pre-heating starts an hour before bedtime and presence can begin
+          // later than that, so open the window generously on the early side.
+          const from = new Date(
+            new Date(
+              sessionInfo.sessionStart ?? sessionInfo.sleepStart ?? sessionInfo.sleepEnd,
+            ).getTime() -
+              5 * 60 * 60 * 1000,
+          );
+          const to = new Date(
+            new Date(sessionInfo.sleepEnd).getTime() + 2 * 60 * 60 * 1000,
+          );
+          events = await db
+            .select()
+            .from(temperatureEvents)
+            .where(
+              and(
+                eq(temperatureEvents.email, decoded.email),
+                gte(temperatureEvents.at, from),
+                lte(temperatureEvents.at, to),
+              ),
+            )
+            .orderBy(temperatureEvents.at);
+        } else if (night) {
+          // No session for this night: fall back to the stored night key,
+          // which for a night with no pod record is the best we have.
+          events = await db
             .select()
             .from(temperatureEvents)
             .where(
@@ -531,11 +610,209 @@ export const userRouter = createTRPCRouter({
                 eq(temperatureEvents.night, night),
               ),
             )
-            .orderBy(temperatureEvents.at)
-        : [];
+            .orderBy(temperatureEvents.at);
+        }
+      } catch (error) {
+        console.error("Night timeline: event lookup failed:", error);
+      }
 
-      return { night, timezone, events, session: sessionInfo };
+      return {
+        night,
+        timezone,
+        events,
+        session: sessionInfo,
+        metrics,
+        availableNights,
+      };
     }),
+
+  // 7 / 14 / 30-night comparison, served from the night-metrics cache and
+  // topped up from the pod only when the requested window is not covered.
+  getSleepHistory: publicProcedure
+    .input(z.object({ days: z.union([z.literal(7), z.literal(14), z.literal(30)]) }))
+    .query(async ({ input, ctx }) => {
+      const decoded = await checkAuthCookie(ctx.headers);
+      const user = await db.query.users.findFirst({
+        where: eq(users.email, decoded.email),
+      });
+      const profile = await db.query.userTemperatureProfile.findFirst({
+        where: eq(userTemperatureProfile.email, decoded.email),
+      });
+      const timezone = profile?.timezoneTZ ?? "UTC";
+      const today = new Date().toLocaleDateString("en-CA", {
+        timeZone: timezone,
+      });
+
+      const from = shiftDate(today, -(input.days - 1));
+      const previousFrom = shiftDate(today, -(input.days * 2 - 1));
+      const previousTo = shiftDate(from, -1);
+
+      let cached = await readNightMetrics(decoded.email, previousFrom, today);
+      // Only reach for more pod pages when the cache cannot cover the window,
+      // so the common case stays a single database read.
+      const covered = cached.filter((n) => n.night >= from).length;
+      const expected = Math.min(input.days, 30);
+      if (user && covered < expected) {
+        try {
+          const token = await getFreshToken(user);
+          await syncNightMetrics(
+            decoded.email,
+            token,
+            user.eightUserId,
+            timezone,
+            pagesForDays(input.days * 2),
+          );
+          cached = await readNightMetrics(decoded.email, previousFrom, today);
+        } catch (error) {
+          console.error("Sleep history: pod sync failed:", error);
+        }
+      }
+
+      const window = cached.filter((n) => n.night >= from);
+      const previous = cached.filter(
+        (n) => n.night >= previousFrom && n.night <= previousTo,
+      );
+
+      const keys: MetricKey[] = [
+        "score",
+        "asleepHours",
+        "deepHours",
+        "remHours",
+        "awakeHours",
+        "tosses",
+        "restingHeartRate",
+        "hrv",
+        "respiratoryRate",
+        "avgBedTempC",
+        "bedtimeMinutes",
+      ];
+
+      return {
+        days: input.days,
+        timezone,
+        from,
+        to: today,
+        nights: window,
+        previousNights: previous,
+        aggregates: keys.map((key) => aggregate(window, previous, key)),
+        weekday: {
+          score: byWeekday(window, "score"),
+          asleepHours: byWeekday(window, "asleepHours"),
+          deepHours: byWeekday(window, "deepHours"),
+        },
+      };
+    }),
+
+  // The three temperature profiles worth comparing: what actually ran last
+  // night, what is loaded for tonight, and what the AI proposes but has not
+  // applied. This is the answer to "did it change, or am I looking at
+  // yesterday's numbers?".
+  getTemperaturePlan: publicProcedure.query(async ({ ctx }) => {
+    const decoded = await checkAuthCookie(ctx.headers);
+    const profile = await db.query.userTemperatureProfile.findFirst({
+      where: eq(userTemperatureProfile.email, decoded.email),
+    });
+    if (!profile) {
+      return {
+        timezone: "UTC",
+        tonight: null,
+        lastNight: null,
+        proposed: null,
+        latest: null,
+      };
+    }
+    const timezone = profile.timezoneTZ;
+
+    const tonight = {
+      initial: profile.initialSleepLevel,
+      deep: profile.deepSleepLevel ?? profile.midStageSleepLevel,
+      mid: profile.midStageSleepLevel,
+      final: profile.finalSleepLevel,
+    };
+
+    // What actually ran: the scheduled level we logged for each stage during
+    // the most recent night that has events. Ground truth, not an inference.
+    const recentEvents = await db
+      .select()
+      .from(temperatureEvents)
+      .where(eq(temperatureEvents.email, decoded.email))
+      .orderBy(desc(temperatureEvents.at))
+      .limit(120);
+
+    let lastNight: {
+      night: string;
+      initial: number | null;
+      deep: number | null;
+      mid: number | null;
+      final: number | null;
+    } | null = null;
+    const nightsSeen = [...new Set(recentEvents.map((e) => e.night))].sort();
+    // The newest night key belongs to the night now beginning; the completed
+    // one is the key before it, unless there is only one.
+    const targetNight =
+      nightsSeen.length > 1
+        ? nightsSeen[nightsSeen.length - 2]!
+        : nightsSeen[nightsSeen.length - 1];
+    if (targetNight) {
+      const forNight = recentEvents
+        .filter((e) => e.night === targetNight && e.source !== "live")
+        .sort((a, b) => a.at.getTime() - b.at.getTime());
+      const levelFor = (stage: string): number | null => {
+        const match = forNight.find((e) => e.stage === stage);
+        return match?.level ?? null;
+      };
+      lastNight = {
+        night: targetNight,
+        initial: levelFor("initial"),
+        deep: levelFor("deep"),
+        mid: levelFor("mid"),
+        final: levelFor("final"),
+      };
+      if (
+        lastNight.initial == null &&
+        lastNight.deep == null &&
+        lastNight.mid == null &&
+        lastNight.final == null
+      ) {
+        lastNight = null;
+      }
+    }
+
+    const [latest] = await db
+      .select()
+      .from(aiRecommendations)
+      .where(eq(aiRecommendations.email, decoded.email))
+      .orderBy(desc(aiRecommendations.id))
+      .limit(1);
+
+    const proposed =
+      latest && latest.status === "pending"
+        ? {
+            initial: latest.recommendedInitialLevel,
+            deep: latest.recommendedDeepLevel ?? latest.recommendedMidLevel,
+            mid: latest.recommendedMidLevel,
+            final: latest.recommendedFinalLevel,
+          }
+        : null;
+
+    return {
+      timezone,
+      bedTime: profile.bedTime.slice(0, 5),
+      wakeupTime: profile.wakeupTime.slice(0, 5),
+      tonight,
+      lastNight,
+      proposed,
+      latest: latest
+        ? {
+            id: latest.id,
+            forDate: latest.forDate,
+            status: latest.status,
+            confidence: latest.confidence,
+            updatedAt: latest.updatedAt,
+          }
+        : null,
+    };
+  }),
 
   getLiveAdjustments: publicProcedure.query(async ({ ctx }) => {
     const decoded = await checkAuthCookie(ctx.headers);
@@ -576,14 +853,51 @@ export const userRouter = createTRPCRouter({
     }
   }),
 
+  // Recent recommendations, each carrying its structured rationale and — for
+  // the ones that actually ran — what happened to the score afterwards, so a
+  // prediction can be checked rather than just believed.
   getAiRecommendations: publicProcedure.query(async ({ ctx }) => {
     const decoded = await checkAuthCookie(ctx.headers);
-    return await db
+    const rows = await db
       .select()
       .from(aiRecommendations)
       .where(eq(aiRecommendations.email, decoded.email))
       .orderBy(desc(aiRecommendations.id))
-      .limit(5);
+      .limit(8);
+    if (rows.length === 0) return [];
+
+    // `forDate` is the day the assessment ran, so it governs the night that
+    // BEGINS that evening — the night you wake from on forDate + 1.
+    const oldest = rows[rows.length - 1]!.forDate;
+    const metrics = await readNightMetrics(
+      decoded.email,
+      shiftDate(oldest, -1),
+      shiftDate(rows[0]!.forDate, 2),
+    );
+    const scoreFor = (night: string) =>
+      metrics.find((m) => m.night === night)?.score ?? null;
+
+    return rows.map((row) => {
+      let rationale: RecommendationRationale | null = null;
+      if (row.rationaleJson) {
+        try {
+          rationale = JSON.parse(row.rationaleJson) as RecommendationRationale;
+        } catch {
+          rationale = null;
+        }
+      }
+      const ran = row.status === "applied" || row.status === "auto_applied";
+      const before = scoreFor(row.forDate);
+      const after = scoreFor(shiftDate(row.forDate, 1));
+      return {
+        ...row,
+        rationale,
+        outcome:
+          ran && before != null && after != null
+            ? { before, after, delta: after - before }
+            : null,
+      };
+    });
   }),
 
   generateAiRecommendation: publicProcedure.mutation(async ({ ctx }) => {
