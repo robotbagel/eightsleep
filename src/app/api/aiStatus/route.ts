@@ -28,6 +28,7 @@ function parseRationale(json: string | null): {
   hasExpectation: boolean;
   hasPrinciple: boolean;
   principle: string | null;
+  forecast: { expectedScoreLow?: number; expectedScoreHigh?: number } | null;
 } | null {
   if (!json) return null;
   try {
@@ -36,6 +37,10 @@ function parseRationale(json: string | null): {
       evidence?: unknown[];
       expectation?: string;
       principle?: string;
+      forecast?: {
+        expectedScoreLow?: number;
+        expectedScoreHigh?: number;
+      } | null;
     };
     return {
       stages: parsed.perStage?.length ?? 0,
@@ -43,6 +48,7 @@ function parseRationale(json: string | null): {
       hasExpectation: !!parsed.expectation,
       hasPrinciple: !!parsed.principle,
       principle: parsed.principle ?? null,
+      forecast: parsed.forecast ?? null,
     };
   } catch {
     return null;
