@@ -21,6 +21,33 @@ import { desc as descOrder } from "drizzle-orm";
 
 export const runtime = "nodejs";
 
+function parseRationale(json: string | null): {
+  stages: number;
+  evidence: number;
+  hasExpectation: boolean;
+  hasPrinciple: boolean;
+  principle: string | null;
+} | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json) as {
+      perStage?: unknown[];
+      evidence?: unknown[];
+      expectation?: string;
+      principle?: string;
+    };
+    return {
+      stages: parsed.perStage?.length ?? 0,
+      evidence: parsed.evidence?.length ?? 0,
+      hasExpectation: !!parsed.expectation,
+      hasPrinciple: !!parsed.principle,
+      principle: parsed.principle ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 interface StoredNight {
   date?: string;
   score?: number | null;
@@ -157,6 +184,10 @@ export async function GET(request: NextRequest): Promise<Response> {
                 final: rawToCelsius(latest.recommendedFinalLevel),
               },
               reasoning: latest.reasoning,
+              // The structured "why" the app shows. Reported here so the
+              // daily monitor can tell an empty rationale (a silently
+              // degraded model response) from a healthy one.
+              rationale: parseRationale(latest.rationaleJson),
               createdAt: latest.createdAt,
             }
           : null,
