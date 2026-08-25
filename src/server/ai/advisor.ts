@@ -702,14 +702,36 @@ async function recordRun(
   }
 }
 
-/** Heartbeat so "the cron never fired" is distinguishable from "it fired and
- *  the pass failed". Written on every tick, read by /api/aiStatus. */
-export async function recordCronHeartbeat(): Promise<void> {
+/**
+ * Heartbeat so "the cron never fired" is distinguishable from "it fired and
+ * the pass failed". Written on every tick, read by /api/aiStatus.
+ *
+ * `source` records WHICH scheduler called. With more than one caller (a NAS
+ * job plus a laptop fallback) a single timestamp hides the death of the
+ * primary behind the fallback — the same masking that hid a whole missed day
+ * on 2026-08-24.
+ */
+export async function recordCronHeartbeat(source?: string | null): Promise<void> {
   try {
     const at = new Date().toISOString();
+    const clean = (source ?? "unknown").replace(/[^a-z0-9_-]/gi, "").slice(0, 24);
     await db
       .insert(appConfig)
       .values({ key: "cron:lastRunAt", value: at })
+      .onConflictDoUpdate({
+        target: appConfig.key,
+        set: { value: at },
+      });
+    await db
+      .insert(appConfig)
+      .values({ key: "cron:lastSource", value: clean })
+      .onConflictDoUpdate({
+        target: appConfig.key,
+        set: { value: clean },
+      });
+    await db
+      .insert(appConfig)
+      .values({ key: `cron:lastRunAt:${clean}`, value: at })
       .onConflictDoUpdate({
         target: appConfig.key,
         set: { value: at },

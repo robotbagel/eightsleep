@@ -14,7 +14,7 @@ import {
   userTemperatureProfile,
   users,
 } from "~/server/db/schema";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, like } from "drizzle-orm";
 import { isAiConfigured, GEMINI_MODEL } from "~/server/ai/gemini";
 import { rawToCelsius } from "~/lib/temperature";
 import { appConfig, healthNights } from "~/server/db/schema";
@@ -231,11 +231,23 @@ export async function GET(request: NextRequest): Promise<Response> {
     // "the cron ran and the pass failed" — two very different problems that
     // used to produce the same symptom.
     let cronLastRunAt: string | null = null;
+    let cronLastSource: string | null = null;
+    // Per-caller timestamps, so a healthy fallback cannot hide a dead primary.
+    const cronSources: Record<string, number> = {};
     try {
-      const row = await db.query.appConfig.findFirst({
-        where: eq(appConfig.key, "cron:lastRunAt"),
-      });
-      cronLastRunAt = row?.value ?? null;
+      const rows = await db
+        .select()
+        .from(appConfig)
+        .where(like(appConfig.key, "cron:%"));
+      for (const row of rows) {
+        if (row.key === "cron:lastRunAt") cronLastRunAt = row.value;
+        else if (row.key === "cron:lastSource") cronLastSource = row.value;
+        else if (row.key.startsWith("cron:lastRunAt:")) {
+          cronSources[row.key.slice("cron:lastRunAt:".length)] = Math.round(
+            (Date.now() - new Date(row.value).getTime()) / 60000,
+          );
+        }
+      }
     } catch {
       cronLastRunAt = null;
     }
@@ -245,6 +257,9 @@ export async function GET(request: NextRequest): Promise<Response> {
       model: GEMINI_MODEL,
       generatedAt: new Date().toISOString(),
       cronLastRunAt,
+      cronLastSource,
+      /** Minutes since each scheduler last called, keyed by ?src=. */
+      cronSourceStaleMinutes: cronSources,
       cronStaleMinutes:
         cronLastRunAt == null
           ? null

@@ -364,7 +364,7 @@ export async function GET(request: NextRequest): Promise<Response> {
         // path, but a failure in it must not take the AI passes down with it:
         // that is how a whole day of recommendations went missing without a
         // single user-visible signal.
-        await recordCronHeartbeat();
+        await recordCronHeartbeat(request.nextUrl.searchParams.get("src"));
         try {
           await adjustTemperature();
         } catch (error) {
