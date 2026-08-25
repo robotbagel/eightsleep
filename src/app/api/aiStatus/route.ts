@@ -10,6 +10,7 @@ import {
   aiLiveAdjustments,
   aiRecommendations,
   aiRunLog,
+  temperatureEvents,
   userAiSettings,
   userTemperatureProfile,
   users,
@@ -84,6 +85,34 @@ export async function GET(request: NextRequest): Promise<Response> {
         .where(eq(aiRecommendations.email, email))
         .orderBy(desc(aiRecommendations.id))
         .limit(30);
+      // Did the pod actually get driven on each night, or was the app only
+      // ever reporting on sleep it had no hand in? One row per stage change
+      // we sent, so an empty night means the schedule never ran.
+      const events = await db
+        .select()
+        .from(temperatureEvents)
+        .where(eq(temperatureEvents.email, email))
+        .orderBy(desc(temperatureEvents.id))
+        .limit(400);
+      const nightsDriven: Record<
+        string,
+        { scheduled: number; live: number; off: number; stages: string[] }
+      > = {};
+      for (const event of events) {
+        const bucket = (nightsDriven[event.night] ??= {
+          scheduled: 0,
+          live: 0,
+          off: 0,
+          stages: [],
+        });
+        if (event.source === "live") bucket.live += 1;
+        else if (event.source === "off") bucket.off += 1;
+        else {
+          bucket.scheduled += 1;
+          if (!bucket.stages.includes(event.stage)) bucket.stages.push(event.stage);
+        }
+      }
+
       const runs = await db
         .select()
         .from(aiRunLog)
@@ -174,6 +203,7 @@ export async function GET(request: NextRequest): Promise<Response> {
               updatedAt: profile.updatedAt,
             }
           : null,
+        nightsDriven,
         // Why a day is missing: whether the pass was attempted at all, and
         // what it said if it failed.
         dailyPassRuns: runs.map((run) => ({
