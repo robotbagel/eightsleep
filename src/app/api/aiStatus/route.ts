@@ -282,7 +282,7 @@ export async function GET(request: NextRequest): Promise<Response> {
           );
           // A one-off or retired caller would otherwise sit in the status
           // line forever, growing staler and meaning nothing.
-          if (minutes <= 24 * 60) {
+          if (minutes <= 6 * 60) {
             cronSources[row.key.slice("cron:lastRunAt:".length)] = minutes;
           }
         }
