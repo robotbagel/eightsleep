@@ -171,6 +171,7 @@ function buildPrompt(input: AdvisorInput): string {
     JSON.stringify(sleepContext),
     "",
     "Recommend temperatures for tonight. Rules:",
+    "- The pod's setting scale is coarser than 0.1°C: whatever you return is snapped to the nearest temperature the hardware can actually hold. Choose values on a 0.5°C grid, and quote temperatures in the reasoning to that same 0.5°C so the text never names a temperature the bed was not set to.",
     `- Adjust conservatively: change each stage by at most ${maxDailyShiftC}°C from its current value, and only where the data supports it. Keeping a stage unchanged is a valid choice.`,
     "- Treat this as a running experiment: if the history shows the current configuration is the best performer and recent scores are at or near the best, recommend no change and say the profile looks converged. If recent changes made scores worse, move back toward the best-known configuration.",
     input.displayUnit === "level"

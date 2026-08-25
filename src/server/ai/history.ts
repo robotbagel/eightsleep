@@ -157,6 +157,24 @@ export async function persistNightMetrics(
   if (metrics.length === 0) return;
   try {
     const nights = metrics.map((m) => m.night);
+
+    // A night's score is FROZEN once stored. The bedtime-consistency term is
+    // measured against the circular mean of whatever window we happen to
+    // hold, so re-scoring an old night as the window slides moves history
+    // under the experiment loop's feet — the same night was reported as 75
+    // one day and 74 the next. Measurements are refreshed; the score is not.
+    const existing = await db
+      .select({ night: nightMetrics.night, score: nightMetrics.score })
+      .from(nightMetrics)
+      .where(
+        and(eq(nightMetrics.email, email), inArray(nightMetrics.night, nights)),
+      );
+    const frozen = new Map(
+      existing
+        .filter((row) => row.score != null)
+        .map((row) => [row.night, row.score!]),
+    );
+
     await db
       .delete(nightMetrics)
       .where(

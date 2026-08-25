@@ -184,6 +184,10 @@ export async function GET(request: NextRequest): Promise<Response> {
               aiEnabled: settings.aiEnabled,
               autoApply: settings.autoApply,
               liveTuningEnabled: settings.liveTuningEnabled,
+              // The monitor formats temperatures in the unit the sleeper
+              // actually sees in the app; reporting °C to someone whose app
+              // shows -10..+10 sliders makes every number unrecognisable.
+              displayUnit: settings.displayUnit,
               maxDailyShiftC: settings.maxDailyShift / 10,
               sleepGoal: settings.sleepGoal,
               updatedAt: settings.updatedAt,
@@ -273,9 +277,14 @@ export async function GET(request: NextRequest): Promise<Response> {
         if (row.key === "cron:lastRunAt") cronLastRunAt = row.value;
         else if (row.key === "cron:lastSource") cronLastSource = row.value;
         else if (row.key.startsWith("cron:lastRunAt:")) {
-          cronSources[row.key.slice("cron:lastRunAt:".length)] = Math.round(
+          const minutes = Math.round(
             (Date.now() - new Date(row.value).getTime()) / 60000,
           );
+          // A one-off or retired caller would otherwise sit in the status
+          // line forever, growing staler and meaning nothing.
+          if (minutes <= 24 * 60) {
+            cronSources[row.key.slice("cron:lastRunAt:".length)] = minutes;
+          }
         }
       }
     } catch {
