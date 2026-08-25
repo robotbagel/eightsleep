@@ -8,6 +8,7 @@ import {
   aiRecommendations,
   aiRunLog,
   appConfig,
+  temperatureEvents,
   userAiSettings,
   userTemperatureProfile,
   users,
@@ -107,6 +108,51 @@ interface ExperimentHistory {
   bestProfile: ProfileLevels | null;
   bestScore: number | null;
   shouldRevertToBest: boolean;
+  /** Nights we can prove the pod actually ran our profile. */
+  verifiedNights: number;
+  unverifiedNights: number;
+}
+
+/**
+ * Which nights we can PROVE the pod ran our schedule, from the temperature
+ * changes the cron logged. Nights the scheduler was down still produce a
+ * perfectly good sleep score — the pod records the night either way — so
+ * without this check the experiment loop happily credits a profile that was
+ * never in effect. (Audited 2026-08-25: the scheduler was down for at least
+ * the night of 08-23, whose score the loop was treating as evidence.)
+ *
+ * `temperatureEvents.night` is keyed by the date the night STARTED, while
+ * sleep nights are keyed by the wake date, so the night woken from on D was
+ * driven by events stored under D-1.
+ */
+async function drivenNights(email: string): Promise<Set<string>> {
+  const driven = new Set<string>();
+  try {
+    const rows = await db
+      .select({ night: temperatureEvents.night, source: temperatureEvents.source })
+      .from(temperatureEvents)
+      .where(eq(temperatureEvents.email, email));
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      if (row.source === "off") continue; // a wake-up off is not a night's schedule
+      counts.set(row.night, (counts.get(row.night) ?? 0) + 1);
+    }
+    for (const [night, count] of counts) {
+      // A driven night sends several stage changes; one stray event is not a
+      // night under our control.
+      if (count >= 2) {
+        const wake = new Date(`${night}T12:00:00Z`);
+        wake.setUTCDate(wake.getUTCDate() + 1);
+        driven.add(wake.toISOString().slice(0, 10));
+      }
+    }
+  } catch (error) {
+    console.error(
+      `Could not read driven nights for ${email}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  return driven;
 }
 
 // Reconstructs which profile was active on each scored night by replaying
@@ -133,11 +179,15 @@ async function buildExperimentHistory(
     .filter((night) => night.score != null)
     .sort((a, b) => a.date.localeCompare(b.date));
 
+  const driven = await drivenNights(email);
+
   const result: ExperimentHistory = {
     historyLines: [],
     bestProfile: null,
     bestScore: null,
     shouldRevertToBest: false,
+    verifiedNights: 0,
+    unverifiedNights: 0,
   };
   if (scoredNights.length === 0) return result;
 
@@ -170,30 +220,47 @@ async function buildExperimentHistory(
     date: night.date,
     score: night.score!,
     profile: profileForNight(night.date),
+    verified: driven.has(night.date),
   }));
 
-  let best = nightsWithProfiles[0]!;
-  for (const night of nightsWithProfiles) {
-    if (night.score > best.score) best = night;
+  result.verifiedNights = nightsWithProfiles.filter((n) => n.verified).length;
+  result.unverifiedNights = nightsWithProfiles.length - result.verifiedNights;
+
+  // "Best profile" and the revert guardrail only ever consider nights the
+  // pod provably ran our schedule. Attributing a score to settings that were
+  // never applied is worse than having no history at all, because it moves
+  // the profile with confidence in an arbitrary direction.
+  const usable = nightsWithProfiles.filter((n) => n.verified);
+  let bestDate: string | null = null;
+  if (usable.length > 0) {
+    let best = usable[0]!;
+    for (const night of usable) {
+      if (night.score > best.score) best = night;
+    }
+    result.bestProfile = best.profile;
+    result.bestScore = best.score;
+    bestDate = best.date;
+
+    const latestTwo = usable.slice(-2);
+    result.shouldRevertToBest =
+      latestTwo.length === 2 &&
+      latestTwo.every(
+        (night) => night.score <= best.score - REGRESSION_SCORE_DROP,
+      ) &&
+      !sameLevels(currentLevels, best.profile);
   }
-  result.bestProfile = best.profile;
-  result.bestScore = best.score;
 
   result.historyLines = nightsWithProfiles
     .slice(-7)
     .reverse()
     .map(
       (night) =>
-        `${night.date}: score ${night.score} at ${formatProfileC(night.profile)}${night.date === best.date ? " (best night)" : ""}`,
+        `${night.date}: score ${night.score} at ${formatProfileC(night.profile)}` +
+        (night.date === bestDate ? " (best night)" : "") +
+        (night.verified
+          ? ""
+          : " — NOT COMPARABLE: the scheduler was down, so these temperatures were not actually applied; use this night's score only as a general data point, never as evidence for or against a profile"),
     );
-
-  const latestTwo = nightsWithProfiles.slice(-2);
-  result.shouldRevertToBest =
-    latestTwo.length === 2 &&
-    latestTwo.every(
-      (night) => night.score <= best.score - REGRESSION_SCORE_DROP,
-    ) &&
-    !sameLevels(currentLevels, best.profile);
 
   return result;
 }
