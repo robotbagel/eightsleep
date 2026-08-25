@@ -209,6 +209,12 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     box-shadow: var(--shadow-card);
+    /* Grid and flex children default to min-width:auto, so ONE wide
+       descendant (a table, a long unbroken string) stretches the card past
+       the viewport and drags every sibling with it. Cards must always be
+       allowed to shrink; anything that genuinely needs more room scrolls
+       inside its own overflow-x container. */
+    min-width: 0;
   }
 
   .card-title {

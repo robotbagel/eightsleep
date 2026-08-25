@@ -137,17 +137,17 @@ const SignedIn: React.FC = () => {
           plan. Everything you configure lives below, folded away. */}
       <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
         <div
-          className="space-y-4 lg:col-span-2"
+          className="min-w-0 space-y-4 lg:col-span-2"
           style={{ touchAction: "pan-y" }}
           {...swipe.bind}
         >
           <div
             className={
               swipe.entering === "prev"
-                ? "enter-prev space-y-4"
+                ? "enter-prev min-w-0 space-y-4"
                 : swipe.entering === "next"
-                  ? "enter-next space-y-4"
-                  : "space-y-4"
+                  ? "enter-next min-w-0 space-y-4"
+                  : "min-w-0 space-y-4"
             }
             style={{
               transform: swipe.dx !== 0 ? `translateX(${swipe.dx}px)` : undefined,
@@ -168,14 +168,14 @@ const SignedIn: React.FC = () => {
         {/* Where the night sits in the run: last two nights measured, tonight
             predicted. Outside the swipe container on purpose — it is about the
             trend, not the night you happen to be paging through. */}
-        <div className="lg:col-span-2">
+        <div className="min-w-0 lg:col-span-2">
           <OutlookCard index={2} />
         </div>
 
         <CompareCard index={3} />
         <AiAdvisorCard displayUnit={displayUnit} index={4} />
 
-        <div className="space-y-4 lg:col-span-2">
+        <div className="min-w-0 space-y-4 lg:col-span-2">
           <Disclosure
             icon="bed"
             title="Tonight's schedule"

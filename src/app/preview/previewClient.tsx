@@ -181,7 +181,7 @@ export default function PreviewClient() {
         <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
           {/* ---- Last night ------------------------------------------- */}
           <div
-            className="space-y-4 lg:col-span-2"
+            className="min-w-0 space-y-4 lg:col-span-2"
             data-testid="night-swipe"
             style={{ touchAction: "pan-y" }}
             {...swipe.bind}
@@ -294,7 +294,7 @@ export default function PreviewClient() {
           </div>
 
           {/* ---- Outlook ---------------------------------------------- */}
-          <div className="lg:col-span-2">
+          <div className="min-w-0 lg:col-span-2">
             <OutlookView
               loading={false}
               index={2}
@@ -497,7 +497,7 @@ export default function PreviewClient() {
           </Card>
 
           {/* ---- Disclosures & primitives ------------------------------ */}
-          <div className="space-y-4 lg:col-span-2">
+          <div className="min-w-0 space-y-4 lg:col-span-2">
             <Disclosure
               icon="bed"
               title="Tonight's schedule"

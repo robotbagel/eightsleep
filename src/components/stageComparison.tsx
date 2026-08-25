@@ -40,6 +40,34 @@ export const StageComparison: React.FC<{
   const show = (value: number | null | undefined) =>
     value == null ? "—" : formatRawByUnit(value, unit);
 
+  const rows = STAGES.map((stage) => {
+    const before = lastNight?.[stage.key] ?? null;
+    const now = tonight?.[stage.key] ?? null;
+    const wanted = proposed?.[stage.key] ?? null;
+    const target = wanted ?? now;
+    const delta =
+      before != null && target != null
+        ? rawToCelsius(target) - rawToCelsius(before)
+        : null;
+    const moved = delta != null && Math.abs(delta) >= 0.05;
+    const cooler = moved && delta < 0;
+    return {
+      stage,
+      before,
+      now,
+      wanted,
+      pending: wanted != null && wanted !== now,
+      change: !moved
+        ? "no change"
+        : `${cooler ? "cooler" : "warmer"} ${Math.abs(delta).toFixed(1)}°`,
+      changeColor: !moved
+        ? "var(--text-faint)"
+        : cooler
+          ? "var(--cool)"
+          : "var(--warm)",
+    };
+  });
+
   return (
     <div>
       <div className="mb-3 flex items-baseline justify-between gap-2">
@@ -49,8 +77,53 @@ export const StageComparison: React.FC<{
         </span>
       </div>
 
-      <div className="-mx-1 overflow-x-auto px-1">
-        <table className="w-full min-w-[480px] border-collapse">
+      {/* Phones get one block per stage. A five-column table at 360px is
+          either unreadable or a sideways scroll, and neither is an answer. */}
+      <div className="space-y-2 sm:hidden">
+        {rows.map((row) => (
+          <div
+            key={row.stage.key}
+            className="rounded-xl p-2.5"
+            style={{
+              backgroundColor: "var(--surface-sunken)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            <div className="flex items-baseline justify-between gap-2">
+              <span
+                className="text-[13px] font-medium"
+                style={{ color: "var(--text-headline)" }}
+              >
+                {row.stage.label}
+              </span>
+              <span
+                className="tabular shrink-0 text-[11px] font-semibold"
+                style={{ color: row.changeColor }}
+              >
+                {row.change}
+              </span>
+            </div>
+
+            <div className="mt-2 grid grid-cols-3 gap-1.5 text-center">
+              <MobileCell
+                label="2 nights ago"
+                value={show(twoNightsAgo?.[row.stage.key])}
+              />
+              <MobileCell label="Last night" value={show(row.before)} />
+              <MobileCell
+                label="Tonight"
+                value={show(row.now)}
+                accent
+                strike={row.pending}
+                extra={row.pending ? show(row.wanted) : undefined}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="-mx-1 hidden overflow-x-auto px-1 sm:block">
+        <table className="w-full min-w-[440px] border-collapse">
           <thead>
             <tr>
               <th className="w-[30%]" />
@@ -68,66 +141,42 @@ export const StageComparison: React.FC<{
             </tr>
           </thead>
           <tbody>
-            {STAGES.map((stage) => {
-              const before = lastNight?.[stage.key] ?? null;
-              const now = tonight?.[stage.key] ?? null;
-              const wanted = proposed?.[stage.key] ?? null;
-              const target = wanted ?? now;
-              const delta =
-                before != null && target != null
-                  ? rawToCelsius(target) - rawToCelsius(before)
-                  : null;
-              const moved = delta != null && Math.abs(delta) >= 0.05;
-              const cooler = moved && delta < 0;
-              const color = !moved
-                ? "var(--text-faint)"
-                : cooler
-                  ? "var(--cool)"
-                  : "var(--warm)";
+            {rows.map((row) => (
+              <tr key={row.stage.key}>
+                <th scope="row" className="py-1.5 pr-2 text-left align-top">
+                  <span
+                    className="block text-[12px] font-medium"
+                    style={{ color: "var(--text-headline)" }}
+                  >
+                    {row.stage.label}
+                  </span>
+                  <span
+                    className="block text-[10px]"
+                    style={{ color: "var(--text-faint)" }}
+                  >
+                    {row.stage.when}
+                  </span>
+                </th>
 
-              return (
-                <tr key={stage.key}>
-                  <th scope="row" className="py-1.5 pr-2 text-left align-top">
-                    <span
-                      className="block text-[12px] font-medium"
-                      style={{ color: "var(--text-headline)" }}
-                    >
-                      {stage.label}
-                    </span>
-                    <span
-                      className="block text-[10px]"
-                      style={{ color: "var(--text-faint)" }}
-                    >
-                      {stage.when}
-                    </span>
-                  </th>
+                <Cell value={show(twoNightsAgo?.[row.stage.key])} />
+                <Cell value={show(row.before)} />
+                <Cell
+                  value={show(row.now)}
+                  highlight
+                  strike={row.pending}
+                  extra={row.pending ? show(row.wanted) : undefined}
+                />
 
-                  <Cell value={show(twoNightsAgo?.[stage.key])} />
-                  <Cell value={show(before)} />
-                  <Cell
-                    value={show(now)}
-                    highlight
-                    strike={wanted != null && wanted !== now}
-                    extra={
-                      wanted != null && wanted !== now
-                        ? show(wanted)
-                        : undefined
-                    }
-                  />
-
-                  <td className="py-1.5 pl-2 align-middle">
-                    <span
-                      className="tabular text-[11px] font-semibold"
-                      style={{ color }}
-                    >
-                      {!moved
-                        ? "no change"
-                        : `${cooler ? "cooler" : "warmer"} ${Math.abs(delta).toFixed(1)}°`}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
+                <td className="py-1.5 pl-2 align-middle">
+                  <span
+                    className="tabular text-[11px] font-semibold"
+                    style={{ color: row.changeColor }}
+                  >
+                    {row.change}
+                  </span>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
@@ -141,6 +190,46 @@ export const StageComparison: React.FC<{
     </div>
   );
 };
+
+const MobileCell: React.FC<{
+  label: string;
+  value: string;
+  accent?: boolean;
+  strike?: boolean;
+  extra?: string;
+}> = ({ label, value, accent, strike, extra }) => (
+  <div
+    className="rounded-lg px-1 py-1.5"
+    style={{
+      backgroundColor: accent ? "var(--surface)" : "transparent",
+      outline: accent ? "1px solid var(--border-strong)" : undefined,
+    }}
+  >
+    <div
+      className="text-[9px] font-semibold uppercase tracking-wide"
+      style={{ color: accent ? "var(--accent)" : "var(--text-faint)" }}
+    >
+      {label}
+    </div>
+    <div
+      className="tabular text-[13px] font-semibold"
+      style={{
+        color: strike ? "var(--text-faint)" : "var(--text-headline)",
+        textDecoration: strike ? "line-through" : undefined,
+      }}
+    >
+      {value}
+    </div>
+    {extra && (
+      <div
+        className="tabular text-[13px] font-semibold"
+        style={{ color: "var(--accent)" }}
+      >
+        {extra}
+      </div>
+    )}
+  </div>
+);
 
 const Head: React.FC<{
   title: string;

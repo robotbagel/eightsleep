@@ -51,7 +51,7 @@ export const SettingsHistory: React.FC<{
       </div>
 
       <div className="-mx-1 overflow-x-auto px-1 pb-1">
-        <table className="w-full min-w-[420px] border-collapse">
+        <table className="w-full min-w-[360px] border-collapse">
           <thead>
             <tr>
               <th className="w-[92px]" />
