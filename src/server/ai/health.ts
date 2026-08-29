@@ -382,6 +382,9 @@ export async function getHealthContext(
     .reverse()
     .map((row) => ({
       date: row.night,
+      // Apple Health has no toss count, so a thermal score would rest on half
+      // the evidence it needs; absent is better than misleading.
+      thermalScore: null,
       score: row.score,
       sleepDurationHours: row.asleepTenthHours / 10,
       hrv: row.hrv,

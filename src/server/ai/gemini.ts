@@ -44,6 +44,10 @@ const GeminiResponseSchema = z.object({
 });
 
 export const STAGE_KEYS = ["initial", "deep", "mid", "final"] as const;
+type StageKey = (typeof STAGE_KEYS)[number];
+
+/** Nights a change is held before it may be revisited (see advisor.ts). */
+export const MIN_HOLD_NIGHTS = 2;
 
 // The structured "why". Kept separate from `reasoning` (the one-paragraph
 // summary) so the app can show the evidence, the per-stage logic, the
@@ -105,8 +109,14 @@ export interface AdvisorInput {
   sleepContext: SleepContext;
   signals: string[];
   historyLines: string[];
+  /** Every profile tried, its measured nights and its mean thermal score. */
+  ledgerLines: string[];
   sleepGoal: string | null;
   maxDailyShiftC: number;
+  /** Stages changed too recently to have produced evidence; held steady. */
+  lockedStages: string[];
+  /** How many nights the current profile has been held and measured. */
+  nightsOnCurrentProfile: number;
   // How the sleeper reads temperatures in the app: "celsius" (bed water °C)
   // or "level" (the Eight Sleep slider scale, -10 coldest .. +10 warmest,
   // one slider step per °C-ish). Controls only the reasoning wording — the
@@ -163,14 +173,25 @@ function buildPrompt(input: AdvisorInput): string {
       : "",
     "",
     historyLines.length > 0
-      ? "Experiment history (past profile changes and the sleep scores that followed — use it to keep what worked and revert what did not):\n" +
+      ? "Night by night (thermal score is the only one you are optimising — it is built from deep-sleep share, REM share, restlessness and time awake in bed. The overall score is shown for context only and is mostly sleep DURATION and bedtime consistency, neither of which the bed controls):\n" +
         historyLines.map((line) => `- ${line}`).join("\n")
+      : "",
+    "",
+    input.ledgerLines.length > 0
+      ? "What has been tried, grouped by profile (this is the accumulated result, and it outranks any single night):\n" +
+        input.ledgerLines.map((line) => `- ${line}`).join("\n")
       : "",
     "",
     "Recent sleep data (nights from daily trends; recentSessions carry per-third-of-night detail — toss-and-turn counts, average bed temperature in °C, heart rate):",
     JSON.stringify(sleepContext),
     "",
+    input.lockedStages.length > 0
+      ? `Stages currently under measurement and NOT available to change tonight: ${input.lockedStages.join(", ")}. They were adjusted within the last ${MIN_HOLD_NIGHTS} nights and the result is not in yet. Leave them exactly where they are and say so; any value you give for them will be overridden.`
+      : "",
+    `The current profile has been held for ${input.nightsOnCurrentProfile >= 90 ? "an unknown number of" : input.nightsOnCurrentProfile} nights.`,
+    "",
     "Recommend temperatures for tonight. Rules:",
+    "- Change AT MOST ONE stage. Only the single largest change you propose is kept; the rest are discarded, so spend it on the stage the evidence is clearest about. Recommending no change at all is a perfectly good answer and is the right one when nothing stands out.",
     "- The pod's setting scale is coarser than 0.1°C: whatever you return is snapped to the nearest temperature the hardware can actually hold. Choose values on a 0.5°C grid, and quote temperatures in the reasoning to that same 0.5°C so the text never names a temperature the bed was not set to.",
     `- Adjust conservatively: change each stage by at most ${maxDailyShiftC}°C from its current value, and only where the data supports it. Keeping a stage unchanged is a valid choice.`,
     "- Treat this as a running experiment: if the history shows the current configuration is the best performer and recent scores are at or near the best, recommend no change and say the profile looks converged. If recent changes made scores worse, move back toward the best-known configuration.",
@@ -307,11 +328,46 @@ export async function generateTemperatureRecommendation(
       MAX_BED_TEMP_C,
     );
 
+  const proposed: Record<StageKey, number> = {
+    initial: bounded(parsed.initialSleepC, currentProfile.initialSleepC),
+    deep: bounded(parsed.deepSleepC, currentProfile.deepSleepC),
+    mid: bounded(parsed.midStageSleepC, currentProfile.midStageSleepC),
+    final: bounded(parsed.finalSleepC, currentProfile.finalSleepC),
+  };
+  const current: Record<StageKey, number> = {
+    initial: currentProfile.initialSleepC,
+    deep: currentProfile.deepSleepC,
+    mid: currentProfile.midStageSleepC,
+    final: currentProfile.finalSleepC,
+  };
+
+  // A stage under measurement is pinned. The model is told, but the pin is
+  // enforced here so a forgetful answer cannot break the experiment.
+  for (const stage of input.lockedStages) {
+    if (stage in proposed) proposed[stage as StageKey] = current[stage as StageKey];
+  }
+
+  // One change per night. Two stages moving together cannot be told apart
+  // afterwards, and moving all four every night is how a profile ends up back
+  // where it started having thrashed ±2°C in between.
+  let biggest: StageKey | null = null;
+  let biggestDelta = 0;
+  for (const stage of STAGE_KEYS) {
+    const delta = Math.abs(proposed[stage] - current[stage]);
+    if (delta > biggestDelta) {
+      biggestDelta = delta;
+      biggest = stage;
+    }
+  }
+  for (const stage of STAGE_KEYS) {
+    if (stage !== biggest) proposed[stage] = current[stage];
+  }
+
   return {
     ...parsed,
-    initialSleepC: bounded(parsed.initialSleepC, currentProfile.initialSleepC),
-    deepSleepC: bounded(parsed.deepSleepC, currentProfile.deepSleepC),
-    midStageSleepC: bounded(parsed.midStageSleepC, currentProfile.midStageSleepC),
-    finalSleepC: bounded(parsed.finalSleepC, currentProfile.finalSleepC),
+    initialSleepC: proposed.initial,
+    deepSleepC: proposed.deep,
+    midStageSleepC: proposed.mid,
+    finalSleepC: proposed.final,
   };
 }

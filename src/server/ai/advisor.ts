@@ -13,7 +13,7 @@ import {
   userTemperatureProfile,
   users,
 } from "~/server/db/schema";
-import { and, desc, eq, gte, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import { obtainFreshAccessToken } from "~/server/eight/auth";
 import { type Token } from "~/server/eight/types";
 import {
@@ -28,7 +28,19 @@ import {
   generateTemperatureRecommendation,
   isAiConfigured,
 } from "./gemini";
-import { deriveNightSignals, REGRESSION_SCORE_DROP } from "./rules";
+import { deriveNightSignals } from "./rules";
+import {
+  buildLedger,
+  decide,
+  describeLedger,
+  livePressure,
+  MIN_HOLD_NIGHTS,
+  STAGES,
+  type LedgerEntry,
+  type LivePressure,
+  type ScoredNight,
+  type Stage,
+} from "./control";
 import { minutesSinceTimeOfDay } from "./time";
 import { sendPushToUser } from "~/server/push";
 import {
@@ -49,6 +61,26 @@ export const DEFAULT_AI_SETTINGS = {
 };
 
 type UserRow = typeof users.$inferSelect;
+
+const STAGE_LABELS: Record<Stage, string> = {
+  initial: "falling-asleep",
+  deep: "deep-sleep",
+  mid: "middle-of-the-night",
+  final: "REM and wake-up",
+};
+
+/** A forecast band from what this profile has actually averaged, rather than
+ *  a number the model invented. Widens when there is little to go on. */
+function forecastFromLedger(ledger: LedgerEntry[]) {
+  const current = ledger.find((entry) => entry.current);
+  const reference = current ?? ledger[0];
+  if (!reference) return null;
+  const spread = reference.nights.length >= MIN_HOLD_NIGHTS ? 5 : 9;
+  return {
+    expectedScoreLow: Math.max(0, Math.round(reference.meanThermal - spread)),
+    expectedScoreHigh: Math.min(100, Math.round(reference.meanThermal + spread)),
+  };
+}
 
 export async function getFreshToken(user: UserRow): Promise<Token> {
   let token: Token = {
@@ -94,23 +126,71 @@ function formatProfileC(levels: ProfileLevels): string {
   return `${rawToCelsius(levels.initial)}/${rawToCelsius(levels.deep)}/${rawToCelsius(levels.mid)}/${rawToCelsius(levels.final)}°C`;
 }
 
-function sameLevels(a: ProfileLevels, b: ProfileLevels): boolean {
-  return (
-    a.initial === b.initial &&
-    a.deep === b.deep &&
-    a.mid === b.mid &&
-    a.final === b.final
-  );
-}
-
 interface ExperimentHistory {
   historyLines: string[];
   bestProfile: ProfileLevels | null;
   bestScore: number | null;
-  shouldRevertToBest: boolean;
   /** Nights we can prove the pod actually ran our profile. */
   verifiedNights: number;
   unverifiedNights: number;
+  /** Stages changed too recently to have been measured yet. */
+  lockedStages: string[];
+  /** Nights the current profile has been held and measured. */
+  nightsOnCurrentProfile: number;
+  /** Every distinct profile tried, with its mean thermal score. */
+  ledger: LedgerEntry[];
+  /** Stages live tuning keeps correcting the same way. */
+  pressure: LivePressure[];
+}
+
+async function stagesLockedByRecentChanges(
+  email: string,
+  todayKey: string,
+): Promise<{ locked: string[]; heldNights: number }> {
+  const recent = await db
+    .select()
+    .from(aiRecommendations)
+    .where(
+      and(
+        eq(aiRecommendations.email, email),
+        inArray(aiRecommendations.status, ["applied", "auto_applied"]),
+      ),
+    )
+    .orderBy(desc(aiRecommendations.forDate))
+    .limit(MIN_HOLD_NIGHTS + 2);
+
+  const cutoff = new Date(`${todayKey}T12:00:00Z`);
+  cutoff.setUTCDate(cutoff.getUTCDate() - MIN_HOLD_NIGHTS);
+  const cutoffKey = cutoff.toISOString().slice(0, 10);
+
+  const locked = new Set<string>();
+  let heldNights = 99;
+  for (const rec of recent) {
+    if (rec.forDate >= todayKey) continue; // today's own row, if any
+    const changed: [string, boolean][] = [
+      ["initial", rec.previousInitialLevel !== rec.recommendedInitialLevel],
+      [
+        "deep",
+        (rec.previousDeepLevel ?? rec.previousMidLevel) !==
+          (rec.recommendedDeepLevel ?? rec.recommendedMidLevel),
+      ],
+      ["mid", rec.previousMidLevel !== rec.recommendedMidLevel],
+      ["final", rec.previousFinalLevel !== rec.recommendedFinalLevel],
+    ];
+    const anyChange = changed.some(([, did]) => did);
+    if (anyChange) {
+      const since = Math.round(
+        (new Date(`${todayKey}T12:00:00Z`).getTime() -
+          new Date(`${rec.forDate}T12:00:00Z`).getTime()) /
+          86_400_000,
+      );
+      heldNights = Math.min(heldNights, since);
+      if (rec.forDate > cutoffKey) {
+        for (const [stage, did] of changed) if (did) locked.add(stage);
+      }
+    }
+  }
+  return { locked: [...locked], heldNights: heldNights === 99 ? 99 : heldNights };
 }
 
 /**
@@ -162,6 +242,7 @@ async function buildExperimentHistory(
   email: string,
   sleepContext: SleepContext,
   currentLevels: ProfileLevels,
+  todayKey: string,
 ): Promise<ExperimentHistory> {
   const appliedRecs = await db
     .select()
@@ -175,20 +256,31 @@ async function buildExperimentHistory(
     .orderBy(aiRecommendations.forDate)
     .limit(60);
 
+  // The loop is scored on the THERMAL score, not the overall one. Measured on
+  // this data 2026-08-23..29, the overall score correlated +0.67 with time
+  // asleep and −0.38 with deep sleep, so optimising it steered away from the
+  // very thing the bed is for. Nights with no thermal score (Apple Health, or
+  // the /trends fallback) cannot judge a profile and are left out.
   const scoredNights = sleepContext.nights
-    .filter((night) => night.score != null)
+    .filter((night) => night.thermalScore != null)
     .sort((a, b) => a.date.localeCompare(b.date));
 
   const driven = await drivenNights(email);
+  const hold = await stagesLockedByRecentChanges(email, todayKey);
 
   const result: ExperimentHistory = {
     historyLines: [],
     bestProfile: null,
     bestScore: null,
-    shouldRevertToBest: false,
     verifiedNights: 0,
     unverifiedNights: 0,
+    lockedStages: [],
+    nightsOnCurrentProfile: 0,
+    ledger: [],
+    pressure: [],
   };
+  result.lockedStages = hold.locked;
+  result.nightsOnCurrentProfile = hold.heldNights;
   if (scoredNights.length === 0) return result;
 
   const profileForNight = (date: string): ProfileLevels => {
@@ -218,11 +310,14 @@ async function buildExperimentHistory(
 
   const nightsWithProfiles = scoredNights.map((night) => ({
     date: night.date,
-    score: night.score!,
+    score: night.thermalScore!,
+    overall: night.score,
     profile: profileForNight(night.date),
     verified: driven.has(night.date),
   }));
 
+  result.lockedStages = hold.locked;
+  result.nightsOnCurrentProfile = hold.heldNights;
   result.verifiedNights = nightsWithProfiles.filter((n) => n.verified).length;
   result.unverifiedNights = nightsWithProfiles.length - result.verifiedNights;
 
@@ -241,13 +336,43 @@ async function buildExperimentHistory(
     result.bestScore = best.score;
     bestDate = best.date;
 
-    const latestTwo = usable.slice(-2);
-    result.shouldRevertToBest =
-      latestTwo.length === 2 &&
-      latestTwo.every(
-        (night) => night.score <= best.score - REGRESSION_SCORE_DROP,
-      ) &&
-      !sameLevels(currentLevels, best.profile);
+  }
+
+  const scored: ScoredNight[] = nightsWithProfiles.map((night) => ({
+    date: night.date,
+    thermalScore: night.score,
+    overallScore: night.overall,
+    profile: night.profile,
+    verified: night.verified,
+  }));
+  result.ledger = buildLedger(scored, currentLevels);
+
+  // Live tuning's own record over the nights it could have acted on.
+  const recentNightKeys = scored.slice(-3).map((night) => {
+    const start = new Date(`${night.date}T12:00:00Z`);
+    start.setUTCDate(start.getUTCDate() - 1);
+    return start.toISOString().slice(0, 10);
+  });
+  try {
+    const adjustments = await db
+      .select()
+      .from(aiLiveAdjustments)
+      .where(eq(aiLiveAdjustments.email, email))
+      .orderBy(aiLiveAdjustments.id)
+      .limit(60);
+    result.pressure = livePressure(
+      adjustments.map((a) => ({
+        night: a.night,
+        stage: a.stage,
+        newOffset: a.newOffset,
+      })),
+      recentNightKeys,
+    );
+  } catch (error) {
+    console.error(
+      `Could not read live-tuning pressure for ${email}:`,
+      error instanceof Error ? error.message : String(error),
+    );
   }
 
   result.historyLines = nightsWithProfiles
@@ -255,7 +380,7 @@ async function buildExperimentHistory(
     .reverse()
     .map(
       (night) =>
-        `${night.date}: score ${night.score} at ${formatProfileC(night.profile)}` +
+        `${night.date}: thermal ${night.score}${night.overall != null ? ` (overall ${night.overall})` : ""} at ${formatProfileC(night.profile)}` +
         (night.date === bestDate ? " (best night)" : "") +
         (night.verified
           ? ""
@@ -345,60 +470,102 @@ export async function generateRecommendationForUser(
     mid: profile.midStageSleepLevel,
     final: profile.finalSleepLevel,
   };
+  const todayKey = new Date().toLocaleDateString("en-CA", {
+    timeZone: profile.timezoneTZ,
+  });
   const history = await buildExperimentHistory(
     email,
     sleepContext,
     currentLevels,
+    todayKey,
   );
 
+  const unit: DisplayUnit =
+    settings.displayUnit === "level" ? "level" : "celsius";
+  const fmt = (raw: number) => formatRawByUnit(raw, unit);
+  const decision = decide({
+    current: currentLevels,
+    ledger: history.ledger,
+    pressure: history.pressure,
+    lockedStages: history.lockedStages as Stage[],
+    verifiedNights: history.verifiedNights,
+    nightsOnCurrentProfile: history.nightsOnCurrentProfile,
+    maxShiftC: settings.maxDailyShift / 10,
+  });
+
   let recommendation: AiRecommendation;
-  if (history.shouldRevertToBest && history.bestProfile) {
-    // Deterministic guardrail: two nights in a row well below the best-known
-    // score means the experiment went the wrong way — go straight back.
-    const unit: DisplayUnit =
-      settings.displayUnit === "level" ? "level" : "celsius";
-    const best = history.bestProfile;
-    const bestFormatted = `${formatRawByUnit(best.initial, unit)}/${formatRawByUnit(best.deep, unit)}/${formatRawByUnit(best.mid, unit)}/${formatRawByUnit(best.final, unit)}`;
+  if (decision.kind === "fold-live") {
+    // The strongest evidence there is: live tuning had to correct this stage
+    // the same way on most of the recent nights, so the base is wrong and we
+    // know both the direction and roughly the size.
+    const next: Record<Stage, number> = {
+      initial: rawToCelsius(currentLevels.initial),
+      deep: rawToCelsius(currentLevels.deep),
+      mid: rawToCelsius(currentLevels.mid),
+      final: rawToCelsius(currentLevels.final),
+    };
+    next[decision.stage] = decision.toC;
+    const cooler = decision.toC < decision.fromC;
+    const label = STAGE_LABELS[decision.stage];
     recommendation = {
-      initialSleepC: rawToCelsius(best.initial),
-      deepSleepC: rawToCelsius(best.deep),
-      midStageSleepC: rawToCelsius(best.mid),
-      finalSleepC: rawToCelsius(best.final),
-      reasoning: `The last two nights scored at least ${REGRESSION_SCORE_DROP} points below your best night (${history.bestScore}), so this reverts to the best-known configuration (${bestFormatted}) before experimenting further.`,
-      confidence: "high",
-      // This branch is the deterministic guardrail, not the model, so the
-      // rationale is written here rather than generated.
-      perStage: (
-        [
-          ["initial", best.initial],
-          ["deep", best.deep],
-          ["mid", best.mid],
-          ["final", best.final],
-        ] as const
-      ).map(([stage, level]) => ({
+      initialSleepC: next.initial,
+      deepSleepC: next.deep,
+      midStageSleepC: next.mid,
+      finalSleepC: next.final,
+      reasoning: `Live tuning had to cool the ${label} stage on ${decision.pressure.nights} of the last 3 nights, by ${Math.abs(decision.pressure.meanOffsetC).toFixed(1)}°C on average. A correction that repeats every night is the base setting being wrong, not a bad night, so it moves into the schedule itself: ${fmt(currentLevels[decision.stage])} to ${fmt(celsiusToRaw(decision.toC))}. Nothing else changes, so the effect of this one move can be measured.`,
+      confidence: decision.pressure.nights >= 3 ? "high" : "medium",
+      perStage: STAGES.map((stage) => ({
         stage,
         direction:
-          level === currentLevels[stage]
+          stage !== decision.stage
             ? ("unchanged" as const)
-            : level < currentLevels[stage]
+            : cooler
               ? ("cooler" as const)
               : ("warmer" as const),
-        why: `Back to ${formatRawByUnit(level, unit)}, the value this stage held on your best-scoring night.`,
+        why:
+          stage === decision.stage
+            ? `Corrected by live tuning on ${decision.pressure.nights} of the last 3 nights, always in the same direction.`
+            : `Left alone so the ${label} change can be measured on its own.`,
       })),
       evidence: [
-        `Best night on record scored ${history.bestScore}.`,
-        `The last two nights fell at least ${REGRESSION_SCORE_DROP} points short of it.`,
+        `Live tuning corrected the ${label} stage on ${decision.pressure.nights} of the last 3 nights.`,
+        `Average correction ${decision.pressure.meanOffsetC.toFixed(1)}°C, always the same direction.`,
       ],
-      expectation: `Scores should return toward ${history.bestScore} within a night or two now that the profile is back at ${bestFormatted}.`,
+      expectation: `Live tuning should need to correct the ${label} stage less tonight, or not at all. If it corrects it just as hard again, the base needs to move further.`,
       principle:
-        "When an experiment makes things worse two nights running, return to the best-known setting before trying anything new — otherwise you cannot tell which change caused what.",
-      forecast:
-        history.bestScore != null
-          ? {
-              expectedScoreLow: Math.max(0, history.bestScore - 8),
-              expectedScoreHigh: Math.min(100, history.bestScore + 2),
-            }
-          : null,
+        "When a fast correction has to be made every night, the slow setting underneath it is wrong — fold the correction into the setting instead of re-making it nightly.",
+      forecast: forecastFromLedger(history.ledger),
+    };
+  } else if (decision.kind === "converged" || decision.kind === "hold") {
+    const why =
+      decision.kind === "converged"
+        ? `This profile is averaging a thermal score of ${decision.meanThermal} over ${decision.nights} measured night${decision.nights === 1 ? "" : "s"}, level with the best you have recorded. There is nothing here worth changing tonight, and changing it anyway would only add noise.`
+        : decision.reason;
+    recommendation = {
+      initialSleepC: rawToCelsius(currentLevels.initial),
+      deepSleepC: rawToCelsius(currentLevels.deep),
+      midStageSleepC: rawToCelsius(currentLevels.mid),
+      finalSleepC: rawToCelsius(currentLevels.final),
+      reasoning: why,
+      confidence: decision.kind === "converged" ? "high" : "medium",
+      perStage: STAGES.map((stage) => ({
+        stage,
+        direction: "unchanged" as const,
+        why: "Held steady tonight.",
+      })),
+      evidence: history.ledger
+        .slice(0, 3)
+        .map(
+          (entry) =>
+            `${STAGES.map((st) => fmt(entry.profile[st])).join("/")}: thermal ${entry.meanThermal} over ${entry.nights.length} night${entry.nights.length === 1 ? "" : "s"}.`,
+        ),
+      expectation:
+        decision.kind === "converged"
+          ? "Tonight should look like the last few — that is the point."
+          : "Another night on the same settings, so the last change can be judged.",
+      principle:
+        "A controller with no stopping condition oscillates forever. Not changing anything is a decision, and often the right one.",
+      forecast: forecastFromLedger(history.ledger),
     };
   } else {
     const signals = [
@@ -427,8 +594,14 @@ export async function generateRecommendationForUser(
       sleepContext,
       signals,
       historyLines: history.historyLines,
+      // The ledger is what the loop has actually LEARNED: every profile
+      // tried, how many measured nights it got, and what it averaged. Seven
+      // loose "date: score" lines were never enough to reason from.
+      ledgerLines: describeLedger(history.ledger, fmt),
       sleepGoal: settings.sleepGoal,
       maxDailyShiftC: settings.maxDailyShift / 10,
+      lockedStages: history.lockedStages,
+      nightsOnCurrentProfile: history.nightsOnCurrentProfile,
       displayUnit: settings.displayUnit === "level" ? "level" : "celsius",
     });
   }
@@ -744,6 +917,30 @@ export async function reassessToday(
   return recommendation;
 }
 
+/**
+ * Single-flight guard for the daily pass. Postgres advisory locks are held for
+ * the session and released automatically when it ends, so a crashed run cannot
+ * wedge tomorrow's. The key is derived from the user and the date, so two
+ * different users never block each other.
+ */
+async function claimDailyPass(email: string, forDate: string): Promise<boolean> {
+  try {
+    const rows = await db.execute<{ locked: boolean }>(
+      sql`select pg_try_advisory_lock(hashtext(${`8slp:daily:${email}:${forDate}`})) as locked`,
+    );
+    const row = (rows as unknown as { rows?: { locked: boolean }[] }).rows?.[0];
+    return row?.locked ?? true;
+  } catch (error) {
+    // A lock we cannot take is not a reason to skip the night's work; the
+    // duplicate check above still catches the common case.
+    console.error(
+      `Advisory lock unavailable for ${email}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+    return true;
+  }
+}
+
 /** Records one daily-pass attempt. Never throws — logging must not break the
  *  thing it is logging. */
 async function recordRun(
@@ -869,6 +1066,19 @@ export async function runDailyAiPass(): Promise<void> {
         ),
       });
       if (existing) {
+        continue;
+      }
+
+      // Two schedulers (the NAS timer and the laptop fallback) both fire on
+      // the hour, and this check-then-insert has no lock between them: on
+      // 2026-08-26..29 that produced TWO recommendations per day per user,
+      // each auto-applied, so the second's "previous" was the first's
+      // recommendation and the experiment history recorded a change that
+      // never had a night. An advisory lock makes the pass single-flight;
+      // whoever loses simply skips, because the winner is doing the work.
+      const claimed = await claimDailyPass(email, forDate);
+      if (!claimed) {
+        console.log(`Daily pass for ${email} already running elsewhere; skipping.`);
         continue;
       }
 

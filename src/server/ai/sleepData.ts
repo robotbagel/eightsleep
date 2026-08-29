@@ -24,6 +24,7 @@ import {
   circularMeanMinutes,
   minutesOfDayInZone,
   scoreNight,
+  thermalScore,
 } from "./score";
 
 // ---------------------------------------------------------------------------
@@ -208,6 +209,10 @@ type TrendDay = z.infer<typeof ForgivingDaySchema>;
 export interface NightTrend {
   date: string;
   score: number | null;
+  /** Sleep quality attributable to bed temperature — see score.ts. This, not
+   *  `score`, is what the experiment loop optimises: `score` is half duration
+   *  and a third bedtime consistency, neither of which a bed can change. */
+  thermalScore: number | null;
   sleepDurationHours: number | null;
   hrv: number | null;
   restingHeartRate: number | null;
@@ -412,6 +417,13 @@ export function buildContextFromPodSessions(
         bedtimeMinutes,
         referenceBedtimeMinutes: referenceBedtime,
       }),
+      thermalScore: thermalScore({
+        asleepHours,
+        deepHours: (summary.deepDuration ?? 0) / 3600,
+        remHours: (summary.remDuration ?? 0) / 3600,
+        awakeHours,
+        tosses: (session.timeseries?.tnt ?? []).length,
+      }),
       sleepDurationHours: round1(asleepHours),
       hrv: average(hrvSeries.map(([, v]) => v)),
       restingHeartRate:
@@ -493,6 +505,8 @@ export async function collectSleepContext(
     context.nights.push({
       date: day.day,
       score: day.score ?? null,
+      // The /trends fallback carries no per-night toss series.
+      thermalScore: null,
       sleepDurationHours:
         day.sleepDuration != null ? round1(day.sleepDuration / 3600) : null,
       hrv: day.sleepQualityScore?.hrv?.current ?? null,

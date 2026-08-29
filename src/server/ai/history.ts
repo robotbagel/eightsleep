@@ -12,11 +12,18 @@ import { healthNights, nightMetrics } from "~/server/db/schema";
 import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import { type Token } from "../eight/types";
 import { fetchPodSessions, type PodSession } from "./sleepData";
-import { circularMeanMinutes, minutesOfDayInZone, scoreNight } from "./score";
+import {
+  circularMeanMinutes,
+  minutesOfDayInZone,
+  scoreNight,
+  thermalScore,
+} from "./score";
 
 export interface NightMetric {
   night: string; // wake date, YYYY-MM-DD, the app's night key everywhere
   score: number | null;
+  /** Sleep quality attributable to temperature; the control loop's target. */
+  thermalScore: number | null;
   asleepHours: number | null;
   inBedHours: number | null;
   deepHours: number | null;
@@ -85,8 +92,20 @@ export function metricsFromSession(
       : null;
   const awakeHours = (summary.awakeDuration ?? 0) / 3600;
 
+  const asleepHours = asleepSeconds / 3600;
+  const deepHours = (summary.deepDuration ?? 0) / 3600;
+  const remHours = (summary.remDuration ?? 0) / 3600;
+  const tosses = (timeseries.tnt ?? []).length;
+
   return {
     night,
+    thermalScore: thermalScore({
+      asleepHours,
+      deepHours,
+      remHours,
+      awakeHours,
+      tosses,
+    }),
     score: scoreNight({
       asleepHours: asleepSeconds / 3600,
       awakeHours,
@@ -184,7 +203,8 @@ export async function persistNightMetrics(
       metrics.map((m) => ({
         email,
         night: m.night,
-        score: m.score,
+        score: frozen.get(m.night) ?? m.score,
+        thermalScore: m.thermalScore,
         asleepTenthHours: tenth(m.asleepHours),
         inBedTenthHours: tenth(m.inBedHours),
         deepTenthHours: tenth(m.deepHours),
@@ -233,6 +253,7 @@ function rowToMetric(row: typeof nightMetrics.$inferSelect): NightMetric {
   return {
     night: row.night,
     score: row.score,
+    thermalScore: row.thermalScore,
     asleepHours: fromTenth(row.asleepTenthHours),
     inBedHours: fromTenth(row.inBedTenthHours),
     deepHours: fromTenth(row.deepTenthHours),
@@ -278,6 +299,9 @@ async function readHealthNights(
   return rows.map((row) => ({
     night: row.night,
     score: row.score,
+    // Apple Health carries no toss count, so a thermal score would rest on
+    // half the evidence; better absent than misleading.
+    thermalScore: null,
     asleepHours: fromTenth(row.asleepTenthHours),
     inBedHours: null,
     deepHours: fromTenth(row.deepTenthHours),
@@ -336,6 +360,7 @@ export async function readNightMetrics(
 
 export type MetricKey =
   | "score"
+  | "thermalScore"
   | "asleepHours"
   | "deepHours"
   | "remHours"
@@ -360,6 +385,7 @@ export interface Aggregate {
 /** Higher is better for these; the rest read better when they go down. */
 export const HIGHER_IS_BETTER: Record<MetricKey, boolean> = {
   score: true,
+  thermalScore: true,
   asleepHours: true,
   deepHours: true,
   remHours: true,

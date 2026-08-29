@@ -59,3 +59,74 @@ export function minutesOfDayInZone(date: Date, timezone: string): number {
   const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
   return hour * 60 + minute;
 }
+
+// ---------------------------------------------------------------------------
+// Thermal score
+//
+// The overall sleep score above is a good summary of a NIGHT, but it is the
+// wrong thing for a temperature controller to optimise: 50 of its points are
+// duration and 30 are bedtime consistency, neither of which a bed can change.
+// Measured on this account over 2026-08-23..29 the overall score correlated
+// +0.67 with time asleep and −0.38 with deep sleep — so a loop maximising it
+// was steering AWAY from deep sleep, and the night with the most deep sleep
+// all week scored the worst.
+//
+// This score uses only what bed temperature plausibly moves: how the night
+// divided into stages, how much you thrashed, and how much of the time in bed
+// was spent awake. Duration and bedtime are deliberately absent.
+// ---------------------------------------------------------------------------
+
+export interface ThermalInput {
+  asleepHours: number;
+  deepHours: number | null;
+  remHours: number | null;
+  awakeHours: number | null;
+  tosses: number | null;
+}
+
+/** Triangular credit: full marks inside [lo, hi], tapering to zero at `fade`. */
+function band(value: number, lo: number, hi: number, fade: number): number {
+  if (value >= lo && value <= hi) return 1;
+  const distance = value < lo ? lo - value : value - hi;
+  return Math.max(0, 1 - distance / fade);
+}
+
+export function thermalScore(input: ThermalInput): number | null {
+  // Too short a night tells you nothing about temperature.
+  if (!isFinite(input.asleepHours) || input.asleepHours < 2) return null;
+  if (input.deepHours == null && input.remHours == null && input.tosses == null) {
+    return null;
+  }
+
+  const asleep = input.asleepHours;
+  let earned = 0;
+  let available = 0;
+
+  // Deep sleep share — the measure most responsive to a cool bed early on.
+  if (input.deepHours != null) {
+    available += 30;
+    earned += 30 * band(input.deepHours / asleep, 0.15, 0.25, 0.12);
+  }
+
+  // REM share — protected by gentle warmth in the last hours.
+  if (input.remHours != null) {
+    available += 25;
+    earned += 25 * band(input.remHours / asleep, 0.18, 0.27, 0.14);
+  }
+
+  // Restlessness per hour: the most direct "the bed is wrong" signal.
+  if (input.tosses != null) {
+    available += 25;
+    const perHour = input.tosses / asleep;
+    earned += 25 * band(perHour, 0, 2.5, 3.5);
+  }
+
+  // Time awake in bed, as a share of the night.
+  if (input.awakeHours != null) {
+    available += 20;
+    earned += 20 * band(input.awakeHours / (asleep + input.awakeHours), 0, 0.1, 0.18);
+  }
+
+  if (available === 0) return null;
+  return Math.round((earned / available) * 100);
+}

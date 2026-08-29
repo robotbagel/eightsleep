@@ -156,6 +156,8 @@ export const nightMetrics = createTable(
     email: varchar("email", { length: 255 }).references(() => users.email).notNull(),
     night: varchar("night", { length: 10 }).notNull(),
     score: integer("score"),
+    /** Only what bed temperature can move — the control loop's objective. */
+    thermalScore: integer("thermalScore"),
     asleepTenthHours: integer("asleepTenthHours"),
     inBedTenthHours: integer("inBedTenthHours"),
     deepTenthHours: integer("deepTenthHours"),
