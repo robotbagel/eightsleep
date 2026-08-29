@@ -18,7 +18,7 @@ export interface NightEvent {
   at: number;
   label: string;
   detail?: string;
-  source: "schedule" | "live" | "off";
+  source: "schedule" | "live" | "off" | "manual";
 }
 
 interface Props {
@@ -70,6 +70,10 @@ const SOURCE_COLOR: Record<NightEvent["source"], string> = {
   schedule: "var(--accent)",
   live: "var(--warm)",
   off: "var(--text-faint)",
+  // The one mark on this chart the sleeper made themselves. It gets its own
+  // colour because reading it as an app action is exactly the mistake that
+  // made hand adjustments invisible.
+  manual: "var(--cool)",
 };
 
 export const NightChart: React.FC<Props> = ({

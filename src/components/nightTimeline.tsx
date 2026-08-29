@@ -22,6 +22,7 @@ const SOURCE_META: Record<
   schedule: { label: "Scheduled", color: "var(--accent)" },
   live: { label: "Live nudge", color: "var(--warm)" },
   off: { label: "Off", color: "var(--text-faint)" },
+  manual: { label: "You changed it", color: "var(--cool)" },
 };
 
 export const NightDetail: React.FC<{
@@ -61,17 +62,21 @@ export const NightDetail: React.FC<{
         ? `${STAGE_LABEL[event.stage] ?? event.stage} → ${formatRawByUnit(event.level, displayUnit)}`
         : `${STAGE_LABEL[event.stage] ?? event.stage} → off`,
     detail:
-      event.source === "live"
-        ? (event.note ?? "Live adjustment")
-        : event.source === "off"
-          ? "Scheduled off"
-          : "Scheduled stage change",
+      event.source === "manual"
+        ? (event.note ?? "You set this yourself")
+        : event.source === "live"
+          ? (event.note ?? "Live adjustment")
+          : event.source === "off"
+            ? "Scheduled off"
+            : "Scheduled stage change",
     source:
-      event.source === "live"
-        ? "live"
-        : event.source === "off"
-          ? "off"
-          : "schedule",
+      event.source === "manual"
+        ? "manual"
+        : event.source === "live"
+          ? "live"
+          : event.source === "off"
+            ? "off"
+            : "schedule",
   }));
 
   const tosses = (session?.tnt ?? []).map(([t]) => new Date(t).getTime());

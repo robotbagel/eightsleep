@@ -991,6 +991,8 @@ export const userRouter = createTRPCRouter({
         aiChanged: boolean;
         aiStatus: string | null;
         liveNudges: number;
+        /** Did the sleeper move the dial themselves that night? */
+        manualOverride: boolean;
       };
 
       const byNight = new Map<string, Row>();
@@ -1004,9 +1006,14 @@ export const userRouter = createTRPCRouter({
           aiChanged: false,
           aiStatus: null,
           liveNudges: 0,
+          manualOverride: false,
         };
         if (event.source === "live") {
           row.liveNudges += 1;
+        } else if (event.source === "manual") {
+          // A hand adjustment is not the night's scheduled setting, so it must
+          // not be reported as one — it is shown on the timeline instead.
+          row.manualOverride = true;
         } else if (event.level != null) {
           // First scheduled value wins: later ones for the same stage are
           // re-sends of the same setting within the 15-minute window.
@@ -1044,6 +1051,7 @@ export const userRouter = createTRPCRouter({
             aiChanged: changed,
             aiStatus: rec.status,
             liveNudges: 0,
+            manualOverride: false,
           });
         }
       }
@@ -1057,6 +1065,7 @@ export const userRouter = createTRPCRouter({
         aiChanged: todayRow?.aiChanged ?? false,
         aiStatus: todayRow?.aiStatus ?? null,
         liveNudges: 0,
+        manualOverride: todayRow?.manualOverride ?? false,
       });
 
       const history = [...byNight.values()]
