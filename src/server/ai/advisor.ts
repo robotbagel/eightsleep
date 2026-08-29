@@ -900,10 +900,18 @@ export async function generateRecommendationForUser(
       forecast: forecastFromLedger(history.ledger),
     };
   } else if (decision.kind === "converged" || decision.kind === "hold") {
+    // Someone who reported discomfort and then reads "nothing worth changing"
+    // has been told their report was ignored. It was not — it predates the
+    // change now being measured — but only saying so makes that true to read.
+    const acknowledgement =
+      reported && reportedLocked
+        ? `You reported the bed felt too ${reported.direction === "cooler" ? "hot" : "cold"} during the ${STAGE_NAME[reported.stage]} stage. That is exactly what last night's change was for — the ${STAGE_NAME[reported.stage]} stage was already moved ${reported.direction} — and tonight measures whether it went far enough. If it still feels wrong in the morning, say so again and it moves further. `
+        : "";
     const why =
-      decision.kind === "converged"
+      acknowledgement +
+      (decision.kind === "converged"
         ? `This profile is averaging a thermal score of ${decision.meanThermal} over ${decision.nights} measured night${decision.nights === 1 ? "" : "s"}, level with the best you have recorded. There is nothing here worth changing tonight, and changing it anyway would only add noise.`
-        : decision.reason;
+        : decision.reason);
     recommendation = {
       initialSleepC: rawToCelsius(currentLevels.initial),
       deepSleepC: rawToCelsius(currentLevels.deep),

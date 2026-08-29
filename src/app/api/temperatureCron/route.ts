@@ -13,6 +13,7 @@ import {
   runLiveTuningPass,
 } from "~/server/ai/liveTuner";
 import { temperatureEvents, userAiSettings } from "~/server/db/schema";
+import { detectManualOverride } from "~/server/ai/override";
 import { nightKeyFor } from "~/server/ai/time";
 
 async function logTemperatureEvent(
@@ -265,13 +266,33 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
               const aiSettings = await db.query.userAiSettings.findFirst({
                 where: eq(userAiSettings.email, profile.users.email),
               });
-              if (aiSettings?.liveTuningEnabled) {
-                const offset = await getActiveLiveOffset(
-                  profile.users.email,
-                  userTemperatureProfile.timezoneTZ,
-                  userTemperatureProfile.wakeupTime.slice(0, 5),
-                  now,
+              // BEFORE deciding what to write: did a person move it? The old
+              // code compared the pod against our target and corrected the
+              // difference, which meant someone waking up cold and turning
+              // the bed up had it silently undone within ten minutes. A hand
+              // on the dial is the strongest signal this system gets.
+              let offset = await getActiveLiveOffset(
+                profile.users.email,
+                userTemperatureProfile.timezoneTZ,
+                userTemperatureProfile.wakeupTime.slice(0, 5),
+                now,
+              );
+              const override = await detectManualOverride({
+                email: profile.users.email,
+                timezone: userTemperatureProfile.timezoneTZ,
+                wakeupTime: userTemperatureProfile.wakeupTime.slice(0, 5),
+                now,
+                stage: sleepStage,
+                observedLevel: heatingStatus.heatingLevel,
+                currentOffsetTenthsC: offset,
+              });
+              if (override) {
+                offset = override.newOffsetTenthsC;
+                console.log(
+                  `Manual override by ${profile.users.email}: ${override.deltaTenthsC / 10}°C ${override.direction}; following it for the rest of the night.`,
                 );
+              }
+              if (aiSettings?.liveTuningEnabled || override) {
                 if (offset !== 0) {
                   targetLevel = applyOffsetToLevel(targetLevel, offset);
                   console.log(

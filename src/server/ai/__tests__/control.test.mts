@@ -175,3 +175,37 @@ assert.equal(calm, null, "a settled sleeper is never disturbed");
 console.log("ok  an undisturbed sleeper is left alone whatever the bias");
 
 console.log("\nall control-law assertions passed");
+
+// --- manual override --------------------------------------------------------
+// The dial is the strongest signal the system receives, so the arithmetic that
+// turns a level difference into an offset and a direction is worth pinning.
+{
+  const { rawToCelsius } = await import("../../../lib/temperature.js");
+  const OVERRIDE_MIN_C = 0.25;
+
+  const classify = (written: number, observed: number) => {
+    const deltaC = rawToCelsius(observed) - rawToCelsius(written);
+    if (Math.abs(deltaC) < OVERRIDE_MIN_C) return null;
+    const tenths = Math.sign(deltaC) * Math.round(Math.abs(deltaC) * 10);
+    return { tenths, direction: tenths > 0 ? "warmer" : "cooler" };
+  };
+
+  // Turning the bed up is read as "too cold", not corrected away.
+  const up = classify(-20, 0);
+  assert(up != null, "a two-degree move must register as an override");
+  assert(up.direction === "warmer", "a higher level means they wanted it warmer");
+
+  // A single level step is scale rounding, not a person.
+  assert(classify(-20, -19) == null, "one level step must not count as an override");
+
+  // The magnitude is rounded, not the signed value: Math.round(-7.5) is -7 and
+  // Math.round(7.5) is 8, which would make every cooling override smaller than
+  // the equivalent warming one.
+  const down = classify(0, -20);
+  assert(down != null && down.direction === "cooler", "a lower level means cooler");
+  assert(
+    Math.abs(down.tenths) === Math.abs(up.tenths),
+    "an override must be the same size in both directions",
+  );
+}
+console.log("manual-override assertions passed");
