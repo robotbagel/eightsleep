@@ -7,6 +7,8 @@ import { db } from "~/server/db";
 import { users, userTemperatureProfile } from "~/server/db/schema";
 import { eq } from "drizzle-orm";
 import { getFreshToken, reassessToday } from "~/server/ai/advisor";
+import { sleepFeedback } from "~/server/db/schema";
+import { and } from "drizzle-orm";
 import { collectSleepContext } from "~/server/ai/sleepData";
 import {
   APP_API_URL,
@@ -47,9 +49,50 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
   const action = request.nextUrl.searchParams.get("action");
   const email = request.nextUrl.searchParams.get("email");
-  if (action !== "reassess" || !email) {
+  if (!email || (action !== "reassess" && action !== "comfort")) {
     return Response.json({ error: "Unknown action" }, { status: 400 });
   }
+
+  // Operator path for a comfort report that reached us out of band — someone
+  // telling their partner "I woke up freezing again" is the same evidence as
+  // the in-app prompt, and the loop cannot act on what it never hears.
+  // POST /api/aiDebug?action=comfort&email=…&night=YYYY-MM-DD&felt=too_cold&when=morning
+  if (action === "comfort") {
+    const night = request.nextUrl.searchParams.get("night");
+    const felt = request.nextUrl.searchParams.get("felt");
+    const when = request.nextUrl.searchParams.get("when");
+    if (
+      !night ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(night) ||
+      (felt !== "too_hot" && felt !== "too_cold" && felt !== "just_right")
+    ) {
+      return Response.json(
+        { error: "night=YYYY-MM-DD and felt=too_hot|too_cold|just_right required" },
+        { status: 400 },
+      );
+    }
+    await db
+      .delete(sleepFeedback)
+      .where(
+        and(eq(sleepFeedback.email, email), eq(sleepFeedback.night, night)),
+      );
+    await db.insert(sleepFeedback).values({
+      email,
+      night,
+      felt,
+      whenFelt: when ?? "not_sure",
+      note: "Reported out of band and entered by an operator.",
+    });
+    const rec = await reassessToday(email);
+    return Response.json({
+      success: true,
+      recorded: { email, night, felt, whenFelt: when ?? "not_sure" },
+      status: rec.status,
+      confidence: rec.confidence,
+      reasoning: rec.reasoning,
+    });
+  }
+
   try {
     const rec = await reassessToday(email);
     return Response.json({
