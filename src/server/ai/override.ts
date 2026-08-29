@@ -48,9 +48,13 @@ export interface OverrideResult {
 
 const STAGE_TO_WHEN: Record<string, string> = {
   initial: "falling_asleep",
-  deep: "middle",
+  // "deep" is not a choice the prompt offers, but the schedule knows which
+  // stage was running, so the true stage is recorded rather than rounded to
+  // the nearest thing a person could have picked.
+  deep: "deep",
   mid: "middle",
   final: "morning",
+  "pre-heating": "falling_asleep",
 };
 
 /**

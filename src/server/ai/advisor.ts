@@ -534,6 +534,11 @@ const WHEN_STAGE: Record<string, Stage> = {
   falling_asleep: "initial",
   middle: "mid",
   morning: "final",
+  // The prompt only offers three windows, because nobody knows which third of
+  // the night was their deep-sleep block. A hand adjustment does know — the
+  // schedule was mid-stage at the time — so it records the true stage rather
+  // than rounding it to the nearest thing a human could have said.
+  deep: "deep",
 };
 
 /**
