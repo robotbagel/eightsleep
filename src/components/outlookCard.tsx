@@ -89,14 +89,16 @@ export const OutlookView: React.FC<{
         />
 
         <MetricRow
-          label="Score"
+          label="Quality"
           big
           cells={[
-            { value: fmtScore(data.nightBefore?.score) },
+            { value: fmtScore(data.nightBefore?.thermalScore) },
             {
-              value: fmtScore(data.lastNight?.score),
-              delta: delta(data.lastNight?.score, data.nightBefore?.score, (v) =>
-                Math.round(v).toString(),
+              value: fmtScore(data.lastNight?.thermalScore),
+              delta: delta(
+                data.lastNight?.thermalScore,
+                data.nightBefore?.thermalScore,
+                (v) => Math.round(v).toString(),
               ),
               emphasis: true,
             },
@@ -107,6 +109,21 @@ export const OutlookView: React.FC<{
                 : undefined,
               predicted: true,
             },
+          ]}
+        />
+
+        <MetricRow
+          label="Overall"
+          cells={[
+            { value: fmtScore(data.nightBefore?.score) },
+            {
+              value: fmtScore(data.lastNight?.score),
+              delta: delta(data.lastNight?.score, data.nightBefore?.score, (v) =>
+                Math.round(v).toString(),
+              ),
+              emphasis: true,
+            },
+            { value: "—", predicted: true },
           ]}
         />
 

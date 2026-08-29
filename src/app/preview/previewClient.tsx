@@ -8,6 +8,7 @@ import { ThemeToggle } from "~/components/themeToggle";
 import { AiAdvisorCard, AiSettingsCard } from "~/components/aiPanel";
 import { NightSummaryCard } from "~/components/nightSummaryCard";
 import { AutopilotStrip } from "~/components/autopilotStrip";
+import { ComfortPrompt } from "~/components/comfortPrompt";
 import { TrendsCard } from "~/components/trendsCard";
 import { TemperatureProfileForm } from "~/components/temperatureProfileForm";
 import { Disclosure } from "~/components/ui/card";
@@ -166,6 +167,9 @@ export default function PreviewClient() {
       outcome: { before: 74, after: 82, delta: 8 },
     }] as never);
 
+    utils.user.getSleepFeedback.setData(undefined, {
+      night: TODAY, answered: false, askable: true, recent: [],
+    } as never);
     utils.user.getLiveAdjustments.setData(undefined, [] as never);
     utils.user.getPushPublicKey.setData(undefined, { publicKey: "" } as never);
     setSeeded(true);
@@ -221,6 +225,8 @@ export default function PreviewClient() {
               <NightSummaryCard night={selectedNight} nav={nav} index={0} />
             </div>
           </div>
+
+          <ComfortPrompt index={1} />
 
           <AutopilotStrip displayUnit="celsius" expanded={autopilotOpen} onOpen={() => setAutopilotOpen((o) => !o)} />
 

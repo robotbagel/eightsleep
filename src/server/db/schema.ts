@@ -121,6 +121,32 @@ export const aiRecommendations = createTable(
   }),
 );
 
+// How the night actually FELT, asked once each morning. Every other input the
+// loop has is inferred — tossing is a proxy for discomfort, a raised heart
+// rate is a proxy for being too warm. This is the only direct measurement of
+// the thing the bed exists to get right, so it outranks the proxies.
+export const sleepFeedback = createTable(
+  "sleepFeedback",
+  {
+    id: serial("id").primaryKey(),
+    email: varchar("email", { length: 255 }).references(() => users.email).notNull(),
+    /** Wake date, the app's night key everywhere. */
+    night: varchar("night", { length: 10 }).notNull(),
+    /** too_hot | too_cold | just_right */
+    felt: varchar("felt", { length: 16 }).notNull(),
+    /** falling_asleep | middle | morning | all_night — which stage to move. */
+    whenFelt: varchar("whenFelt", { length: 16 }),
+    note: text("note"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    emailNightIdx: index("sleepFeedback_email_night_idx").on(
+      table.email,
+      table.night,
+    ),
+  }),
+);
+
 // One row per attempt of the daily AI pass, per user per day. Without this a
 // failed pass is invisible: the app simply keeps showing yesterday's plan and
 // nothing says why. The monitor reads it to tell "the cron never ran" apart

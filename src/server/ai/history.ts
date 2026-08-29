@@ -183,7 +183,11 @@ export async function persistNightMetrics(
     // under the experiment loop's feet — the same night was reported as 75
     // one day and 74 the next. Measurements are refreshed; the score is not.
     const existing = await db
-      .select({ night: nightMetrics.night, score: nightMetrics.score })
+      .select({
+        night: nightMetrics.night,
+        score: nightMetrics.score,
+        thermalScore: nightMetrics.thermalScore,
+      })
       .from(nightMetrics)
       .where(
         and(eq(nightMetrics.email, email), inArray(nightMetrics.night, nights)),
@@ -192,6 +196,11 @@ export async function persistNightMetrics(
       existing
         .filter((row) => row.score != null)
         .map((row) => [row.night, row.score!]),
+    );
+    const frozenThermal = new Map(
+      existing
+        .filter((row) => row.thermalScore != null)
+        .map((row) => [row.night, row.thermalScore!]),
     );
 
     await db
@@ -204,7 +213,7 @@ export async function persistNightMetrics(
         email,
         night: m.night,
         score: frozen.get(m.night) ?? m.score,
-        thermalScore: m.thermalScore,
+        thermalScore: frozenThermal.get(m.night) ?? m.thermalScore,
         asleepTenthHours: tenth(m.asleepHours),
         inBedTenthHours: tenth(m.inBedHours),
         deepTenthHours: tenth(m.deepHours),

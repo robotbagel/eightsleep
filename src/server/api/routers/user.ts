@@ -21,8 +21,10 @@ import {
   healthNights,
   temperatureEvents,
   nightMetrics,
+  sleepFeedback,
 } from "~/server/db/schema";
 import { getVapidKeys } from "~/server/push";
+import { minutesSinceTimeOfDay } from "~/server/ai/time";
 import {
   applyRecommendation,
   dismissRecommendation,
@@ -504,9 +506,11 @@ export const userRouter = createTRPCRouter({
             .sort((a, b) => (a.sleepEnd! < b.sleepEnd! ? -1 : 1));
 
           // Every fetch feeds the long-range cache, so the comparison view is
-          // already warm by the time it is opened.
+          // already warm by the time it is opened. AWAITED, because the night
+          // this request is about is then read back OUT of the cache — see
+          // below.
           const batch = sessionsToMetrics(completed, timezone);
-          void persistNightMetrics(decoded.email, batch);
+          await persistNightMetrics(decoded.email, batch);
 
           const nightOf = (s: (typeof completed)[number]) =>
             new Date(s.sleepEnd!).toLocaleDateString("en-CA", {
@@ -550,7 +554,21 @@ export const userRouter = createTRPCRouter({
               })),
               stageHours,
             };
-            metrics = batch.find((m) => m.night === sessionInfo!.night) ?? null;
+            // ONE source of truth. This used to hand back the freshly
+            // computed row, while every other view read the stored one — so
+            // the hero card showed a number that drifted on every reload (the
+            // overall score is measured against the circular-mean bedtime of
+            // whatever window the fetch happened to return) and disagreed
+            // with the Recent tab beside it. Stored value wins, always.
+            const stored = await readNightMetrics(
+              decoded.email,
+              sessionInfo.night,
+              sessionInfo.night,
+            );
+            metrics =
+              stored[0] ??
+              batch.find((m) => m.night === sessionInfo!.night) ??
+              null;
           }
         } catch (error) {
           console.error("Night timeline: pod fetch failed:", error);
@@ -802,16 +820,21 @@ export const userRouter = createTRPCRouter({
     const lastNightRec = lastNight ? ranFor(lastNight.night) : null;
     const lastNightForecast = parse(lastNightRec?.rationaleJson ?? null)
       ?.forecast;
+    // Both sides of this comparison must be on the SAME scale. The forecast
+    // band comes from the ledger's mean THERMAL score, so it is checked
+    // against the night's thermal score — checking it against the overall
+    // score (half duration, a third bedtime) reported misses that never were.
+    const actualThermal = lastNight?.thermalScore ?? null;
     const accuracy =
-      lastNight?.score != null && lastNightForecast
+      actualThermal != null && lastNightForecast
         ? {
-            night: lastNight.night,
+            night: lastNight!.night,
             low: lastNightForecast.expectedScoreLow,
             high: lastNightForecast.expectedScoreHigh,
-            actual: lastNight.score,
+            actual: actualThermal,
             hit:
-              lastNight.score >= lastNightForecast.expectedScoreLow &&
-              lastNight.score <= lastNightForecast.expectedScoreHigh,
+              actualThermal >= lastNightForecast.expectedScoreLow &&
+              actualThermal <= lastNightForecast.expectedScoreHigh,
           }
         : null;
 
@@ -1044,6 +1067,82 @@ export const userRouter = createTRPCRouter({
         assessedToday: recommendations.some((r) => r.forDate === todayKey),
         history,
       };
+    }),
+
+  // How last night felt, asked once each morning. The only direct reading of
+  // comfort the loop ever gets; everything else is inferred from tossing.
+  getSleepFeedback: publicProcedure.query(async ({ ctx }) => {
+    const decoded = await checkAuthCookie(ctx.headers);
+    const profile = await db.query.userTemperatureProfile.findFirst({
+      where: eq(userTemperatureProfile.email, decoded.email),
+    });
+    const timezone = profile?.timezoneTZ ?? "UTC";
+    const todayKey = new Date().toLocaleDateString("en-CA", {
+      timeZone: timezone,
+    });
+
+    const rows = await db
+      .select()
+      .from(sleepFeedback)
+      .where(eq(sleepFeedback.email, decoded.email))
+      .orderBy(desc(sleepFeedback.id))
+      .limit(14);
+
+    // Only ask about a night the pod actually recorded, and only after the
+    // wake-up time has passed — nobody can answer at 03:00.
+    const sinceWake = profile
+      ? minutesSinceTimeOfDay(
+          new Date(),
+          timezone,
+          profile.wakeupTime.slice(0, 5),
+        )
+      : NaN;
+    const recorded = await readNightMetrics(decoded.email, todayKey, todayKey);
+
+    return {
+      night: todayKey,
+      answered: rows.some((row) => row.night === todayKey),
+      askable: !isNaN(sinceWake) && sinceWake > 0 && recorded.length > 0,
+      recent: rows.map((row) => ({
+        night: row.night,
+        felt: row.felt,
+        whenFelt: row.whenFelt,
+        note: row.note,
+      })),
+    };
+  }),
+
+  submitSleepFeedback: publicProcedure
+    .input(
+      z.object({
+        night: z.string().max(10),
+        felt: z.enum(["too_hot", "too_cold", "just_right"]),
+        whenFelt: z
+          .enum(["falling_asleep", "middle", "morning", "all_night"])
+          .nullable(),
+        note: z.string().max(300).nullable(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const decoded = await checkAuthCookie(ctx.headers);
+      // One answer per night; answering again replaces it rather than
+      // stacking two contradictory readings.
+      await db
+        .delete(sleepFeedback)
+        .where(
+          and(
+            eq(sleepFeedback.email, decoded.email),
+            eq(sleepFeedback.night, input.night),
+          ),
+        );
+      await db.insert(sleepFeedback).values({
+        email: decoded.email,
+        night: input.night,
+        felt: input.felt,
+        whenFelt: input.whenFelt,
+        note: input.note,
+      });
+      return { success: true };
     }),
 
   getLiveAdjustments: publicProcedure.query(async ({ ctx }) => {

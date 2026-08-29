@@ -52,17 +52,22 @@ export const ExperimentLedger: React.FC<{
           className="mb-3 rounded-xl p-3 text-xs leading-relaxed"
           style={{ backgroundColor: "var(--cool-soft)", color: "var(--text)" }}
         >
-          {pressure.map((p) => (
-            <div key={p.stage}>
-              Live tuning has had to{" "}
-              <span className="font-semibold">
-                {p.meanOffsetC < 0 ? "cool" : "warm"}
-              </span>{" "}
-              the {STAGE_LABEL[p.stage] ?? p.stage} stage on {p.nights} of the
-              last 3 nights, by {Math.abs(p.meanOffsetC).toFixed(1)}°C on
-              average — a sign the setting underneath is wrong, not the night.
-            </div>
-          ))}
+          {pressure.map((p) => {
+            const cooling = p.meanOffsetC < 0;
+            return (
+              <div key={p.stage}>
+                Your bed has been{" "}
+                <span className="font-semibold">
+                  too {cooling ? "warm" : "cold"}
+                </span>{" "}
+                during the {STAGE_LABEL[p.stage] ?? p.stage} on {p.nights} of
+                the last 3 nights — the pod corrected itself by{" "}
+                {Math.abs(p.meanOffsetC).toFixed(1)}°C each time, once you were
+                already asleep. Setting it {cooling ? "lower" : "higher"} from
+                the start means it never has to.
+              </div>
+            );
+          })}
         </div>
       )}
 

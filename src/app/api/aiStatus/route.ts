@@ -17,6 +17,7 @@ import {
 } from "~/server/db/schema";
 import { desc, eq, like } from "drizzle-orm";
 import { isAiConfigured, GEMINI_MODEL } from "~/server/ai/gemini";
+import { readNightMetrics, shiftDate } from "~/server/ai/history";
 import { rawToCelsius } from "~/lib/temperature";
 import { appConfig, healthNights } from "~/server/db/schema";
 import { desc as descOrder } from "drizzle-orm";
@@ -113,6 +114,12 @@ export async function GET(request: NextRequest): Promise<Response> {
         }
       }
 
+      const storedNights = await readNightMetrics(
+        email,
+        shiftDate(new Date().toISOString().slice(0, 10), -9),
+        new Date().toISOString().slice(0, 10),
+      );
+
       const runs = await db
         .select()
         .from(aiRunLog)
@@ -208,6 +215,14 @@ export async function GET(request: NextRequest): Promise<Response> {
             }
           : null,
         nightsDriven,
+        // The STORED per-night scores. A night's numbers must never move once
+        // recorded; polling this across a cron tick is how that is checked
+        // rather than asserted.
+        storedNights: storedNights.map((n) => ({
+          night: n.night,
+          score: n.score,
+          quality: n.thermalScore,
+        })),
         // The decision trail, so oscillation (moving a stage down then back
         // up on successive days) is visible instead of having to be inferred
         // from one latest recommendation.

@@ -9,6 +9,7 @@ import { ThemeToggle } from "~/components/themeToggle";
 import { AiAdvisorCard, AiSettingsCard } from "~/components/aiPanel";
 import { NightSummaryCard } from "~/components/nightSummaryCard";
 import { AutopilotStrip } from "~/components/autopilotStrip";
+import { ComfortPrompt } from "~/components/comfortPrompt";
 import { TrendsCard } from "~/components/trendsCard";
 import { Disclosure } from "~/components/ui/card";
 import LordIcon from "~/components/ui/lordIcon";
@@ -163,6 +164,10 @@ const SignedIn: React.FC = () => {
             <NightSummaryCard night={selectedNight} nav={nav} index={0} />
           </div>
         </div>
+
+        {/* Asked once each morning, gone once answered. It sits directly under
+            the night it is about. */}
+        <ComfortPrompt index={1} />
 
         <AutopilotStrip
           displayUnit={displayUnit}

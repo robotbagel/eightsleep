@@ -8,6 +8,7 @@ import {
   aiRecommendations,
   aiRunLog,
   appConfig,
+  sleepFeedback,
   temperatureEvents,
   userAiSettings,
   userTemperatureProfile,
@@ -29,6 +30,12 @@ import {
   isAiConfigured,
 } from "./gemini";
 import { deriveNightSignals } from "./rules";
+import {
+  mechanism,
+  observation,
+  principle as principleFor,
+  STAGE_NAME,
+} from "./why";
 import {
   buildLedger,
   decide,
@@ -62,6 +69,15 @@ export const DEFAULT_AI_SETTINGS = {
 };
 
 type UserRow = typeof users.$inferSelect;
+
+const where = (stage: Stage) =>
+  stage === "initial"
+    ? "the first hour"
+    : stage === "deep"
+      ? "the first third of the night"
+      : stage === "mid"
+        ? "the middle of the night"
+        : "the last hours before your alarm";
 
 const STAGE_LABELS: Record<Stage, string> = {
   initial: "falling-asleep",
@@ -466,6 +482,84 @@ export async function readLedgerForApp(
   };
 }
 
+const FELT_LABEL: Record<string, string> = {
+  too_hot: "too hot",
+  too_cold: "too cold",
+  just_right: "about right",
+};
+const WHEN_LABEL: Record<string, string> = {
+  falling_asleep: "while falling asleep",
+  middle: "in the middle of the night",
+  morning: "towards morning",
+  all_night: "all night",
+};
+const WHEN_STAGE: Record<string, Stage> = {
+  falling_asleep: "initial",
+  middle: "mid",
+  morning: "final",
+};
+
+/**
+ * What the sleeper actually reported. Everything else the loop reads is a
+ * proxy — tossing stands in for discomfort, heart rate stands in for being too
+ * warm — so a plain "it was too hot towards morning" is the highest-quality
+ * evidence available and is treated as such: it can move a stage on its own.
+ */
+async function readComfort(
+  email: string,
+  todayKey: string,
+): Promise<{
+  lines: string[];
+  /** A stage the sleeper has reported the same way on 2+ of the last 3 nights. */
+  consistent: { stage: Stage; direction: "cooler" | "warmer"; nights: number } | null;
+}> {
+  try {
+    const rows = await db
+      .select()
+      .from(sleepFeedback)
+      .where(eq(sleepFeedback.email, email))
+      .orderBy(desc(sleepFeedback.night))
+      .limit(3);
+    if (rows.length === 0) return { lines: [], consistent: null };
+
+    const lines = rows.map(
+      (row) =>
+        `${row.night}: reported ${FELT_LABEL[row.felt] ?? row.felt}${row.whenFelt ? ` ${WHEN_LABEL[row.whenFelt] ?? row.whenFelt}` : ""}${row.note ? ` — "${row.note}"` : ""}`,
+    );
+
+    const votes = new Map<string, number>();
+    for (const row of rows) {
+      if (row.felt === "just_right") continue;
+      const direction = row.felt === "too_hot" ? "cooler" : "warmer";
+      // "all night" has no single stage to blame, so it does not vote.
+      const stage = row.whenFelt ? WHEN_STAGE[row.whenFelt] : undefined;
+      if (!stage) continue;
+      const key = `${stage}|${direction}`;
+      votes.set(key, (votes.get(key) ?? 0) + 1);
+    }
+    let consistent: {
+      stage: Stage;
+      direction: "cooler" | "warmer";
+      nights: number;
+    } | null = null;
+    for (const [key, count] of votes) {
+      if (count < 2) continue;
+      const [stage, direction] = key.split("|") as [Stage, "cooler" | "warmer"];
+      if (!consistent || count > consistent.nights) {
+        consistent = { stage, direction, nights: count };
+      }
+    }
+    void todayKey;
+    return { lines, consistent };
+  } catch (error) {
+    console.error(
+      `Could not read sleep feedback for ${email}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+    return { lines: [], consistent: null };
+  }
+}
+
 // Summarizes recent live-tuning activity so the nightly advisor can bake
 // persistent in-night corrections into the schedule itself.
 async function buildLiveTuningSignals(email: string): Promise<string[]> {
@@ -559,6 +653,19 @@ export async function generateRecommendationForUser(
   const unit: DisplayUnit =
     settings.displayUnit === "level" ? "level" : "celsius";
   const fmt = (raw: number) => formatRawByUnit(raw, unit);
+  const comfort = await readComfort(email, todayKey);
+  // The measurements the explanation cites, per stage, from last night.
+  const session = sleepContext.recentSessions[0];
+  const thirdFor = (stage: Stage) =>
+    stage === "initial" || stage === "deep"
+      ? ("firstThird" as const)
+      : stage === "mid"
+        ? ("middleThird" as const)
+        : ("finalThird" as const);
+  const tossesAt = (stage: Stage) =>
+    session?.tossesAndTurns[thirdFor(stage)] ?? null;
+  const bedTempAt = (stage: Stage) =>
+    session?.avgBedTempC[thirdFor(stage)] ?? null;
   const decision = decide({
     current: currentLevels,
     ledger: history.ledger,
@@ -570,7 +677,55 @@ export async function generateRecommendationForUser(
   });
 
   let recommendation: AiRecommendation;
-  if (decision.kind === "fold-live") {
+  const reported = comfort.consistent;
+  const reportedLocked =
+    reported != null && history.lockedStages.includes(reported.stage);
+
+  if (reported && !reportedLocked) {
+    // The sleeper said the same thing about the same stage on two of the last
+    // three nights. No inferred signal outranks that, so it moves first.
+    const step = Math.min(0.5, settings.maxDailyShift / 10);
+    const fromC = rawToCelsius(currentLevels[reported.stage]);
+    const toC =
+      Math.round((fromC + (reported.direction === "cooler" ? -step : step)) * 10) /
+      10;
+    const next: Record<Stage, number> = {
+      initial: rawToCelsius(currentLevels.initial),
+      deep: rawToCelsius(currentLevels.deep),
+      mid: rawToCelsius(currentLevels.mid),
+      final: rawToCelsius(currentLevels.final),
+    };
+    next[reported.stage] = toC;
+    const label = STAGE_LABELS[reported.stage];
+    recommendation = {
+      initialSleepC: next.initial,
+      deepSleepC: next.deep,
+      midStageSleepC: next.mid,
+      finalSleepC: next.final,
+      reasoning: `${mechanism(reported.stage, reported.direction)} ${observation({
+        stage: reported.stage,
+        direction: reported.direction,
+        tosses: tossesAt(reported.stage),
+        bedTempC: bedTempAt(reported.stage),
+        liveNights: null,
+        reportedNights: reported.nights,
+      })} What you report beats anything inferred from movement, so the ${STAGE_NAME[reported.stage]} stage goes ${reported.direction} tonight: ${fmt(currentLevels[reported.stage])} to ${fmt(celsiusToRaw(toC))}. Nothing else moves.`,
+      confidence: reported.nights >= 3 ? "high" : "medium",
+      perStage: STAGES.map((stage) => ({
+        stage,
+        direction:
+          stage !== reported.stage ? ("unchanged" as const) : reported.direction,
+        why:
+          stage === reported.stage
+            ? `${mechanism(stage, reported.direction)} You reported it on ${reported.nights} of the last 3 nights.`
+            : `Held steady so the ${STAGE_NAME[reported.stage]} change can be judged on its own.`,
+      })),
+      evidence: comfort.lines,
+      expectation: `You should not report the ${label} stage being too ${reported.direction === "cooler" ? "warm" : "cold"} tomorrow. If you do, it needs to move further.`,
+      principle: principleFor(reported.stage, reported.direction),
+      forecast: forecastFromLedger(history.ledger),
+    };
+  } else if (decision.kind === "fold-live") {
     // The strongest evidence there is: live tuning had to correct this stage
     // the same way on most of the recent nights, so the base is wrong and we
     // know both the direction and roughly the size.
@@ -588,7 +743,14 @@ export async function generateRecommendationForUser(
       deepSleepC: next.deep,
       midStageSleepC: next.mid,
       finalSleepC: next.final,
-      reasoning: `Live tuning had to cool the ${label} stage on ${decision.pressure.nights} of the last 3 nights, by ${Math.abs(decision.pressure.meanOffsetC).toFixed(1)}°C on average. A correction that repeats every night is the base setting being wrong, not a bad night, so it moves into the schedule itself: ${fmt(currentLevels[decision.stage])} to ${fmt(celsiusToRaw(decision.toC))}. Nothing else changes, so the effect of this one move can be measured.`,
+      reasoning: `${mechanism(decision.stage, cooler ? "cooler" : "warmer")} ${observation({
+        stage: decision.stage,
+        direction: cooler ? "cooler" : "warmer",
+        tosses: tossesAt(decision.stage),
+        bedTempC: bedTempAt(decision.stage),
+        liveNights: decision.pressure.nights,
+        reportedNights: null,
+      })} So the ${STAGE_NAME[decision.stage]} stage starts ${Math.abs(decision.toC - decision.fromC).toFixed(1)}°C ${cooler ? "cooler" : "warmer"} tonight — ${fmt(currentLevels[decision.stage])} to ${fmt(celsiusToRaw(decision.toC))} — rather than waiting to be corrected again once you are already asleep. Nothing else moves, so the effect of this one change can be measured.`,
       confidence: decision.pressure.nights >= 3 ? "high" : "medium",
       perStage: STAGES.map((stage) => ({
         stage,
@@ -600,16 +762,22 @@ export async function generateRecommendationForUser(
               : ("warmer" as const),
         why:
           stage === decision.stage
-            ? `Corrected by live tuning on ${decision.pressure.nights} of the last 3 nights, always in the same direction.`
-            : `Left alone so the ${label} change can be measured on its own.`,
+            ? `${mechanism(stage, cooler ? "cooler" : "warmer")} ${observation({
+                stage,
+                direction: cooler ? "cooler" : "warmer",
+                tosses: tossesAt(stage),
+                bedTempC: bedTempAt(stage),
+                liveNights: decision.pressure.nights,
+                reportedNights: null,
+              })}`
+            : `Held steady so the ${STAGE_NAME[decision.stage]} change can be judged on its own — two stages moving at once cannot be told apart afterwards.`,
       })),
       evidence: [
         `Live tuning corrected the ${label} stage on ${decision.pressure.nights} of the last 3 nights.`,
         `Average correction ${decision.pressure.meanOffsetC.toFixed(1)}°C, always the same direction.`,
       ],
-      expectation: `Live tuning should need to correct the ${label} stage less tonight, or not at all. If it corrects it just as hard again, the base needs to move further.`,
-      principle:
-        "When a fast correction has to be made every night, the slow setting underneath it is wrong — fold the correction into the setting instead of re-making it nightly.",
+      expectation: `Fewer turns during ${where(decision.stage)}, and the pod should not need to correct itself mid-night. If it corrects just as hard again, this stage has further to move.`,
+      principle: principleFor(decision.stage, cooler ? "cooler" : "warmer"),
       forecast: forecastFromLedger(history.ledger),
     };
   } else if (decision.kind === "converged" || decision.kind === "hold") {
@@ -647,6 +815,12 @@ export async function generateRecommendationForUser(
     const signals = [
       ...deriveNightSignals(sleepContext),
       ...(await buildLiveTuningSignals(email)),
+      ...(comfort.lines.length > 0
+        ? [
+            "How the sleeper said it FELT (their own words — this outranks anything inferred from tossing or heart rate):",
+            ...comfort.lines,
+          ]
+        : []),
     ];
     const watchOnly =
       sleepContext.recentSessions.length > 0 &&
