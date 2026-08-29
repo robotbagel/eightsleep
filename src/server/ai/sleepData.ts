@@ -574,6 +574,10 @@ export interface LiveSessionWindow {
   recentAvgHeartRate: number | null;
   nightAvgHeartRate: number | null;
   recentAvgBedTempC: number | null;
+  /** The night's own mean bed temperature so far — the reference the recent
+   *  window is compared against, since absolute thresholds cannot work on a
+   *  measurement that includes body heat. */
+  nightAvgBedTempC: number | null;
 }
 
 // Reads the in-progress session from the pod and summarizes the last
@@ -630,5 +634,6 @@ export async function fetchCurrentSessionWindow(
     recentAvgHeartRate: average(heartRate.filter(inWindow).map(([, v]) => v)),
     nightAvgHeartRate: average(heartRate.map(([, v]) => v)),
     recentAvgBedTempC: average(bedTemp.filter(inWindow).map(([, v]) => v)),
+    nightAvgBedTempC: average(bedTemp.map(([, v]) => v)),
   };
 }

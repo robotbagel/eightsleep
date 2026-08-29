@@ -25,6 +25,7 @@ import {
 } from "~/server/db/schema";
 import { getVapidKeys } from "~/server/push";
 import { minutesSinceTimeOfDay } from "~/server/ai/time";
+import { rawToCelsius } from "~/lib/temperature";
 import {
   applyRecommendation,
   dismissRecommendation,
@@ -32,6 +33,7 @@ import {
   getAiSettingsOrDefaults,
   getFreshToken,
   readLedgerForApp,
+  reassessToday,
 } from "~/server/ai/advisor";
 import {
   AiError,
@@ -282,6 +284,65 @@ export const userRouter = createTRPCRouter({
           updatedAt: new Date(),
         };
         console.log("Updated profile:", updatedProfile);
+
+        // A hand edit is a correction, and the loop must not simply overwrite
+        // it the next morning as if it never happened. Record which stages
+        // moved and in which direction as feedback of the strongest kind: the
+        // sleeper went and changed it themselves.
+        try {
+          const before = await db.query.userTemperatureProfile.findFirst({
+            where: eq(userTemperatureProfile.email, decoded.email),
+          });
+          if (before) {
+            const moves: [string, number, number][] = [
+              ["initial", before.initialSleepLevel, input.initialSleepLevel],
+              [
+                "deep",
+                before.deepSleepLevel ?? before.midStageSleepLevel,
+                input.deepSleepLevel,
+              ],
+              ["mid", before.midStageSleepLevel, input.midStageSleepLevel],
+              ["final", before.finalSleepLevel, input.finalSleepLevel],
+            ];
+            const changed = moves.filter(([, from, to]) => from !== to);
+            if (changed.length > 0) {
+              const warmer = changed.filter(([, from, to]) => to > from).length;
+              const cooler = changed.length - warmer;
+              const night = new Date().toLocaleDateString("en-CA", {
+                timeZone: input.timezoneTZ,
+              });
+              await db
+                .delete(sleepFeedback)
+                .where(
+                  and(
+                    eq(sleepFeedback.email, decoded.email),
+                    eq(sleepFeedback.night, night),
+                  ),
+                );
+              await db.insert(sleepFeedback).values({
+                email: decoded.email,
+                night,
+                felt: warmer > cooler ? "too_cold" : "too_hot",
+                whenFelt:
+                  changed.length === 1
+                    ? changed[0]![0] === "initial"
+                      ? "falling_asleep"
+                      : changed[0]![0] === "final"
+                        ? "morning"
+                        : "middle"
+                    : "not_sure",
+                note: `Adjusted by hand: ${changed
+                  .map(
+                    ([stage, from, to]) =>
+                      `${stage} ${rawToCelsius(from)}°C to ${rawToCelsius(to)}°C`,
+                  )
+                  .join(", ")}.`,
+              });
+            }
+          }
+        } catch (error) {
+          console.error("Could not record the manual adjustment:", error);
+        }
 
         await db
           .insert(userTemperatureProfile)
@@ -1118,7 +1179,13 @@ export const userRouter = createTRPCRouter({
         night: z.string().max(10),
         felt: z.enum(["too_hot", "too_cold", "just_right"]),
         whenFelt: z
-          .enum(["falling_asleep", "middle", "morning", "all_night"])
+          .enum([
+            "falling_asleep",
+            "middle",
+            "morning",
+            "all_night",
+            "not_sure",
+          ])
           .nullable(),
         note: z.string().max(300).nullable(),
       }),
@@ -1142,7 +1209,24 @@ export const userRouter = createTRPCRouter({
         whenFelt: input.whenFelt,
         note: input.note,
       });
-      return { success: true };
+
+      // Answering has to change something TODAY. Without this the report sat
+      // unused until tomorrow morning's pass, so telling the app "I slept too
+      // hot" visibly did nothing to tonight — which reads exactly like not
+      // being listened to.
+      let reassessed = false;
+      try {
+        if (input.felt !== "just_right") {
+          await reassessToday(decoded.email);
+          reassessed = true;
+        }
+      } catch (error) {
+        console.error(
+          "Reassessment after feedback failed:",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      return { success: true, reassessed };
     }),
 
   getLiveAdjustments: publicProcedure.query(async ({ ctx }) => {

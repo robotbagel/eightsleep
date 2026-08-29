@@ -49,7 +49,7 @@ import {
   type Stage,
 } from "./control";
 import { minutesSinceTimeOfDay } from "./time";
-import { readNightMetrics, shiftDate } from "./history";
+import { readNightMetrics, shiftDate, syncNightMetrics } from "./history";
 import { sendPushToUser } from "~/server/push";
 import {
   celsiusToRaw,
@@ -522,6 +522,46 @@ const WHEN_STAGE: Record<string, Stage> = {
 };
 
 /**
+ * When the sleeper says "too hot" but cannot say WHEN, the night can. For a
+ * too-hot report, pick the third where they turned over most AND the bed ran
+ * warmest; for too-cold, most restless and coolest. Nobody should have to
+ * remember which third of the night they were uncomfortable in — that is the
+ * one thing the pod is better at than they are.
+ */
+function inferStage(
+  direction: "cooler" | "warmer",
+  tosses: { firstThird: number | null; middleThird: number | null; finalThird: number | null },
+  bedTemp: { firstThird: number | null; middleThird: number | null; finalThird: number | null },
+): Stage | null {
+  const thirds: { stage: Stage; toss: number | null; temp: number | null }[] = [
+    { stage: "deep", toss: tosses.firstThird, temp: bedTemp.firstThird },
+    { stage: "mid", toss: tosses.middleThird, temp: bedTemp.middleThird },
+    { stage: "final", toss: tosses.finalThird, temp: bedTemp.finalThird },
+  ];
+  const withToss = thirds.filter((t) => t.toss != null);
+  if (withToss.length === 0) return null;
+
+  const maxToss = Math.max(...withToss.map((t) => t.toss!));
+  if (maxToss === 0) return null;
+  // Only the thirds that were genuinely restless are candidates.
+  const candidates = withToss.filter((t) => t.toss! >= maxToss * 0.8);
+  if (candidates.length === 1) return candidates[0]!.stage;
+
+  // Tie-break on temperature in the direction the sleeper described.
+  const withTemp = candidates.filter((t) => t.temp != null);
+  if (withTemp.length === 0) return candidates[0]!.stage;
+  return withTemp.reduce((best, entry) =>
+    direction === "cooler"
+      ? entry.temp! > best.temp!
+        ? entry
+        : best
+      : entry.temp! < best.temp!
+        ? entry
+        : best,
+  ).stage;
+}
+
+/**
  * What the sleeper actually reported. Everything else the loop reads is a
  * proxy — tossing stands in for discomfort, heart rate stands in for being too
  * warm — so a plain "it was too hot towards morning" is the highest-quality
@@ -530,6 +570,10 @@ const WHEN_STAGE: Record<string, Stage> = {
 async function readComfort(
   email: string,
   todayKey: string,
+  thirds: {
+    tosses: { firstThird: number | null; middleThird: number | null; finalThird: number | null };
+    bedTemp: { firstThird: number | null; middleThird: number | null; finalThird: number | null };
+  },
 ): Promise<{
   lines: string[];
   /** A stage the sleeper has reported the same way on 2+ of the last 3 nights. */
@@ -553,8 +597,12 @@ async function readComfort(
     for (const row of rows) {
       if (row.felt === "just_right") continue;
       const direction = row.felt === "too_hot" ? "cooler" : "warmer";
-      // "all night" has no single stage to blame, so it does not vote.
-      const stage = row.whenFelt ? WHEN_STAGE[row.whenFelt] : undefined;
+      // "Not sure" and "all night" carry no stage, so the night supplies one:
+      // the third they were most restless in, broken by temperature in the
+      // direction they described.
+      const stage =
+        (row.whenFelt ? WHEN_STAGE[row.whenFelt] : undefined) ??
+        inferStage(direction, thirds.tosses, thirds.bedTemp);
       if (!stage) continue;
       const key = `${stage}|${direction}`;
       votes.set(key, (votes.get(key) ?? 0) + 1);
@@ -565,7 +613,11 @@ async function readComfort(
       nights: number;
     } | null = null;
     for (const [key, count] of votes) {
-      if (count < 2) continue;
+      // ONE report is enough. Requiring two nights is the right bar for a
+      // signal INFERRED from movement; when the sleeper states it outright,
+      // making them say it twice before anything happens is just ignoring
+      // them for a night.
+      if (count < 1) continue;
       const [stage, direction] = key.split("|") as [Stage, "cooler" | "warmer"];
       if (!consistent || count > consistent.nights) {
         consistent = { stage, direction, nights: count };
@@ -675,7 +727,19 @@ export async function generateRecommendationForUser(
   const unit: DisplayUnit =
     settings.displayUnit === "level" ? "level" : "celsius";
   const fmt = (raw: number) => formatRawByUnit(raw, unit);
-  const comfort = await readComfort(email, todayKey);
+  const comfortSession = sleepContext.recentSessions[0];
+  const comfort = await readComfort(email, todayKey, {
+    tosses: comfortSession?.tossesAndTurns ?? {
+      firstThird: null,
+      middleThird: null,
+      finalThird: null,
+    },
+    bedTemp: comfortSession?.avgBedTempC ?? {
+      firstThird: null,
+      middleThird: null,
+      finalThird: null,
+    },
+  });
   // The measurements the explanation cites, per stage, from last night.
   const session = sleepContext.recentSessions[0];
   const thirdFor = (stage: Stage) =>
@@ -701,8 +765,14 @@ export async function generateRecommendationForUser(
 
   let recommendation: AiRecommendation;
   const reported = comfort.consistent;
+  // A hold exists to let an experiment run. Someone telling you the bed was
+  // too hot has already reported the result, so the hold has nothing left to
+  // protect — unless the held change was itself in the direction they want,
+  // in which case it is already working and gets its night.
   const reportedLocked =
-    reported != null && history.lockedStages.includes(reported.stage);
+    reported != null &&
+    history.lockedStages.includes(reported.stage) &&
+    history.lockDirection[reported.stage] === reported.direction;
 
   if (reported && !reportedLocked) {
     // The sleeper said the same thing about the same stage on two of the last
@@ -1353,6 +1423,31 @@ export async function runDailyAiPass(): Promise<void> {
       if (!claimed) {
         console.log(`Daily pass for ${email} already running elsewhere; skipping.`);
         continue;
+      }
+
+      // Refresh the cached night metrics for this user. Without this the
+      // cache is only written when someone OPENS the app, so a second
+      // account's stored quality scores stayed null indefinitely and its
+      // ledger had nothing to reason over.
+      try {
+        const user = await db.query.users.findFirst({
+          where: eq(users.email, email),
+        });
+        if (user) {
+          const token = await getFreshToken(user);
+          await syncNightMetrics(
+            email,
+            token,
+            user.eightUserId,
+            profile.timezoneTZ,
+            1,
+          );
+        }
+      } catch (error) {
+        console.error(
+          `Night-metric refresh failed for ${email}:`,
+          error instanceof Error ? error.message : String(error),
+        );
       }
 
       const recommendation = await generateRecommendationForUser(email, "cron");

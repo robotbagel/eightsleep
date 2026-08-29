@@ -24,6 +24,11 @@ const WHEN = [
   { key: "middle", label: "Middle of the night" },
   { key: "morning", label: "Towards morning" },
   { key: "all_night", label: "All night" },
+  // Nobody should have to remember which third of the night they were
+  // uncomfortable in. When they cannot, the pod's own record picks the stage:
+  // the third with the most turning, broken by bed temperature in the
+  // direction they described.
+  { key: "not_sure", label: "Not sure" },
 ] as const;
 
 type Felt = (typeof FELT)[number]["key"];
@@ -38,12 +43,19 @@ export const ComfortPrompt: React.FC<{ index?: number }> = ({ index = 0 }) => {
   const [when, setWhen] = useState<When | null>(null);
   const [justSaved, setJustSaved] = useState(false);
 
+  const [reassessed, setReassessed] = useState(false);
   const submit = apiR.user.submitSleepFeedback.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setJustSaved(true);
+      setReassessed(result.reassessed);
+      // Tonight's plan may have just changed, so everything showing it has to
+      // be refetched — otherwise the answer looks like it did nothing.
       await Promise.all([
         utils.user.getSleepFeedback.invalidate(),
         utils.user.getAiRecommendations.invalidate(),
+        utils.user.getTemperaturePlan.invalidate(),
+        utils.user.getNightOutlook.invalidate(),
+        utils.user.getUserTemperatureProfile.invalidate(),
       ]);
     },
   });
@@ -64,8 +76,9 @@ export const ComfortPrompt: React.FC<{ index?: number }> = ({ index = 0 }) => {
           <LordIcon name="sleep" size={20} trigger="in" color="var(--success)" />
         </span>
         <p className="text-sm" style={{ color: "var(--text)" }}>
-          Thanks — the autopilot weighs that above anything it infers from
-          tossing, and will use it tomorrow morning.
+          {reassessed
+            ? "Thanks — tonight's plan has been reworked around that. What you report outranks anything the pod infers from how much you moved."
+            : "Thanks — noted for tonight."}
         </p>
       </section>
     );
@@ -136,7 +149,10 @@ export const ComfortPrompt: React.FC<{ index?: number }> = ({ index = 0 }) => {
             className="pt-4 text-xs font-semibold"
             style={{ color: "var(--text-muted)" }}
           >
-            When?
+            When? <span className="font-normal" style={{ color: "var(--text-faint)" }}>
+              — if you cannot recall, say so and the pod&apos;s record will
+              pick the stage
+            </span>
           </p>
           <div className="mt-2 flex flex-wrap gap-2" role="radiogroup" aria-label="When it felt that way">
             {WHEN.map((option) => {

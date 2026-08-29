@@ -111,4 +111,67 @@ const d7 = decide({
 assert.notEqual(d7.kind, "fold-live");
 console.log("ok  a hold agreeing with the evidence still holds");
 
+
+// --- live nudge direction -------------------------------------------------
+// The old rule gated on ABSOLUTE measured bed temperature, which includes body
+// heat and sits at 30-32°C whatever the setpoint — so cooling fired nightly
+// and warming essentially never could. Twenty consecutive coolings across two
+// accounts, including on nights a sleeper reported waking up cold.
+const { computeLiveNudge } = await import("../rules");
+
+const base = {
+  recentTosses: 4,
+  recentAvgHeartRate: 60,
+  nightAvgHeartRate: 59,
+  currentStage: "mid" as const,
+  currentOffset: 0,
+  comfortBias: null,
+};
+
+const cold = computeLiveNudge({
+  ...base,
+  recentAvgBedTempC: 30.0,
+  nightAvgBedTempC: 30.6,
+});
+assert.ok(cold && cold.delta > 0, "a bed below its own night average warms");
+console.log("ok  a bed running cool for this night warms, at any absolute temperature");
+
+const hot = computeLiveNudge({
+  ...base,
+  recentAvgBedTempC: 31.2,
+  nightAvgBedTempC: 30.6,
+});
+assert.ok(hot && hot.delta < 0, "a bed above its own night average cools");
+console.log("ok  a bed running warm for this night cools");
+
+const steady = computeLiveNudge({
+  ...base,
+  recentAvgBedTempC: 30.6,
+  nightAvgBedTempC: 30.6,
+});
+assert.equal(steady, null, "no drift, no nudge");
+console.log("ok  no drift means no nudge");
+
+// A reported "too cold" warms even while the bed reads 31°C, which every
+// absolute threshold in the old rule would have called hot.
+const reportedCold = computeLiveNudge({
+  ...base,
+  recentAvgBedTempC: 31.0,
+  nightAvgBedTempC: 30.4,
+  comfortBias: "warmer",
+});
+assert.ok(reportedCold && reportedCold.delta > 0, "what the sleeper said wins");
+console.log("ok  a reported 'too cold' warms even when the bed reads hot");
+
+const calm = computeLiveNudge({
+  ...base,
+  recentTosses: 0,
+  recentAvgHeartRate: 58,
+  recentAvgBedTempC: 31.5,
+  nightAvgBedTempC: 30.4,
+  comfortBias: "warmer",
+});
+assert.equal(calm, null, "a settled sleeper is never disturbed");
+console.log("ok  an undisturbed sleeper is left alone whatever the bias");
+
 console.log("\nall control-law assertions passed");

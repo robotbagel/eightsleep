@@ -29,8 +29,22 @@ export const REM_TARGET_FRACTION = 0.2;
 // Bed temperature (°C, as reported by the pod) above which restlessness is
 // read as overheating, and below which it is read as cold discomfort. The
 // optimal skin/bed microclimate sits around 31-35°C.
+//
+// THESE ABSOLUTE THRESHOLDS ARE A SAFETY RAIL ONLY — they must never be the
+// primary gate. `tempBedC` is the MEASURED surface temperature with a body on
+// it, which sits at 30-32°C on both of these accounts whatever the setpoint
+// is (setpoints of 25.6-28.8°C measured 28.7-31.9°C). So "measured >= 30"
+// fired almost every night and "measured <= 27" essentially never could:
+// between 2026-08-24 and 08-29 every single one of the twenty live nudges
+// across both accounts was a COOLING, including on the two nights one sleeper
+// reported waking up cold. The real signal is relative — warmer or cooler
+// than this sleeper's own night — see computeLiveNudge.
 export const HOT_BED_TEMP_C = 30;
 export const COLD_BED_TEMP_C = 27;
+
+/** How far the recent window must sit from the night's own mean bed
+ *  temperature before that counts as drift rather than noise. */
+export const BED_DRIFT_C = 0.3;
 
 // Live tuning: one nudge step and the hard cap on the total offset a single
 // night may accumulate away from the planned level. Units are tenths of a
@@ -103,6 +117,12 @@ export interface LiveWindowStats {
   recentAvgBedTempC: number | null;
   currentStage: SleepStage;
   currentOffset: number;
+  /** The night's own mean measured bed temperature so far — the reference the
+   *  recent window is judged against, instead of an absolute threshold. */
+  nightAvgBedTempC: number | null;
+  /** What the sleeper reported about recent nights, if anything. A person
+   *  saying "I woke up cold" outranks any inference from movement. */
+  comfortBias: "cooler" | "warmer" | null;
 }
 
 export interface LiveNudge {
@@ -119,8 +139,10 @@ export function computeLiveNudge(stats: LiveWindowStats): LiveNudge | null {
     recentAvgHeartRate,
     nightAvgHeartRate,
     recentAvgBedTempC,
+    nightAvgBedTempC,
     currentStage,
     currentOffset,
+    comfortBias,
   } = stats;
 
   const restless = recentTosses != null && recentTosses >= 3;
@@ -128,36 +150,52 @@ export function computeLiveNudge(stats: LiveWindowStats): LiveNudge | null {
     recentAvgHeartRate != null &&
     nightAvgHeartRate != null &&
     recentAvgHeartRate >= nightAvgHeartRate * 1.05;
+  const disturbed = restless || elevatedHeartRate;
+  if (!disturbed) return null;
 
-  if (
-    recentAvgBedTempC != null &&
-    recentAvgBedTempC >= HOT_BED_TEMP_C &&
-    (restless || elevatedHeartRate)
-  ) {
-    if (currentOffset - LIVE_NUDGE_STEP < -LIVE_OFFSET_CAP) return null;
-    const trigger = restless
-      ? `${recentTosses} tosses in the last 45 minutes`
-      : `heart rate ${recentAvgHeartRate} vs night average ${nightAvgHeartRate}`;
-    return {
-      delta: -LIVE_NUDGE_STEP,
-      reason: `Cooling by ${LIVE_NUDGE_STEP / 10}°C: bed at ${recentAvgBedTempC}°C with ${trigger}.`,
-    };
-  }
+  const trigger = restless
+    ? `${recentTosses} tosses in the last 45 minutes`
+    : `heart rate ${recentAvgHeartRate} vs night average ${nightAvgHeartRate}`;
 
-  // Warm nudges in the mid and final stages when the bed runs cold and the
-  // sleeper is restless: mild within-comfort warming deepens sleep and
-  // suppresses early-morning waking (Raymann 2008). The initial stage stays
-  // at the user's chosen comfort setting.
-  if (
-    currentStage !== "initial" &&
-    recentAvgBedTempC != null &&
-    recentAvgBedTempC <= COLD_BED_TEMP_C &&
-    restless
-  ) {
+  // Drift relative to THIS night's own bed temperature. Positive means the
+  // last 45 minutes are running warmer than the night has been.
+  const drift =
+    recentAvgBedTempC != null && nightAvgBedTempC != null
+      ? recentAvgBedTempC - nightAvgBedTempC
+      : null;
+
+  // What the sleeper reported wins outright: they are the only direct reading
+  // of comfort available, and an inference from movement cannot overrule it.
+  if (comfortBias === "warmer" && currentStage !== "initial") {
     if (currentOffset + LIVE_NUDGE_STEP > LIVE_OFFSET_CAP) return null;
     return {
       delta: LIVE_NUDGE_STEP,
-      reason: `Warming by ${LIVE_NUDGE_STEP / 10}°C: bed at ${recentAvgBedTempC}°C with ${recentTosses} tosses in the last 45 minutes of the ${currentStage} stage.`,
+      reason: `Warming by ${LIVE_NUDGE_STEP / 10}°C: you reported waking up cold, and there were ${trigger}.`,
+    };
+  }
+  if (comfortBias === "cooler") {
+    if (currentOffset - LIVE_NUDGE_STEP < -LIVE_OFFSET_CAP) return null;
+    return {
+      delta: -LIVE_NUDGE_STEP,
+      reason: `Cooling by ${LIVE_NUDGE_STEP / 10}°C: you reported the bed running hot, and there were ${trigger}.`,
+    };
+  }
+
+  if (drift == null) return null;
+
+  if (drift >= BED_DRIFT_C) {
+    if (currentOffset - LIVE_NUDGE_STEP < -LIVE_OFFSET_CAP) return null;
+    return {
+      delta: -LIVE_NUDGE_STEP,
+      reason: `Cooling by ${LIVE_NUDGE_STEP / 10}°C: the bed has drifted ${drift.toFixed(1)}°C above its average for tonight (${recentAvgBedTempC}°C) with ${trigger}.`,
+    };
+  }
+
+  if (drift <= -BED_DRIFT_C && currentStage !== "initial") {
+    if (currentOffset + LIVE_NUDGE_STEP > LIVE_OFFSET_CAP) return null;
+    return {
+      delta: LIVE_NUDGE_STEP,
+      reason: `Warming by ${LIVE_NUDGE_STEP / 10}°C: the bed has drifted ${Math.abs(drift).toFixed(1)}°C below its average for tonight (${recentAvgBedTempC}°C) with ${trigger}.`,
     };
   }
 

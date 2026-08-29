@@ -10,6 +10,7 @@
 // night. The temperature cron adds the active offset to its target so the two
 // never fight each other.
 import { db } from "~/server/db";
+import { sleepFeedback } from "~/server/db/schema";
 import {
   aiLiveAdjustments,
   temperatureEvents,
@@ -83,6 +84,36 @@ export async function runLiveTuningPass(): Promise<void> {
       );
       if (!stage) continue;
 
+      // What the sleeper said about the last two nights. A person reporting
+      // "I woke up cold" is the only direct reading of comfort there is, and
+      // it steers tonight's nudges rather than waiting for the morning pass.
+      let comfortBias: "cooler" | "warmer" | null = null;
+      try {
+        const recent = await db
+          .select()
+          .from(sleepFeedback)
+          .where(eq(sleepFeedback.email, email))
+          .orderBy(desc(sleepFeedback.night))
+          .limit(2);
+        const votes = recent
+          .map((r) =>
+            r.felt === "too_hot"
+              ? "cooler"
+              : r.felt === "too_cold"
+                ? "warmer"
+                : null,
+          )
+          .filter((v): v is "cooler" | "warmer" => v != null);
+        if (votes.length > 0 && votes.every((v) => v === votes[0])) {
+          comfortBias = votes[0]!;
+        }
+      } catch (error) {
+        console.error(
+          `Could not read comfort bias for ${email}:`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+
       const token = await getFreshToken(row.users);
       const window = await fetchCurrentSessionWindow(
         token,
@@ -121,6 +152,8 @@ export async function runLiveTuningPass(): Promise<void> {
         recentAvgBedTempC: window.recentAvgBedTempC,
         currentStage: stage,
         currentOffset,
+        nightAvgBedTempC: window.nightAvgBedTempC,
+        comfortBias,
       });
       if (!nudge) continue;
 
