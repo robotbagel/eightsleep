@@ -158,12 +158,18 @@ interface ExperimentHistory {
   ledger: LedgerEntry[];
   /** Stages live tuning keeps correcting the same way. */
   pressure: LivePressure[];
+  /** Which way each locked stage was last moved. */
+  lockDirection: Partial<Record<Stage, "cooler" | "warmer">>;
 }
 
 async function stagesLockedByRecentChanges(
   email: string,
   todayKey: string,
-): Promise<{ locked: string[]; heldNights: number }> {
+): Promise<{
+  locked: string[];
+  heldNights: number;
+  lockDirection: Partial<Record<Stage, "cooler" | "warmer">>;
+}> {
   const recent = await db
     .select()
     .from(aiRecommendations)
@@ -181,19 +187,24 @@ async function stagesLockedByRecentChanges(
   const cutoffKey = cutoff.toISOString().slice(0, 10);
 
   const locked = new Set<string>();
+  const lockDirection: Partial<Record<Stage, "cooler" | "warmer">> = {};
   let heldNights = 99;
   for (const rec of recent) {
     if (rec.forDate >= todayKey) continue; // today's own row, if any
-    const changed: [string, boolean][] = [
-      ["initial", rec.previousInitialLevel !== rec.recommendedInitialLevel],
+    const pairs: [Stage, number, number][] = [
+      ["initial", rec.previousInitialLevel, rec.recommendedInitialLevel],
       [
         "deep",
-        (rec.previousDeepLevel ?? rec.previousMidLevel) !==
-          (rec.recommendedDeepLevel ?? rec.recommendedMidLevel),
+        rec.previousDeepLevel ?? rec.previousMidLevel,
+        rec.recommendedDeepLevel ?? rec.recommendedMidLevel,
       ],
-      ["mid", rec.previousMidLevel !== rec.recommendedMidLevel],
-      ["final", rec.previousFinalLevel !== rec.recommendedFinalLevel],
+      ["mid", rec.previousMidLevel, rec.recommendedMidLevel],
+      ["final", rec.previousFinalLevel, rec.recommendedFinalLevel],
     ];
+    const changed: [string, boolean][] = pairs.map(([stage, from, to]) => [
+      stage,
+      from !== to,
+    ]);
     const anyChange = changed.some(([, did]) => did);
     if (anyChange) {
       const since = Math.round(
@@ -203,11 +214,20 @@ async function stagesLockedByRecentChanges(
       );
       heldNights = Math.min(heldNights, since);
       if (rec.forDate > cutoffKey) {
-        for (const [stage, did] of changed) if (did) locked.add(stage);
+        for (const [stage, from, to] of pairs) {
+          if (from === to) continue;
+          locked.add(stage);
+          // Newest recommendation wins: the loop reads them newest-first.
+          lockDirection[stage] ??= to < from ? "cooler" : "warmer";
+        }
       }
     }
   }
-  return { locked: [...locked], heldNights: heldNights === 99 ? 99 : heldNights };
+  return {
+    locked: [...locked],
+    heldNights: heldNights === 99 ? 99 : heldNights,
+    lockDirection,
+  };
 }
 
 /**
@@ -295,9 +315,11 @@ async function buildExperimentHistory(
     nightsOnCurrentProfile: 0,
     ledger: [],
     pressure: [],
+    lockDirection: {},
   };
   result.lockedStages = hold.locked;
   result.nightsOnCurrentProfile = hold.heldNights;
+  result.lockDirection = hold.lockDirection;
   if (scoredNights.length === 0) return result;
 
   const profileForNight = (date: string): ProfileLevels => {
@@ -671,6 +693,7 @@ export async function generateRecommendationForUser(
     ledger: history.ledger,
     pressure: history.pressure,
     lockedStages: history.lockedStages as Stage[],
+    lockDirection: history.lockDirection,
     verifiedNights: history.verifiedNights,
     nightsOnCurrentProfile: history.nightsOnCurrentProfile,
     maxShiftC: settings.maxDailyShift / 10,

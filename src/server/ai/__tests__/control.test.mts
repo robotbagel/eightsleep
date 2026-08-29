@@ -88,4 +88,27 @@ const d5 = decide({
 assert.equal(d5.kind, "ask-model");
 console.log("ok  a worse profile asks the model for one change");
 
+// --- a hold does not protect a change the evidence already refutes --------
+// The old loop's last act warmed a stage that live tuning then cooled on two
+// of the next three nights. Holding that for a night would lock in a change
+// the fast loop has already answered.
+const d6 = decide({
+  current: A, ledger, pressure, lockedStages: ["mid"],
+  lockDirection: { mid: "warmer" },
+  verifiedNights: 4, nightsOnCurrentProfile: 1, maxShiftC: 3,
+});
+assert.equal(d6.kind, "fold-live", "a refuted hold is void");
+assert.equal((d6 as { stage: string }).stage, "mid");
+console.log("ok  a hold contradicted by live tuning is void");
+
+// ...but a hold pointing the SAME way as the pressure still stands: that
+// experiment is running, not refuted.
+const d7 = decide({
+  current: A, ledger, pressure, lockedStages: ["mid"],
+  lockDirection: { mid: "cooler" },
+  verifiedNights: 4, nightsOnCurrentProfile: 1, maxShiftC: 3,
+});
+assert.notEqual(d7.kind, "fold-live");
+console.log("ok  a hold agreeing with the evidence still holds");
+
 console.log("\nall control-law assertions passed");

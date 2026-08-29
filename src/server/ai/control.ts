@@ -193,6 +193,10 @@ export function decide(input: {
   ledger: LedgerEntry[];
   pressure: LivePressure[];
   lockedStages: Stage[];
+  /** Which way the most recent change moved each locked stage. A hold exists
+   *  to let an experiment run, not to protect one the evidence has already
+   *  refuted, so a lock pointing the opposite way to live pressure is void. */
+  lockDirection?: Partial<Record<Stage, "cooler" | "warmer">>;
   verifiedNights: number;
   nightsOnCurrentProfile: number;
   maxShiftC: number;
@@ -206,14 +210,25 @@ export function decide(input: {
     nightsOnCurrentProfile,
     maxShiftC,
   } = input;
+  const lockDirection = input.lockDirection ?? {};
+
+  /** A lock is void when the last change went the opposite way to what live
+   *  tuning has been correcting since — that experiment is already answered. */
+  const heldAgainstEvidence = (stage: Stage): boolean => {
+    const locked = lockedStages.includes(stage);
+    if (!locked) return false;
+    const p = pressure.find((entry) => entry.stage === stage);
+    if (!p || p.nights < LIVE_REPEAT_THRESHOLD) return true;
+    const pressureWants = p.meanOffsetC < 0 ? "cooler" : "warmer";
+    return lockDirection[stage] === pressureWants || lockDirection[stage] == null;
+  };
 
   // 1. Repeated live corrections outrank everything else: the fast loop had to
   //    fix the same stage the same way on most of the recent nights, which is
   //    a measurement of the base being wrong.
   const repeated = pressure
     .filter(
-      (p) =>
-        p.nights >= LIVE_REPEAT_THRESHOLD && !lockedStages.includes(p.stage),
+      (p) => p.nights >= LIVE_REPEAT_THRESHOLD && !heldAgainstEvidence(p.stage),
     )
     .sort((a, b) => Math.abs(b.meanOffsetC) - Math.abs(a.meanOffsetC));
   const strongest = repeated[0];
