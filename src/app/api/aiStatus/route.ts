@@ -10,6 +10,7 @@ import {
   aiLiveAdjustments,
   aiRecommendations,
   aiRunLog,
+  sleepFeedback,
   temperatureEvents,
   userAiSettings,
   userTemperatureProfile,
@@ -113,6 +114,13 @@ export async function GET(request: NextRequest): Promise<Response> {
           if (!bucket.stages.includes(event.stage)) bucket.stages.push(event.stage);
         }
       }
+
+      const feedback = await db
+        .select()
+        .from(sleepFeedback)
+        .where(eq(sleepFeedback.email, email))
+        .orderBy(desc(sleepFeedback.night))
+        .limit(5);
 
       const storedNights = await readNightMetrics(
         email,
@@ -218,6 +226,14 @@ export async function GET(request: NextRequest): Promise<Response> {
         // The STORED per-night scores. A night's numbers must never move once
         // recorded; polling this across a cron tick is how that is checked
         // rather than asserted.
+        // What the sleeper reported, so "I answered and nothing happened" is
+        // checkable rather than a matter of opinion.
+        feedback: feedback.map((f) => ({
+          night: f.night,
+          felt: f.felt,
+          whenFelt: f.whenFelt,
+          note: f.note,
+        })),
         storedNights: storedNights.map((n) => ({
           night: n.night,
           score: n.score,
