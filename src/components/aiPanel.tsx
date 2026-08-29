@@ -9,6 +9,7 @@ import { StageChangeChart, type StageChange } from "./charts/stageChangeChart";
 import { PlanCurve } from "./charts/planCurve";
 import { SettingsHistory } from "./settingsHistory";
 import { StageComparison } from "./stageComparison";
+import { ExperimentLedger } from "./experimentLedger";
 
 // ---------------------------------------------------------------------------
 // Small shared pieces
@@ -544,6 +545,14 @@ export const AiAdvisorCard: React.FC<{
               lastNight={pickNight(plan.history, plan.todayKey, -1)}
               tonight={pickNight(plan.history, plan.todayKey, 0)}
               proposed={plan.proposed}
+              unit={displayUnit}
+            />
+          </div>
+
+          <div className="mt-5">
+            <ExperimentLedger
+              experiments={plan.experiments}
+              pressure={plan.livePressure}
               unit={displayUnit}
             />
           </div>

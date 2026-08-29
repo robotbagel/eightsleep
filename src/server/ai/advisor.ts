@@ -42,6 +42,7 @@ import {
   type Stage,
 } from "./control";
 import { minutesSinceTimeOfDay } from "./time";
+import { readNightMetrics, shiftDate } from "./history";
 import { sendPushToUser } from "~/server/push";
 import {
   celsiusToRaw,
@@ -388,6 +389,81 @@ async function buildExperimentHistory(
     );
 
   return result;
+}
+
+/**
+ * The experiment ledger for the app, built from the database alone (night
+ * metrics, the recommendation trail and the temperature events) so a page
+ * load never has to call Eight Sleep. Same grouping the advisor reasons over,
+ * so what the app shows and what the loop believes cannot drift apart.
+ */
+export async function readLedgerForApp(
+  email: string,
+  currentLevels: ProfileLevels,
+): Promise<{ ledger: LedgerEntry[]; pressure: LivePressure[] }> {
+  const [metrics, driven, appliedRecs, adjustments] = await Promise.all([
+    readNightMetrics(
+      email,
+      shiftDate(new Date().toISOString().slice(0, 10), -21),
+      new Date().toISOString().slice(0, 10),
+    ),
+    drivenNights(email),
+    db
+      .select()
+      .from(aiRecommendations)
+      .where(
+        and(
+          eq(aiRecommendations.email, email),
+          inArray(aiRecommendations.status, ["applied", "auto_applied"]),
+        ),
+      )
+      .orderBy(aiRecommendations.forDate)
+      .limit(60),
+    db
+      .select()
+      .from(aiLiveAdjustments)
+      .where(eq(aiLiveAdjustments.email, email))
+      .orderBy(aiLiveAdjustments.id)
+      .limit(60),
+  ]);
+
+  const profileForNight = (date: string): ProfileLevels => {
+    let active: ProfileLevels | null = null;
+    for (const rec of appliedRecs) {
+      if (rec.forDate < date) {
+        active = {
+          initial: rec.recommendedInitialLevel,
+          deep: rec.recommendedDeepLevel ?? rec.recommendedMidLevel,
+          mid: rec.recommendedMidLevel,
+          final: rec.recommendedFinalLevel,
+        };
+      }
+    }
+    return active ?? currentLevels;
+  };
+
+  const scored: ScoredNight[] = metrics
+    .filter((m) => m.thermalScore != null)
+    .map((m) => ({
+      date: m.night,
+      thermalScore: m.thermalScore!,
+      overallScore: m.score,
+      profile: profileForNight(m.night),
+      verified: driven.has(m.night),
+    }));
+
+  const recentNights = scored.slice(-3).map((night) => shiftDate(night.date, -1));
+  return {
+    ledger: buildLedger(scored, currentLevels),
+    pressure: livePressure(
+      adjustments.map((a) => ({
+        night: a.night,
+        stage: a.stage,
+        newOffset: a.newOffset,
+      })),
+      recentNights,
+    ),
+  };
 }
 
 // Summarizes recent live-tuning activity so the nightly advisor can bake

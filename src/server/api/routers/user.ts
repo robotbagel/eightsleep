@@ -29,6 +29,7 @@ import {
   generateRecommendationForUser,
   getAiSettingsOrDefaults,
   getFreshToken,
+  readLedgerForApp,
 } from "~/server/ai/advisor";
 import {
   AiError,
@@ -1008,11 +1009,25 @@ export const userRouter = createTRPCRouter({
             }
           : null;
 
+      // What the loop has learned, so the app and the advisor can never tell
+      // different stories about what has been tried.
+      let ledger: Awaited<ReturnType<typeof readLedgerForApp>> = {
+        ledger: [],
+        pressure: [],
+      };
+      try {
+        ledger = await readLedgerForApp(decoded.email, tonight);
+      } catch (error) {
+        console.error("Ledger read failed:", error);
+      }
+
       return {
         timezone,
         bedTime: profile.bedTime.slice(0, 5),
         wakeupTime: profile.wakeupTime.slice(0, 5),
         todayKey,
+        experiments: ledger.ledger,
+        livePressure: ledger.pressure,
         tonight,
         lastNight,
         proposed,

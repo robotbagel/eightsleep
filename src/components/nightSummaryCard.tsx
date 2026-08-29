@@ -129,10 +129,22 @@ export const NightSummaryCard: React.FC<{
 
   return (
     <Card index={index}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
           <NightNav {...nav} />
         </div>
+        {metrics.thermalScore != null && (
+          <span
+            className="chip shrink-0"
+            title="Sleep quality attributable to bed temperature — deep share, REM share, restlessness and time awake. This is what the AI optimises."
+            style={{
+              color: TONE_VAR[scoreTone(metrics.thermalScore)],
+              backgroundColor: "var(--surface-sunken)",
+            }}
+          >
+            quality {metrics.thermalScore}
+          </span>
+        )}
         <span
           className="chip shrink-0"
           style={{
