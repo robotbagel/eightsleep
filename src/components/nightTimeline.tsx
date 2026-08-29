@@ -2,7 +2,7 @@
 import React, { useState } from "react";
 import { apiR } from "~/trpc/react";
 import { formatRawByUnit, type DisplayUnit } from "~/lib/temperature";
-import { Card, CardHeader, Skeleton, Tile } from "./ui/card";
+import { Skeleton, Tile } from "./ui/card";
 import { NightChart, type NightEvent } from "./charts/nightChart";
 import { clockIn, formatHours } from "./charts/chartUtils";
 
@@ -24,11 +24,10 @@ const SOURCE_META: Record<
   off: { label: "Off", color: "var(--text-faint)" },
 };
 
-export const NightTimeline: React.FC<{
+export const NightDetail: React.FC<{
   displayUnit: DisplayUnit;
   night: string | null;
-  index?: number;
-}> = ({ displayUnit, night: selectedNight, index = 0 }) => {
+}> = ({ displayUnit, night: selectedNight }) => {
   const [showLog, setShowLog] = useState(false);
   // Same query key as the summary card above, so both cards always show the
   // same night and it costs one request.
@@ -38,24 +37,16 @@ export const NightTimeline: React.FC<{
   );
 
   if (timelineQuery.isLoading) {
-    return (
-      <Card index={index}>
-        <CardHeader icon="clock" title="Your night, hour by hour" />
-        <Skeleton className="h-[200px]" />
-      </Card>
-    );
+    return <Skeleton className="h-[220px]" />;
   }
 
   const data = timelineQuery.data;
   if (!data?.night) {
     return (
-      <Card index={index}>
-        <CardHeader icon="clock" title="Your night, hour by hour" />
-        <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-          Once the pod records a full night, every stage change, toss and
-          temperature move lands on this chart.
-        </p>
-      </Card>
+      <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+        Once the pod records a full night, every stage change, toss and
+        temperature move lands on this chart.
+      </p>
     );
   }
 
@@ -101,16 +92,7 @@ export const NightTimeline: React.FC<{
   const liveNudges = chartEvents.filter((e) => e.source === "live").length;
 
   return (
-    <Card index={index}>
-      <CardHeader
-        icon="clock"
-        title="Your night, hour by hour"
-        subtitle={new Date(`${data.night}T12:00:00Z`).toLocaleDateString(
-          "en-GB",
-          { weekday: "long", day: "numeric", month: "long" },
-        )}
-      />
-
+    <div>
       <div className="mb-4 grid grid-cols-3 gap-2">
         <Tile
           label="In bed"
@@ -233,6 +215,6 @@ export const NightTimeline: React.FC<{
           )}
         </div>
       </div>
-    </Card>
+    </div>
   );
 };

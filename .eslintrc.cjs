@@ -1,5 +1,8 @@
 /** @type {import("eslint").Linter.Config} */
 const config = {
+  // Test files run through tsx, not the Next build, so they sit outside
+  // tsconfig's include and the type-aware parser cannot resolve them.
+  "ignorePatterns": ["src/server/ai/__tests__/**"],
   "parser": "@typescript-eslint/parser",
   "parserOptions": {
     "project": true

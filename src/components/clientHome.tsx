@@ -8,9 +8,8 @@ import { LogoutButton } from "~/components/logout";
 import { ThemeToggle } from "~/components/themeToggle";
 import { AiAdvisorCard, AiSettingsCard } from "~/components/aiPanel";
 import { NightSummaryCard } from "~/components/nightSummaryCard";
-import { NightTimeline } from "~/components/nightTimeline";
-import { CompareCard } from "~/components/compareCard";
-import { OutlookCard } from "~/components/outlookCard";
+import { AutopilotStrip } from "~/components/autopilotStrip";
+import { TrendsCard } from "~/components/trendsCard";
 import { Disclosure } from "~/components/ui/card";
 import LordIcon from "~/components/ui/lordIcon";
 import { useSwipe } from "~/components/useSwipe";
@@ -85,6 +84,9 @@ const SignedIn: React.FC = () => {
   // `null` means "whatever the newest night is" — so the page keeps following
   // the latest night until you deliberately step back.
   const [selectedNight, setSelectedNight] = useState<string | null>(null);
+  // The autopilot's reasoning is a level-3 answer: on the surface it is one
+  // line, and only opens when asked. See ia-contract.json.
+  const [autopilotOpen, setAutopilotOpen] = useState(false);
 
   const nightQuery = apiR.user.getNightTimeline.useQuery(
     selectedNight ? { night: selectedNight } : undefined,
@@ -135,19 +137,21 @@ const SignedIn: React.FC = () => {
     <div className="mx-auto max-w-5xl px-4 pt-5">
       {/* The data first: the selected night, then how it compares, then the
           plan. Everything you configure lives below, folded away. */}
-      <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+      {/* Level 1: how did I sleep, and what is being done about it. Nothing
+          else competes with these two above the fold. */}
+      <div className="space-y-4">
         <div
-          className="min-w-0 space-y-4 lg:col-span-2"
+          className="min-w-0"
           style={{ touchAction: "pan-y" }}
           {...swipe.bind}
         >
           <div
             className={
               swipe.entering === "prev"
-                ? "enter-prev min-w-0 space-y-4"
+                ? "enter-prev min-w-0"
                 : swipe.entering === "next"
-                  ? "enter-next min-w-0 space-y-4"
-                  : "min-w-0 space-y-4"
+                  ? "enter-next min-w-0"
+                  : "min-w-0"
             }
             style={{
               transform: swipe.dx !== 0 ? `translateX(${swipe.dx}px)` : undefined,
@@ -157,36 +161,44 @@ const SignedIn: React.FC = () => {
             }}
           >
             <NightSummaryCard night={selectedNight} nav={nav} index={0} />
-            <NightTimeline
-              displayUnit={displayUnit}
-              night={selectedNight}
-              index={1}
-            />
           </div>
         </div>
 
-        {/* Where the night sits in the run: last two nights measured, tonight
-            predicted. Outside the swipe container on purpose — it is about the
-            trend, not the night you happen to be paging through. */}
-        <div className="min-w-0 lg:col-span-2">
-          <OutlookCard index={2} />
+        <AutopilotStrip
+          displayUnit={displayUnit}
+          expanded={autopilotOpen}
+          onOpen={() => setAutopilotOpen((open) => !open)}
+        />
+
+        <div
+          className="grid transition-[grid-template-rows] duration-base ease-snap"
+          style={{ gridTemplateRows: autopilotOpen ? "1fr" : "0fr" }}
+        >
+          <div className="overflow-hidden">
+            {autopilotOpen && (
+              <AiAdvisorCard displayUnit={displayUnit} index={0} />
+            )}
+          </div>
         </div>
 
-        <CompareCard index={3} />
-        <AiAdvisorCard displayUnit={displayUnit} index={4} />
+        {/* Level 2: the same night and the same history, one view at a time. */}
+        <TrendsCard
+          displayUnit={displayUnit}
+          night={selectedNight}
+          index={2}
+        />
 
-        <div className="min-w-0 space-y-4 lg:col-span-2">
-          <Disclosure
-            icon="bed"
-            title="Tonight's schedule"
-            summary="Bed time, wake-up, and the four stage temperatures."
-            index={5}
-          >
-            <TemperatureProfileForm />
-          </Disclosure>
+        {/* Level 4: everything you configure, folded away. */}
+        <Disclosure
+          icon="bed"
+          title="Tonight's schedule"
+          summary="Bed time, wake-up, and the four stage temperatures."
+          index={3}
+        >
+          <TemperatureProfileForm />
+        </Disclosure>
 
-          <AiSettingsCard index={6} />
-        </div>
+        <AiSettingsCard index={4} />
       </div>
     </div>
   );

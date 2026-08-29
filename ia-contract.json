@@ -1,0 +1,93 @@
+{
+  "project": "8sleep nosub app",
+  "date": "2026-08-29",
+  "problem": "Six stacked cards all answered 'how did I sleep' in a different form (score card, hypnogram, three-night outlook, 7/14/30 compare, and an AI card holding a settings table, a 7-night table, two charts, a ledger, reasoning, an outcome strip, two buttons and a live-nudge list). The reader could not tell at a glance how they slept or what the system was doing about it.",
+  "consulted": [
+    "NotebookLM: UI/UX Hierarchy & Feedback (5783cb01-7889-4cfa-84ab-b0842ffc9db5)",
+    "motion-canon CANON.md §10 (progressive disclosure, labelled nav, three-exit modals)"
+  ],
+
+  "glanceHierarchy": [
+    {
+      "level": 1,
+      "question": "How did I sleep?",
+      "answer": "One hero card. Quality score ring, a plain-language HEADLINE naming what stood out ('Deep sleep was strong', 'A restless night'), and one sentence of detail comparing the night with the recent average. The overall score is demoted to a footnote because it is mostly duration and bedtime, which the bed does not control.",
+      "budget": "1 number, 1 headline, 1 sentence, 1 stage bar, 4 vitals tiles",
+      "component": "nightSummaryCard.tsx + lib/verdict.ts"
+    },
+    {
+      "level": 1,
+      "question": "What is being done about it?",
+      "answer": "A single-line status strip directly beneath the hero, stating tonight's change in words ('the REM stage runs cooler, 28.8 → 27.8. Live on the pod'), or that nothing changed and why. Tapping it expands the full autopilot detail.",
+      "budget": "1 icon, 1 label, 1 sentence, 1 affordance",
+      "component": "autopilotStrip.tsx"
+    },
+    {
+      "level": 2,
+      "question": "Show me the night / the trend",
+      "answer": "One Trends card with three tabs: Night (hypnogram + temperature + events), Recent (last two nights vs tonight's forecast), Compare (7/14/30 days). Replaces three separate cards.",
+      "budget": "one card, one active panel at a time",
+      "component": "trendsCard.tsx"
+    },
+    {
+      "level": 3,
+      "question": "Why did it decide that? What has it tried?",
+      "answer": "Behind the autopilot strip: plan comparison, per-stage reasoning, evidence, expectation, principle, experiment ledger, settings history.",
+      "component": "aiPanel.tsx (AiAdvisorCard)"
+    },
+    {
+      "level": 4,
+      "question": "Change my settings",
+      "answer": "Collapsed disclosures at the foot of the page: schedule, autopilot settings.",
+      "component": "temperatureProfileForm.tsx, AiSettingsCard"
+    }
+  ],
+
+  "densityBudget": {
+    "aboveFold": "hero card + autopilot strip only",
+    "visibleCardsWhenIdle": 3,
+    "previously": 6,
+    "rule": "No card may hold more than one job. The AI card held ten and is now a level-3 panel behind a level-1 line."
+  },
+
+  "semanticContract": {
+    "colour": {
+      "var(--success)": "quality >= 80, a change that helped, converged",
+      "var(--warning)": "quality 65-79, waiting on the user, no assessment yet",
+      "var(--danger)": "quality < 65, a change that hurt",
+      "var(--cool)": "a cooler temperature / cooling correction",
+      "var(--warm)": "a warmer temperature / measured bed temperature",
+      "var(--accent)": "tonight, the current selection, the app's own actions"
+    },
+    "rule": "Colour never carries meaning alone: every status pairs with a word (the verdict headline, the change column, the chip label) and, where it is an affordance, a Grunkicon glyph.",
+    "icons": {
+      "sleep": "the night / how you slept",
+      "clock": "timing, the night in progress",
+      "ai": "the autopilot",
+      "chart": "trends and comparison",
+      "bed": "the schedule",
+      "sliders": "settings"
+    }
+  },
+
+  "disclosureLedger": [
+    { "content": "hypnogram, bed/room temperature, event rail", "was": "always-on card #2", "now": "Trends → Night tab" },
+    { "content": "two nights ago / last night / tonight forecast", "was": "always-on card #3", "now": "Trends → Recent tab" },
+    { "content": "7/14/30-day metric grid and weekday breakdown", "was": "always-on card #4", "now": "Trends → Compare tab" },
+    { "content": "plan curve, stage comparison, reasoning, evidence, ledger, settings history, live nudges", "was": "always-on card #5, all at once", "now": "expanded from the autopilot strip" },
+    { "content": "seven-night settings table", "was": "inside card #5", "now": "nested disclosure inside the autopilot panel" },
+    { "content": "schedule form, autopilot settings", "was": "collapsed", "now": "unchanged — already correct" }
+  ],
+
+  "motion": {
+    "tabSwitch": "--motion-fast with --ease-out-snap, no layout jump: the panel is keyed so content cross-fades",
+    "stripExpand": "grid-template-rows 0fr→1fr at --motion-base, matching the existing disclosures",
+    "reducedMotion": "inherits the global gate in globals.css"
+  },
+
+  "verification": [
+    "Screenshot at 1280 and at 390 in both themes",
+    "DOM sweep for page-level horizontal overflow at 320/360/390/402/430",
+    "Above-the-fold check: the verdict headline and the autopilot line both visible at 390x844 without scrolling"
+  ]
+}

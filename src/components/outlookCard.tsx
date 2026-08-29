@@ -6,7 +6,10 @@ import { formatHours } from "./charts/chartUtils";
 
 type Outlook = RouterOutputs["user"]["getNightOutlook"];
 
-export const OutlookCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
+export const OutlookCard: React.FC<{ index?: number; bare?: boolean }> = ({
+  index = 0,
+  bare = false,
+}) => {
   const query = apiR.user.getNightOutlook.useQuery(undefined, {
     retry: 1,
     refetchOnWindowFocus: false,
@@ -14,6 +17,7 @@ export const OutlookCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
   return (
     <OutlookView
       index={index}
+      bare={bare}
       data={query.data ?? null}
       loading={query.isLoading}
     />
@@ -22,31 +26,39 @@ export const OutlookCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
 
 export const OutlookView: React.FC<{
   index?: number;
+  bare?: boolean;
   data: Outlook | null;
   loading: boolean;
-}> = ({ index = 0, data, loading }) => {
+}> = ({ index = 0, bare = false, data, loading }) => {
+  // As a tab panel the surrounding card and header already say what this is.
+  const Frame: React.FC<{ children: React.ReactNode }> = ({ children }) =>
+    bare ? <>{children}</> : <Card index={index}>{children}</Card>;
+  const Head: React.FC<{ subtitle?: string }> = ({ subtitle }) =>
+    bare ? null : (
+      <CardHeader icon="sleep" title="How you're sleeping" subtitle={subtitle} />
+    );
   if (loading) {
     return (
-      <Card index={index}>
-        <CardHeader icon="sleep" title="How you're sleeping" />
+      <Frame>
+        <Head />
         <div className="grid grid-cols-3 gap-2">
           {[0, 1, 2].map((i) => (
             <Skeleton key={i} className="h-44" />
           ))}
         </div>
-      </Card>
+      </Frame>
     );
   }
 
   if (!data || (!data.lastNight && !data.nightBefore)) {
     return (
-      <Card index={index}>
-        <CardHeader icon="sleep" title="How you're sleeping" />
+      <Frame>
+        <Head />
         <p className="text-sm" style={{ color: "var(--text-muted)" }}>
           Two recorded nights are enough to start showing the trend. Sleep on
           the pod tonight and this fills itself in by morning.
         </p>
-      </Card>
+      </Frame>
     );
   }
 
@@ -56,12 +68,8 @@ export const OutlookView: React.FC<{
     : null;
 
   return (
-    <Card index={index}>
-      <CardHeader
-        icon="sleep"
-        title="How you're sleeping"
-        subtitle="The night before last, last night, and what tonight should come out at."
-      />
+    <Frame>
+      <Head subtitle="The night before last, last night, and what tonight should come out at." />
 
       {/* One row per measurement, three columns of nights. Three stat
           COLUMNS looked fine on a desktop and fell apart at 390px, where
@@ -219,7 +227,7 @@ export const OutlookView: React.FC<{
           decided about half an hour after you wake.
         </p>
       )}
-    </Card>
+    </Frame>
   );
 };
 

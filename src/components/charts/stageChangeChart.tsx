@@ -37,12 +37,14 @@ export const StageChangeChart: React.FC<{
   return (
     <div className="space-y-2.5">
       {changes.map((change, index) => {
-        const from = change.lastNight;
+        const from = change.lastNight ?? null;
         const moved = from != null && from !== change.tonight;
         const cooler = moved && change.tonight < from;
         const moveColor = cooler ? "var(--cool)" : "var(--warm)";
-        const pending =
-          change.proposed != null && change.proposed !== change.tonight;
+        const proposed =
+          change.proposed != null && change.proposed !== change.tonight
+            ? change.proposed
+            : null;
 
         return (
           <div
@@ -81,7 +83,7 @@ export const StageChangeChart: React.FC<{
                     unchanged
                   </span>
                 )}
-                {pending && (
+                {proposed != null && (
                   <>
                     <span
                       className="mx-1"
@@ -91,7 +93,7 @@ export const StageChangeChart: React.FC<{
                       ⇢
                     </span>
                     <span style={{ color: "var(--accent)" }}>
-                      {formatRawByUnit(change.proposed!, unit)}
+                      {formatRawByUnit(proposed, unit)}
                     </span>
                   </>
                 )}
@@ -112,8 +114,8 @@ export const StageChangeChart: React.FC<{
                   className="grow-seg absolute top-1/2 h-[3px] -translate-y-1/2 rounded-full"
                   style={
                     {
-                      left: `${Math.min(position(from!), position(change.tonight))}%`,
-                      width: `${Math.abs(position(change.tonight) - position(from!))}%`,
+                      left: `${Math.min(position(from), position(change.tonight))}%`,
+                      width: `${Math.abs(position(change.tonight) - position(from))}%`,
                       backgroundColor: moveColor,
                       "--i": index,
                     } as React.CSSProperties
@@ -138,11 +140,11 @@ export const StageChangeChart: React.FC<{
                   borderColor: "var(--surface)",
                 }}
               />
-              {pending && (
+              {proposed != null && (
                 <span
                   className="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2"
                   style={{
-                    left: `${position(change.proposed!)}%`,
+                    left: `${position(proposed)}%`,
                     borderColor: "var(--accent)",
                     backgroundColor: "var(--surface)",
                   }}

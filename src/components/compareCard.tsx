@@ -116,7 +116,10 @@ const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export type CompareData = RouterOutputs["user"]["getSleepHistory"];
 
-export const CompareCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
+export const CompareCard: React.FC<{ index?: number; bare?: boolean }> = ({
+  index = 0,
+  bare = false,
+}) => {
   const [days, setDays] = useState<Days>(7);
   const query = apiR.user.getSleepHistory.useQuery(
     { days },
@@ -126,6 +129,7 @@ export const CompareCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
   return (
     <CompareView
       index={index}
+      bare={bare}
       days={days}
       onDays={setDays}
       data={query.data ?? null}
@@ -137,12 +141,13 @@ export const CompareCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
 
 export const CompareView: React.FC<{
   index?: number;
+  bare?: boolean;
   days: Days;
   onDays: (days: Days) => void;
   data: CompareData | null;
   loading: boolean;
   fetching: boolean;
-}> = ({ index = 0, days, onDays, data, loading, fetching }) => {
+}> = ({ index = 0, bare = false, days, onDays, data, loading, fetching }) => {
   const nights = data?.nights ?? [];
   const toEpoch = (night: string) => new Date(`${night}T12:00:00Z`).getTime();
 
@@ -157,17 +162,7 @@ export const CompareView: React.FC<{
     null,
   );
 
-  return (
-    <Card index={index}>
-      <CardHeader
-        icon="chart"
-        title="Compare"
-        subtitle={
-          data
-            ? `${nights.length} night${nights.length === 1 ? "" : "s"} recorded in the last ${days}`
-            : undefined
-        }
-        right={
+  const rangePicker = (
           <div
             className="flex overflow-hidden rounded-lg border p-0.5"
             style={{ borderColor: "var(--border-strong)" }}
@@ -191,9 +186,34 @@ export const CompareView: React.FC<{
                 {option}d
               </button>
             ))}
-          </div>
-        }
-      />
+    </div>
+  );
+
+
+  const body = (
+    <>
+      {!bare && (
+        <CardHeader
+          icon="chart"
+          title="Compare"
+          subtitle={
+            data
+              ? `${nights.length} night${nights.length === 1 ? "" : "s"} recorded in the last ${days}`
+              : undefined
+          }
+          right={rangePicker}
+        />
+      )}
+      {bare && (
+        <div className="mb-4 flex items-center justify-between gap-2">
+          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+            {data
+              ? `${nights.length} night${nights.length === 1 ? "" : "s"} recorded`
+              : ""}
+          </span>
+          {rangePicker}
+        </div>
+      )}
 
       {loading && !data ? (
         <div className="space-y-3">
@@ -302,8 +322,10 @@ export const CompareView: React.FC<{
           />
         </div>
       )}
-    </Card>
+    </>
   );
+
+  return bare ? body : <Card index={index}>{body}</Card>;
 };
 
 /** Every night in the window as one bar, so the shape of the run is visible. */

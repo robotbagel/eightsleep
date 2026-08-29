@@ -3,7 +3,7 @@ import React, { useEffect, useState } from "react";
 import { apiR } from "~/trpc/react";
 import { type DisplayUnit } from "~/lib/temperature";
 import { buildSleepShortcutPlist } from "~/lib/sleepShortcut";
-import { Card, CardHeader, Disclosure, Skeleton } from "./ui/card";
+import { Card, Disclosure, Skeleton } from "./ui/card";
 import LordIcon from "./ui/lordIcon";
 import { StageChangeChart, type StageChange } from "./charts/stageChangeChart";
 import { PlanCurve } from "./charts/planCurve";
@@ -466,7 +466,6 @@ export const AiAdvisorCard: React.FC<{
   if (settingsQuery.isLoading || recommendationsQuery.isLoading) {
     return (
       <Card index={index}>
-        <CardHeader icon="ai" title="Tonight's plan" />
         <Skeleton className="h-56" />
       </Card>
     );
@@ -496,23 +495,19 @@ export const AiAdvisorCard: React.FC<{
 
   return (
     <Card index={index}>
-      <CardHeader
-        icon="ai"
-        title="Tonight's plan"
-        subtitle={
-          latest
-            ? `Last assessed ${new Date(`${latest.forDate}T12:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`
-            : "Tunes the four temperature stages from last night's data."
-        }
-        right={
-          latest ? (
-            <div className="flex flex-wrap justify-end gap-1.5">
-              <ConfidenceChip confidence={latest.confidence} />
-              <StatusChip status={latest.status} />
-            </div>
-          ) : undefined
-        }
-      />
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+          {latest
+            ? `Last assessed ${new Date(`${latest.forDate}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}`
+            : "Tunes the four temperature stages from last night's data."}
+        </span>
+        {latest && (
+          <div className="flex flex-wrap justify-end gap-1.5">
+            <ConfidenceChip confidence={latest.confidence} />
+            <StatusChip status={latest.status} />
+          </div>
+        )}
+      </div>
 
       {!aiAvailable && (
         <div
@@ -527,17 +522,19 @@ export const AiAdvisorCard: React.FC<{
 
       {plan?.tonight && (
         <>
-          <PlanBanner
-            status={latest?.status ?? null}
-            updatedAt={latest?.updatedAt ?? null}
-            anyChanged={anyChanged}
-            hasProposal={hasProposal}
-            hasLastNight={plan.lastNight != null}
-            assessedToday={plan.assessedToday}
-            aiEnabled={settingsQuery.data?.aiEnabled ?? false}
-            busy={generateMutation.isPending}
-            onAssess={() => generateMutation.mutate()}
-          />
+          {(!plan.assessedToday || hasProposal) && (
+            <PlanBanner
+              status={latest?.status ?? null}
+              updatedAt={latest?.updatedAt ?? null}
+              anyChanged={anyChanged}
+              hasProposal={hasProposal}
+              hasLastNight={plan.lastNight != null}
+              assessedToday={plan.assessedToday}
+              aiEnabled={settingsQuery.data?.aiEnabled ?? false}
+              busy={generateMutation.isPending}
+              onAssess={() => generateMutation.mutate()}
+            />
+          )}
 
           <div className="mt-5">
             <StageComparison

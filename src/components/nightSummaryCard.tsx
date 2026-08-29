@@ -6,19 +6,8 @@ import { NightNav } from "./nightNav";
 import { ScoreRing } from "./charts/scoreRing";
 import { StageBar } from "./charts/stageBar";
 import { Sparkline } from "./charts/sparkline";
-import {
-  formatHours,
-  scoreTone,
-  TONE_VAR,
-  type Point,
-} from "./charts/chartUtils";
-
-const VERDICT: Record<"good" | "warn" | "bad" | "none", string> = {
-  good: "Strong night",
-  warn: "Decent night",
-  bad: "Rough night",
-  none: "No score yet",
-};
+import { TONE_VAR, type Point } from "./charts/chartUtils";
+import { buildVerdict } from "~/lib/verdict";
 
 function clockOf(minutes: number | null | undefined): string {
   if (minutes == null) return "—";
@@ -125,67 +114,70 @@ export const NightSummaryCard: React.FC<{
     );
   }
 
-  const tone = scoreTone(metrics.score);
+  // "Compared with usual" needs a reference; the same 14 nights the tile
+  // sparklines already use, so there is no extra request.
+  const recent = (history.data?.nights ?? []).filter(
+    (n) => n.night !== metrics.night,
+  );
+  const mean = (key: "asleepHours" | "deepHours" | "tosses") => {
+    const values = recent
+      .map((n) => n[key])
+      .filter((v): v is number => typeof v === "number");
+    return values.length === 0
+      ? null
+      : values.reduce((a, b) => a + b, 0) / values.length;
+  };
+  const verdict = buildVerdict({
+    asleepHours: metrics.asleepHours,
+    deepHours: metrics.deepHours,
+    remHours: metrics.remHours,
+    tosses: metrics.tosses,
+    wakeCount: metrics.wakeCount,
+    thermalScore: metrics.thermalScore,
+    average: {
+      asleepHours: mean("asleepHours"),
+      deepHours: mean("deepHours"),
+      tosses: mean("tosses"),
+    },
+  });
 
   return (
     <Card index={index}>
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <NightNav {...nav} />
-        </div>
-        {metrics.thermalScore != null && (
-          <span
-            className="chip shrink-0"
-            title="Sleep quality attributable to bed temperature — deep share, REM share, restlessness and time awake. This is what the AI optimises."
-            style={{
-              color: TONE_VAR[scoreTone(metrics.thermalScore)],
-              backgroundColor: "var(--surface-sunken)",
-            }}
-          >
-            quality {metrics.thermalScore}
-          </span>
-        )}
-        <span
-          className="chip shrink-0"
-          style={{
-            backgroundColor:
-              tone === "good"
-                ? "var(--success-soft)"
-                : tone === "warn"
-                  ? "var(--warning-soft)"
-                  : tone === "bad"
-                    ? "var(--danger-soft)"
-                    : "var(--surface-sunken)",
-            color: TONE_VAR[tone],
-          }}
-        >
-          {VERDICT[tone]}
-        </span>
-      </div>
+      <NightNav {...nav} />
 
-      <div className="mt-5 flex flex-col items-center gap-5 sm:flex-row sm:items-center">
-        <ScoreRing score={metrics.score} />
-        <div className="w-full flex-1">
-          <div className="flex items-baseline gap-2">
-            <span
-              className="tabular text-4xl font-semibold leading-none"
-              style={{ color: "var(--text-headline)" }}
-            >
-              {formatHours(metrics.asleepHours)}
-            </span>
-            <span className="text-sm" style={{ color: "var(--text-muted)" }}>
-              asleep
-            </span>
-            <span
-              className="tabular ml-auto text-xs"
-              style={{ color: "var(--text-faint)" }}
-            >
-              {clockOf(metrics.bedtimeMinutes)} → {clockOf(metrics.wakeMinutes)}
-            </span>
-          </div>
+      {/* The answer, before any chart. Score, one headline, one sentence. */}
+      <div className="mt-5 flex flex-col items-center gap-5 sm:flex-row sm:items-start">
+        <ScoreRing score={metrics.thermalScore ?? metrics.score} label="quality" />
+        <div className="w-full min-w-0 flex-1">
+          <h3
+            className="text-2xl font-semibold leading-tight tracking-[-0.02em]"
+            style={{ color: TONE_VAR[verdict.tone] }}
+          >
+            {verdict.headline}
+          </h3>
+          <p
+            className="mt-1.5 text-sm leading-relaxed"
+            style={{ color: "var(--text)" }}
+          >
+            {verdict.detail}
+          </p>
+          <p
+            className="tabular mt-2 text-xs"
+            style={{ color: "var(--text-faint)" }}
+          >
+            {clockOf(metrics.bedtimeMinutes)} → {clockOf(metrics.wakeMinutes)}
+            {metrics.score != null && (
+              <span
+                title="Apple-style overall score: half duration, a third bedtime consistency. Useful context, but not what the autopilot tunes."
+              >
+                {" · overall "}
+                {metrics.score}/100
+              </span>
+            )}
+          </p>
           {Object.keys(stageHours).length > 0 && (
             <div className="mt-4">
-              <StageBar stageHours={stageHours} />
+              <StageBar stageHours={stageHours} compact />
             </div>
           )}
         </div>
