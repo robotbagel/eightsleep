@@ -208,6 +208,26 @@ export async function GET(request: NextRequest): Promise<Response> {
             }
           : null,
         nightsDriven,
+        // The decision trail, so oscillation (moving a stage down then back
+        // up on successive days) is visible instead of having to be inferred
+        // from one latest recommendation.
+        recommendationHistory: recommendations.slice(0, 14).map((rec) => ({
+          forDate: rec.forDate,
+          status: rec.status,
+          confidence: rec.confidence,
+          fromC: {
+            initial: rawToCelsius(rec.previousInitialLevel),
+            deep: rawToCelsius(rec.previousDeepLevel ?? rec.previousMidLevel),
+            mid: rawToCelsius(rec.previousMidLevel),
+            final: rawToCelsius(rec.previousFinalLevel),
+          },
+          toC: {
+            initial: rawToCelsius(rec.recommendedInitialLevel),
+            deep: rawToCelsius(rec.recommendedDeepLevel ?? rec.recommendedMidLevel),
+            mid: rawToCelsius(rec.recommendedMidLevel),
+            final: rawToCelsius(rec.recommendedFinalLevel),
+          },
+        })),
         // Why a day is missing: whether the pass was attempted at all, and
         // what it said if it failed.
         dailyPassRuns: runs.map((run) => ({
