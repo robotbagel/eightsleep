@@ -603,6 +603,13 @@ async function readComfort(
     nights: number;
     /** The most recent night this was reported about. */
     latestNight: string;
+    /**
+     * The sleeper said "all night", not a stage. Then there is no experiment
+     * to keep attributable — they have already named every stage — and moving
+     * one of four at a time would take four nights to do what they asked for
+     * once.
+     */
+    wholeNight: boolean;
   } | null;
 }> {
   try {
@@ -620,6 +627,7 @@ async function readComfort(
     );
 
     const votes = new Map<string, number>();
+    const wholeNightKeys = new Set<string>();
     for (const row of rows) {
       if (row.felt === "just_right") continue;
       const direction = row.felt === "too_hot" ? "cooler" : "warmer";
@@ -632,6 +640,7 @@ async function readComfort(
       if (!stage) continue;
       const key = `${stage}|${direction}`;
       votes.set(key, (votes.get(key) ?? 0) + 1);
+      if (row.whenFelt === "all_night") wholeNightKeys.add(key);
     }
     const latestNight = rows[0]!.night;
     let consistent: {
@@ -639,6 +648,7 @@ async function readComfort(
       direction: "cooler" | "warmer";
       nights: number;
       latestNight: string;
+      wholeNight: boolean;
     } | null = null;
     for (const [key, count] of votes) {
       // ONE report is enough. Requiring two nights is the right bar for a
@@ -648,7 +658,13 @@ async function readComfort(
       if (count < 1) continue;
       const [stage, direction] = key.split("|") as [Stage, "cooler" | "warmer"];
       if (!consistent || count > consistent.nights) {
-        consistent = { stage, direction, nights: count, latestNight };
+        consistent = {
+          stage,
+          direction,
+          nights: count,
+          latestNight,
+          wholeNight: wholeNightKeys.has(key),
+        };
       }
     }
     void todayKey;
@@ -809,17 +825,24 @@ export async function generateRecommendationForUser(
     // The sleeper said the same thing about the same stage on two of the last
     // three nights. No inferred signal outranks that, so it moves first.
     const step = Math.min(0.5, settings.maxDailyShift / 10);
+    const signed = reported.direction === "cooler" ? -step : step;
     const fromC = rawToCelsius(currentLevels[reported.stage]);
-    const toC =
-      Math.round((fromC + (reported.direction === "cooler" ? -step : step)) * 10) /
-      10;
+    const toC = Math.round((fromC + signed) * 10) / 10;
     const next: Record<Stage, number> = {
       initial: rawToCelsius(currentLevels.initial),
       deep: rawToCelsius(currentLevels.deep),
       mid: rawToCelsius(currentLevels.mid),
       final: rawToCelsius(currentLevels.final),
     };
-    next[reported.stage] = toC;
+    // "Too hot all night" is a statement about all four stages. Moving one of
+    // them 0.5°C takes four nights to deliver what was asked for once, which
+    // is indistinguishable from not listening. One-change-at-a-time exists to
+    // keep an experiment attributable while the loop is GUESSING; there is
+    // nothing to attribute when the sleeper has already given the answer.
+    const moved: Stage[] = reported.wholeNight ? [...STAGES] : [reported.stage];
+    for (const stage of moved) {
+      next[stage] = Math.round((rawToCelsius(currentLevels[stage]) + signed) * 10) / 10;
+    }
     const label = STAGE_LABELS[reported.stage];
     recommendation = {
       initialSleepC: next.initial,
@@ -833,19 +856,25 @@ export async function generateRecommendationForUser(
         bedTempC: bedTempAt(reported.stage),
         liveNights: null,
         reportedNights: reported.nights,
-      })} What you report beats anything inferred from movement, so the ${STAGE_NAME[reported.stage]} stage goes ${reported.direction} tonight: ${fmt(currentLevels[reported.stage])} to ${fmt(celsiusToRaw(toC))}. Nothing else moves.`,
+      })} What you report beats anything inferred from movement.${
+        reported.wholeNight
+          ? ` You said all night, not one stage, so the whole profile shifts ${reported.direction} by ${step.toFixed(1)}°C tonight rather than moving one stage at a time — the shape of the night stays the same, it just sits ${reported.direction}.`
+          : ` So the ${STAGE_NAME[reported.stage]} stage goes ${reported.direction} tonight: ${fmt(currentLevels[reported.stage])} to ${fmt(celsiusToRaw(toC))}. Nothing else moves.`
+      }`,
       confidence: reported.nights >= 3 ? "high" : "medium",
       perStage: STAGES.map((stage) => ({
         stage,
-        direction:
-          stage !== reported.stage ? ("unchanged" as const) : reported.direction,
-        why:
-          stage === reported.stage
-            ? `${mechanism(stage, reported.direction)} You reported it on ${reported.nights} of the last 3 nights.`
-            : `Held steady so the ${STAGE_NAME[reported.stage]} change can be judged on its own.`,
+        direction: moved.includes(stage)
+          ? reported.direction
+          : ("unchanged" as const),
+        why: moved.includes(stage)
+          ? `${mechanism(stage, reported.direction)} You reported it on ${reported.nights} of the last 3 nights.`
+          : `Held steady so the ${STAGE_NAME[reported.stage]} change can be judged on its own.`,
       })),
       evidence: comfort.lines,
-      expectation: `You should not report the ${label} stage being too ${reported.direction === "cooler" ? "warm" : "cold"} tomorrow. If you do, it needs to move further.`,
+      expectation: reported.wholeNight
+        ? `You should not report the bed being too ${reported.direction === "cooler" ? "warm" : "cold"} tomorrow. If you do, it moves another ${step.toFixed(1)}°C.`
+        : `You should not report the ${label} stage being too ${reported.direction === "cooler" ? "warm" : "cold"} tomorrow. If you do, it needs to move further.`,
       principle: principleFor(reported.stage, reported.direction),
       forecast: forecastFromLedger(history.ledger),
     };
