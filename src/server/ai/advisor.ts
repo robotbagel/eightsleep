@@ -1426,31 +1426,6 @@ export async function runDailyAiPass(): Promise<void> {
       const forDate = now.toLocaleDateString("en-CA", {
         timeZone: profile.timezoneTZ,
       });
-      const existing = await db.query.aiRecommendations.findFirst({
-        where: and(
-          eq(aiRecommendations.email, email),
-          eq(aiRecommendations.forDate, forDate),
-          eq(aiRecommendations.source, "cron"),
-          ne(aiRecommendations.status, "dismissed"),
-        ),
-      });
-      if (existing) {
-        continue;
-      }
-
-      // Two schedulers (the NAS timer and the laptop fallback) both fire on
-      // the hour, and this check-then-insert has no lock between them: on
-      // 2026-08-26..29 that produced TWO recommendations per day per user,
-      // each auto-applied, so the second's "previous" was the first's
-      // recommendation and the experiment history recorded a change that
-      // never had a night. An advisory lock makes the pass single-flight;
-      // whoever loses simply skips, because the winner is doing the work.
-      const claimed = await claimDailyPass(email, forDate);
-      if (!claimed) {
-        console.log(`Daily pass for ${email} already running elsewhere; skipping.`);
-        continue;
-      }
-
       // Refresh the cached night metrics for this user. Without this the
       // cache is only written when someone OPENS the app, so a second
       // account's stored quality scores stayed null indefinitely and its
@@ -1474,6 +1449,31 @@ export async function runDailyAiPass(): Promise<void> {
           `Night-metric refresh failed for ${email}:`,
           error instanceof Error ? error.message : String(error),
         );
+      }
+
+      const existing = await db.query.aiRecommendations.findFirst({
+        where: and(
+          eq(aiRecommendations.email, email),
+          eq(aiRecommendations.forDate, forDate),
+          eq(aiRecommendations.source, "cron"),
+          ne(aiRecommendations.status, "dismissed"),
+        ),
+      });
+      if (existing) {
+        continue;
+      }
+
+      // Two schedulers (the NAS timer and the laptop fallback) both fire on
+      // the hour, and this check-then-insert has no lock between them: on
+      // 2026-08-26..29 that produced TWO recommendations per day per user,
+      // each auto-applied, so the second's "previous" was the first's
+      // recommendation and the experiment history recorded a change that
+      // never had a night. An advisory lock makes the pass single-flight;
+      // whoever loses simply skips, because the winner is doing the work.
+      const claimed = await claimDailyPass(email, forDate);
+      if (!claimed) {
+        console.log(`Daily pass for ${email} already running elsewhere; skipping.`);
+        continue;
       }
 
       const recommendation = await generateRecommendationForUser(email, "cron");
