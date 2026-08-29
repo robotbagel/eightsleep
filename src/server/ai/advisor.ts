@@ -160,6 +160,8 @@ interface ExperimentHistory {
   pressure: LivePressure[];
   /** Which way each locked stage was last moved. */
   lockDirection: Partial<Record<Stage, "cooler" | "warmer">>;
+  /** The wake date of the first night the held change actually ran on. */
+  lastChangeNight: string | null;
 }
 
 async function stagesLockedByRecentChanges(
@@ -169,6 +171,7 @@ async function stagesLockedByRecentChanges(
   locked: string[];
   heldNights: number;
   lockDirection: Partial<Record<Stage, "cooler" | "warmer">>;
+  lastChangeNight: string | null;
 }> {
   const recent = await db
     .select()
@@ -189,6 +192,9 @@ async function stagesLockedByRecentChanges(
   const locked = new Set<string>();
   const lockDirection: Partial<Record<Stage, "cooler" | "warmer">> = {};
   let heldNights = 99;
+  // A change made on D governs the night woken from on D+1, so that is the
+  // first night a report could be about.
+  let lastChangeNight: string | null = null;
   for (const rec of recent) {
     if (rec.forDate >= todayKey) continue; // today's own row, if any
     const pairs: [Stage, number, number][] = [
@@ -220,6 +226,12 @@ async function stagesLockedByRecentChanges(
           // Newest recommendation wins: the loop reads them newest-first.
           lockDirection[stage] ??= to < from ? "cooler" : "warmer";
         }
+        const governed = new Date(`${rec.forDate}T12:00:00Z`);
+        governed.setUTCDate(governed.getUTCDate() + 1);
+        const key = governed.toISOString().slice(0, 10);
+        if (lastChangeNight == null || key > lastChangeNight) {
+          lastChangeNight = key;
+        }
       }
     }
   }
@@ -227,6 +239,7 @@ async function stagesLockedByRecentChanges(
     locked: [...locked],
     heldNights: heldNights === 99 ? 99 : heldNights,
     lockDirection,
+    lastChangeNight,
   };
 }
 
@@ -316,10 +329,12 @@ async function buildExperimentHistory(
     ledger: [],
     pressure: [],
     lockDirection: {},
+    lastChangeNight: null,
   };
   result.lockedStages = hold.locked;
   result.nightsOnCurrentProfile = hold.heldNights;
   result.lockDirection = hold.lockDirection;
+  result.lastChangeNight = hold.lastChangeNight;
   if (scoredNights.length === 0) return result;
 
   const profileForNight = (date: string): ProfileLevels => {
@@ -577,7 +592,13 @@ async function readComfort(
 ): Promise<{
   lines: string[];
   /** A stage the sleeper has reported the same way on 2+ of the last 3 nights. */
-  consistent: { stage: Stage; direction: "cooler" | "warmer"; nights: number } | null;
+  consistent: {
+    stage: Stage;
+    direction: "cooler" | "warmer";
+    nights: number;
+    /** The most recent night this was reported about. */
+    latestNight: string;
+  } | null;
 }> {
   try {
     const rows = await db
@@ -607,10 +628,12 @@ async function readComfort(
       const key = `${stage}|${direction}`;
       votes.set(key, (votes.get(key) ?? 0) + 1);
     }
+    const latestNight = rows[0]!.night;
     let consistent: {
       stage: Stage;
       direction: "cooler" | "warmer";
       nights: number;
+      latestNight: string;
     } | null = null;
     for (const [key, count] of votes) {
       // ONE report is enough. Requiring two nights is the right bar for a
@@ -620,7 +643,7 @@ async function readComfort(
       if (count < 1) continue;
       const [stage, direction] = key.split("|") as [Stage, "cooler" | "warmer"];
       if (!consistent || count > consistent.nights) {
-        consistent = { stage, direction, nights: count };
+        consistent = { stage, direction, nights: count, latestNight };
       }
     }
     void todayKey;
@@ -765,14 +788,17 @@ export async function generateRecommendationForUser(
 
   let recommendation: AiRecommendation;
   const reported = comfort.consistent;
-  // A hold exists to let an experiment run. Someone telling you the bed was
-  // too hot has already reported the result, so the hold has nothing left to
-  // protect — unless the held change was itself in the direction they want,
-  // in which case it is already working and gets its night.
+  // A hold exists to let an experiment RUN. A report about a night the held
+  // change actually ran on IS that experiment's result — "still too hot after
+  // you cooled it" is the answer, not noise to wait through. The hold only
+  // survives when the report predates the change it is protecting.
+  const heldSince = history.lastChangeNight;
   const reportedLocked =
     reported != null &&
     history.lockedStages.includes(reported.stage) &&
-    history.lockDirection[reported.stage] === reported.direction;
+    history.lockDirection[reported.stage] === reported.direction &&
+    heldSince != null &&
+    reported.latestNight < heldSince;
 
   if (reported && !reportedLocked) {
     // The sleeper said the same thing about the same stage on two of the last
