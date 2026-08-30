@@ -87,14 +87,28 @@ export async function runLiveTuningPass(): Promise<void> {
       // What the sleeper said about the last two nights. A person reporting
       // "I woke up cold" is the only direct reading of comfort there is, and
       // it steers tonight's nudges rather than waiting for the morning pass.
+      //
+      // RECENT nights only: the query used to take the newest two rows with
+      // no age limit, so a pair of old "too hot" reports kept driving
+      // coolings indefinitely — long after the morning pass had already
+      // folded that report into the base profile (double-counting it).
+      const todayLocal = now.toLocaleDateString("en-CA", {
+        timeZone: row.userTemperatureProfiles.timezoneTZ,
+      });
+      const cutoffNight = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000)
+        .toLocaleDateString("en-CA", {
+          timeZone: row.userTemperatureProfiles.timezoneTZ,
+        });
       let comfortBias: "cooler" | "warmer" | null = null;
       try {
-        const recent = await db
-          .select()
-          .from(sleepFeedback)
-          .where(eq(sleepFeedback.email, email))
-          .orderBy(desc(sleepFeedback.night))
-          .limit(2);
+        const recent = (
+          await db
+            .select()
+            .from(sleepFeedback)
+            .where(eq(sleepFeedback.email, email))
+            .orderBy(desc(sleepFeedback.night))
+            .limit(2)
+        ).filter((r) => r.night >= cutoffNight && r.night <= todayLocal);
         const votes = recent
           .map((r) =>
             r.felt === "too_hot"
@@ -145,6 +159,48 @@ export async function runLiveTuningPass(): Promise<void> {
         now,
       );
 
+      // Tonight's adjustment trail, split into what the SLEEPER did (manual
+      // overrides, which set direction and must never be fought) and what
+      // this tuner did (AI nudges, which set the cooldown clock).
+      let overrideTonight: "cooler" | "warmer" | null = null;
+      let minutesSinceLastNudge: number | null = null;
+      const tonightRows = await db
+        .select()
+        .from(aiLiveAdjustments)
+        .where(
+          and(
+            eq(aiLiveAdjustments.email, email),
+            eq(aiLiveAdjustments.night, night),
+          ),
+        )
+        .orderBy(desc(aiLiveAdjustments.id))
+        .limit(20);
+      for (const adjustment of tonightRows) {
+        const isManual = adjustment.reason.startsWith("Manual override");
+        if (isManual && overrideTonight == null) {
+          overrideTonight = adjustment.offsetDelta > 0 ? "warmer" : "cooler";
+        }
+        if (!isManual && minutesSinceLastNudge == null) {
+          minutesSinceLastNudge = Math.round(
+            (now.getTime() - adjustment.createdAt.getTime()) / 60000,
+          );
+        }
+      }
+
+      // Minutes until the alarm, for the pre-wake quiet period.
+      const [wakeH, wakeM] = wakeupTime.split(":").map(Number);
+      const nowParts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: profile.timezoneTZ,
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).formatToParts(now);
+      const nowMinutes =
+        Number(nowParts.find((p) => p.type === "hour")?.value ?? "0") * 60 +
+        Number(nowParts.find((p) => p.type === "minute")?.value ?? "0");
+      const minutesToWake =
+        ((wakeH ?? 0) * 60 + (wakeM ?? 0) - nowMinutes + 1440) % 1440;
+
       const nudge = computeLiveNudge({
         recentTosses: window.recentTosses,
         recentAvgHeartRate: window.recentAvgHeartRate,
@@ -154,6 +210,11 @@ export async function runLiveTuningPass(): Promise<void> {
         currentOffset,
         nightAvgBedTempC: window.nightAvgBedTempC,
         comfortBias,
+        overrideTonight,
+        burstTosses: window.burstTosses,
+        nightTossRatePerHour: window.nightTossRatePerHour,
+        minutesToWake,
+        minutesSinceLastNudge,
       });
       if (!nudge) continue;
 

@@ -126,6 +126,11 @@ const base = {
   currentStage: "mid" as const,
   currentOffset: 0,
   comfortBias: null,
+  overrideTonight: null,
+  burstTosses: 0,
+  nightTossRatePerHour: 2,
+  minutesToWake: 300,
+  minutesSinceLastNudge: null,
 };
 
 const cold = computeLiveNudge({
@@ -173,6 +178,89 @@ const calm = computeLiveNudge({
 });
 assert.equal(calm, null, "a settled sleeper is never disturbed");
 console.log("ok  an undisturbed sleeper is left alone whatever the bias");
+
+// --- hand on the dial tonight ----------------------------------------------
+// On 2026-08-30 the sleeper turned the bed 3.4°C warmer at 00:40 and the
+// tuner cooled it back one second later, citing a day-old "too hot" report.
+const fought = computeLiveNudge({
+  ...base,
+  recentAvgBedTempC: 31.2,
+  nightAvgBedTempC: 30.6,
+  comfortBias: "cooler",
+  overrideTonight: "warmer",
+});
+assert.equal(fought, null, "never nudge against a hand that turned the bed up");
+console.log("ok  a manual warming tonight vetoes cooling and silences old reports");
+
+const overrideAgrees = computeLiveNudge({
+  ...base,
+  recentAvgBedTempC: 30.0,
+  nightAvgBedTempC: 30.6,
+  overrideTonight: "warmer",
+});
+assert.ok(
+  overrideAgrees && overrideAgrees.delta > 0,
+  "drift agreeing with the override may still act",
+);
+console.log("ok  drift in the sleeper's own direction still acts after an override");
+
+// --- movement-burst fast path ----------------------------------------------
+// 3 tosses in 15 minutes = 12/hour against a 2/hour night: a real burst. With
+// the bed drifting warm it cools without waiting for the 45-minute count.
+const burstHot = computeLiveNudge({
+  ...base,
+  recentTosses: 2, // below the slow path's threshold on purpose
+  burstTosses: 3,
+  recentAvgBedTempC: 31.2,
+  nightAvgBedTempC: 30.6,
+});
+assert.ok(burstHot && burstHot.delta < 0, "a corroborated burst cools");
+assert.ok(burstHot.reason.includes("15 minutes"), "the reason names the burst");
+console.log("ok  a corroborated toss burst cools ahead of the slow path");
+
+// The same burst with NO thermal corroborant (no drift, normal heart rate) is
+// bladder/partner/noise, not temperature — leave it alone.
+const burstUncorroborated = computeLiveNudge({
+  ...base,
+  recentTosses: 2,
+  burstTosses: 3,
+  recentAvgBedTempC: 30.6,
+  nightAvgBedTempC: 30.6,
+});
+assert.equal(burstUncorroborated, null, "a burst without a corroborant is not thermal");
+console.log("ok  an uncorroborated burst is left alone");
+
+// A restless sleeper's baseline absorbs the same count: 3 tosses in 15 min
+// (12/h) is NOT a burst against an 8/h night.
+const burstWithinBaseline = computeLiveNudge({
+  ...base,
+  recentTosses: 2,
+  burstTosses: 3,
+  nightTossRatePerHour: 8,
+  recentAvgBedTempC: 31.2,
+  nightAvgBedTempC: 30.6,
+});
+assert.equal(burstWithinBaseline, null, "the personal baseline gates the burst");
+console.log("ok  a burst is judged against the sleeper's own pace");
+
+// --- cooldown and pre-wake quiet -------------------------------------------
+const tooSoon = computeLiveNudge({
+  ...base,
+  recentAvgBedTempC: 31.2,
+  nightAvgBedTempC: 30.6,
+  minutesSinceLastNudge: 10,
+});
+assert.equal(tooSoon, null, "a step must land before another may fire");
+console.log("ok  the cooldown blocks stacked nudges");
+
+const nearAlarm = computeLiveNudge({
+  ...base,
+  recentAvgBedTempC: 31.2,
+  nightAvgBedTempC: 30.6,
+  minutesToWake: 30,
+});
+assert.equal(nearAlarm, null, "the pre-wake window is hands-off");
+console.log("ok  nothing fires inside the pre-wake quiet period");
 
 console.log("\nall control-law assertions passed");
 

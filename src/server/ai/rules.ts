@@ -52,6 +52,42 @@ export const BED_DRIFT_C = 0.3;
 export const LIVE_NUDGE_STEP = 5;
 export const LIVE_OFFSET_CAP = 15;
 
+// ---------------------------------------------------------------------------
+// Movement-burst trigger (researched 2026-08-30; sources in README).
+//
+// The evidence that shaped each constant:
+// - Healthy adults move a MEDIAN of ~11 times per hour, mostly in light sleep
+//   and around stage transitions (video-PSG, SLEEP 2024, PMC11381566) — so an
+//   absolute movement count can never be the trigger. The burst is judged
+//   against THIS night's own toss rate.
+// - Restlessness is far more often a heat problem than a cold one: heat
+//   directly fragments sleep architecture while cold under bedding is largely
+//   buffered (PMC3427038). The burst path therefore only ever COOLS; cold
+//   correction belongs to the nightly pass.
+// - Movement alone is non-specific (bladder, partner, noise, apnea arousal),
+//   so a burst acts only when a thermal corroborant agrees: bed temperature
+//   drifting above the night's mean, or elevated heart rate with the bed not
+//   running cold (U-shaped heat–restlessness dose response, S1087079224000194).
+// - The water loop takes ~10+ minutes to change what the skin feels, so
+//   reacting faster than that chases noise and oscillates: one step, then a
+//   cooldown longer than the actuation lag before another may fire.
+// - Movement naturally rises before waking and the final stage is a
+//   deliberate pre-wake warming ramp (REM runs warm; commercial systems ramp
+//   +°C before the alarm), so the last 45 minutes are hands-off.
+// ---------------------------------------------------------------------------
+
+/** Short window a burst is measured over, in minutes. */
+export const BURST_WINDOW_MIN = 15;
+/** Fewest tosses in the burst window that can count as a burst. */
+export const BURST_MIN_TOSSES = 2;
+/** The burst's hourly rate must exceed this multiple of the night's own
+ *  toss rate — the personal-baseline gate that absolute counts cannot give. */
+export const BURST_BASELINE_MULT = 2;
+/** Minutes that must pass after any live nudge before another may fire. */
+export const LIVE_NUDGE_COOLDOWN_MIN = 25;
+/** Minutes before the alarm during which no nudge may fire. */
+export const PRE_WAKE_QUIET_MIN = 45;
+
 // A night is considered a regression when its score falls this many points
 // below the best-known night; two in a row triggers a revert to best.
 export const REGRESSION_SCORE_DROP = 8;
@@ -123,6 +159,21 @@ export interface LiveWindowStats {
   /** What the sleeper reported about recent nights, if anything. A person
    *  saying "I woke up cold" outranks any inference from movement. */
   comfortBias: "cooler" | "warmer" | null;
+  /** Which way the sleeper moved the dial TONIGHT, if they did. This is
+   *  tonight's statement, made in the moment, and it outranks reports about
+   *  previous nights: on 2026-08-30 the sleeper turned the bed 3.4°C warmer
+   *  at 00:40 and the tuner cooled it back one second later, citing a
+   *  day-old "too hot" report. Never nudge against a hand on the dial. */
+  overrideTonight: "cooler" | "warmer" | null;
+  /** Tosses in the last BURST_WINDOW_MIN minutes. */
+  burstTosses: number | null;
+  /** This night's own toss rate so far, per hour — the personal baseline. */
+  nightTossRatePerHour: number | null;
+  /** Minutes until the alarm; nothing fires inside PRE_WAKE_QUIET_MIN. */
+  minutesToWake: number | null;
+  /** Minutes since the last AI nudge tonight (manual moves excluded);
+   *  null = none yet. Nothing fires inside LIVE_NUDGE_COOLDOWN_MIN. */
+  minutesSinceLastNudge: number | null;
 }
 
 export interface LiveNudge {
@@ -143,13 +194,82 @@ export function computeLiveNudge(stats: LiveWindowStats): LiveNudge | null {
     currentStage,
     currentOffset,
     comfortBias,
+    overrideTonight,
+    burstTosses,
+    nightTossRatePerHour,
+    minutesToWake,
+    minutesSinceLastNudge,
   } = stats;
+
+  // Quiet period before the alarm: movement naturally rises approaching wake
+  // and the final stage is a deliberate warming ramp — a nudge here is almost
+  // always a false positive fighting the ramp.
+  if (minutesToWake != null && minutesToWake <= PRE_WAKE_QUIET_MIN) return null;
+
+  // Cooldown: a water loop takes ~10+ minutes to change what the skin feels.
+  // Stacking a second step before the first has landed is how a controller
+  // chases noise into oscillation.
+  if (
+    minutesSinceLastNudge != null &&
+    minutesSinceLastNudge < LIVE_NUDGE_COOLDOWN_MIN
+  ) {
+    return null;
+  }
+
+  // A hand on the dial tonight silences any bias carried over from previous
+  // nights — the person has already stated tonight's answer at the level they
+  // chose. The tuner neither fights it (vetoes below) nor piles on top of it:
+  // it may only move further in their direction when the bed's own drift
+  // corroborates.
+  const bias = overrideTonight != null ? null : comfortBias;
 
   const restless = recentTosses != null && recentTosses >= 3;
   const elevatedHeartRate =
     recentAvgHeartRate != null &&
     nightAvgHeartRate != null &&
     recentAvgHeartRate >= nightAvgHeartRate * 1.05;
+
+  // Drift relative to THIS night's own bed temperature. Positive means the
+  // recent window is running warmer than the night has been.
+  const drift =
+    recentAvgBedTempC != null && nightAvgBedTempC != null
+      ? recentAvgBedTempC - nightAvgBedTempC
+      : null;
+
+  // ---- Movement-burst fast path -------------------------------------------
+  // A concentrated burst against the sleeper's own baseline reacts in one
+  // BURST_WINDOW_MIN window instead of waiting for the slow 45-minute count.
+  // It only ever cools, and only with a thermal corroborant: bed drifting
+  // warm, or heart rate elevated while the bed is not running cold.
+  const burstRatePerHour =
+    burstTosses != null ? burstTosses / (BURST_WINDOW_MIN / 60) : null;
+  const burst =
+    burstTosses != null &&
+    burstTosses >= BURST_MIN_TOSSES &&
+    burstRatePerHour != null &&
+    nightTossRatePerHour != null &&
+    burstRatePerHour >= BURST_BASELINE_MULT * Math.max(nightTossRatePerHour, 1);
+  const burstCorroborated =
+    (drift != null && drift >= BED_DRIFT_C) ||
+    (elevatedHeartRate && (drift == null || drift >= 0));
+  if (
+    burst &&
+    burstCorroborated &&
+    overrideTonight !== "warmer" &&
+    bias !== "warmer" &&
+    currentOffset - LIVE_NUDGE_STEP >= -LIVE_OFFSET_CAP
+  ) {
+    const corroborant =
+      drift != null && drift >= BED_DRIFT_C
+        ? `the bed running ${drift.toFixed(1)}°C above its average for tonight`
+        : `heart rate ${recentAvgHeartRate} vs night average ${nightAvgHeartRate}`;
+    return {
+      delta: -LIVE_NUDGE_STEP,
+      reason: `Cooling by ${LIVE_NUDGE_STEP / 10}°C: ${burstTosses} tosses in the last ${BURST_WINDOW_MIN} minutes — well above your pace tonight — with ${corroborant}.`,
+    };
+  }
+  // -------------------------------------------------------------------------
+
   const disturbed = restless || elevatedHeartRate;
   if (!disturbed) return null;
 
@@ -157,23 +277,16 @@ export function computeLiveNudge(stats: LiveWindowStats): LiveNudge | null {
     ? `${recentTosses} tosses in the last 45 minutes`
     : `heart rate ${recentAvgHeartRate} vs night average ${nightAvgHeartRate}`;
 
-  // Drift relative to THIS night's own bed temperature. Positive means the
-  // last 45 minutes are running warmer than the night has been.
-  const drift =
-    recentAvgBedTempC != null && nightAvgBedTempC != null
-      ? recentAvgBedTempC - nightAvgBedTempC
-      : null;
-
-  // What the sleeper reported wins outright: they are the only direct reading
+  // What the sleeper said wins outright: they are the only direct reading
   // of comfort available, and an inference from movement cannot overrule it.
-  if (comfortBias === "warmer" && currentStage !== "initial") {
+  if (bias === "warmer" && currentStage !== "initial") {
     if (currentOffset + LIVE_NUDGE_STEP > LIVE_OFFSET_CAP) return null;
     return {
       delta: LIVE_NUDGE_STEP,
       reason: `Warming by ${LIVE_NUDGE_STEP / 10}°C: you reported waking up cold, and there were ${trigger}.`,
     };
   }
-  if (comfortBias === "cooler") {
+  if (bias === "cooler") {
     if (currentOffset - LIVE_NUDGE_STEP < -LIVE_OFFSET_CAP) return null;
     return {
       delta: -LIVE_NUDGE_STEP,
@@ -184,6 +297,8 @@ export function computeLiveNudge(stats: LiveWindowStats): LiveNudge | null {
   if (drift == null) return null;
 
   if (drift >= BED_DRIFT_C) {
+    // Never cool against a hand that turned the bed up tonight.
+    if (overrideTonight === "warmer") return null;
     if (currentOffset - LIVE_NUDGE_STEP < -LIVE_OFFSET_CAP) return null;
     return {
       delta: -LIVE_NUDGE_STEP,
@@ -192,6 +307,7 @@ export function computeLiveNudge(stats: LiveWindowStats): LiveNudge | null {
   }
 
   if (drift <= -BED_DRIFT_C && currentStage !== "initial") {
+    if (overrideTonight === "cooler") return null;
     if (currentOffset + LIVE_NUDGE_STEP > LIVE_OFFSET_CAP) return null;
     return {
       delta: LIVE_NUDGE_STEP,

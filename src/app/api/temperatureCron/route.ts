@@ -12,9 +12,40 @@ import {
   getActiveLiveOffset,
   runLiveTuningPass,
 } from "~/server/ai/liveTuner";
-import { temperatureEvents, userAiSettings } from "~/server/db/schema";
+import { appConfig, temperatureEvents, userAiSettings } from "~/server/db/schema";
 import { detectManualOverride } from "~/server/ai/override";
 import { nightKeyFor } from "~/server/ai/time";
+import { sql } from "drizzle-orm";
+
+// Two schedulers call this route (the NAS timer every 10 minutes and the Mac
+// fallback every 30) and land on the same second at :00 and :30. Both used to
+// run the full pipeline concurrently, which double-recorded manual overrides
+// (two identical rows at 2026-08-29T23:00:03.777/.796) and double-applied
+// live nudges (05:00:05.822/06.389). Winner-takes-all: one atomic upsert that
+// only succeeds when the previous holder is older than 60 seconds, so a dead
+// primary never blocks the fallback. Pool-safe on purpose — an advisory lock
+// leaks with pooled serverless connections, a row compare-and-set cannot.
+async function winTickGate(now: Date): Promise<boolean> {
+  try {
+    const cutoff = new Date(now.getTime() - 60_000).toISOString();
+    const result = await db.execute(
+      sql`insert into ${appConfig} ("key", "value")
+          values ('cron:tickGate', ${now.toISOString()})
+          on conflict ("key") do update set "value" = excluded."value"
+          where ${appConfig.value} < ${cutoff}
+          returning "key"`,
+    );
+    const rows = (result as unknown as { rows?: unknown[] }).rows;
+    return (rows?.length ?? 0) > 0;
+  } catch (error) {
+    // If the gate itself fails, running the tick is the safer failure mode.
+    console.error(
+      "Tick gate unavailable, proceeding:",
+      error instanceof Error ? error.message : String(error),
+    );
+    return true;
+  }
+}
 
 async function logTemperatureEvent(
   email: string,
@@ -386,6 +417,12 @@ export async function GET(request: NextRequest): Promise<Response> {
         // that is how a whole day of recommendations went missing without a
         // single user-visible signal.
         await recordCronHeartbeat(request.nextUrl.searchParams.get("src"));
+        // The heartbeat is per-source and must record BEFORE the gate so the
+        // monitor still sees both schedulers alive; everything below runs
+        // once per minute at most, whoever fires first.
+        if (!(await winTickGate(new Date()))) {
+          return Response.json({ success: true, skipped: "concurrent tick" });
+        }
         try {
           await adjustTemperature();
         } catch (error) {

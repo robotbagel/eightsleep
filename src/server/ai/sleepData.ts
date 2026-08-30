@@ -20,6 +20,7 @@ import { fetchWithAuth } from "../eight/eight";
 import { APP_API_URL, CLIENT_API_URL } from "../eight/constants";
 import { type Token } from "../eight/types";
 import { getHealthContext } from "./health";
+import { BURST_WINDOW_MIN } from "./rules";
 import {
   circularMeanMinutes,
   minutesOfDayInZone,
@@ -578,6 +579,12 @@ export interface LiveSessionWindow {
    *  window is compared against, since absolute thresholds cannot work on a
    *  measurement that includes body heat. */
   nightAvgBedTempC: number | null;
+  /** Tosses in the short burst window (BURST_WINDOW_MIN minutes). */
+  burstTosses: number;
+  /** This night's toss rate so far, per hour — the personal baseline a burst
+   *  is judged against. Null until the night is at least an hour old, because
+   *  a rate over a few minutes means nothing. */
+  nightTossRatePerHour: number | null;
 }
 
 // Reads the in-progress session from the pod and summarizes the last
@@ -629,11 +636,26 @@ export async function fetchCurrentSessionWindow(
   const inWindow = (point: [string, number]) =>
     new Date(point[0]).getTime() >= cutoff;
 
+  // Burst window: a much shorter cut of the same series, plus the night's own
+  // toss rate to judge it against. Elapsed time comes from the samples
+  // themselves (heart rate is recorded continuously; tnt only when something
+  // happens), so the denominator is how long the night has actually run.
+  const burstCutoff = nowMs - BURST_WINDOW_MIN * 60 * 1000;
+  const oldestSample = sampleTimes.length > 0 ? Math.min(...sampleTimes) : NaN;
+  const nightHours = isFinite(oldestSample)
+    ? (newestSample - oldestSample) / 3_600_000
+    : 0;
+  const totalTosses = tnt.reduce((sum, [, v]) => sum + v, 0);
+
   return {
     recentTosses: tnt.filter(inWindow).reduce((sum, [, v]) => sum + v, 0),
     recentAvgHeartRate: average(heartRate.filter(inWindow).map(([, v]) => v)),
     nightAvgHeartRate: average(heartRate.map(([, v]) => v)),
     recentAvgBedTempC: average(bedTemp.filter(inWindow).map(([, v]) => v)),
     nightAvgBedTempC: average(bedTemp.map(([, v]) => v)),
+    burstTosses: tnt
+      .filter((point) => new Date(point[0]).getTime() >= burstCutoff)
+      .reduce((sum, [, v]) => sum + v, 0),
+    nightTossRatePerHour: nightHours >= 1 ? totalTosses / nightHours : null,
   };
 }
