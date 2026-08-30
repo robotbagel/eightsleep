@@ -133,8 +133,11 @@ export async function detectManualOverride(input: {
   // No level of ours to compare against — the first write of the night is not
   // an override.
   if (!lastWritten || lastWritten.level == null) return null;
-  // Our own record of a previous override is not a new one.
-  if (lastWritten.source === "manual") return null;
+  // A previous manual row is a valid baseline like any other: the person may
+  // reach for the dial twice in a row, and the second move must be followed
+  // too. (An unchanged target is caught by the equality check below; the old
+  // "last row is manual → never a new override" guard silently discarded
+  // every consecutive adjustment until a scheduled write happened to land.)
   if (input.observedLevel === lastWritten.level) return null;
   // "Off" is the pod being off, not someone asking for 13°C.
   if (input.observedLevel === OFF_LEVEL && lastWritten.level !== OFF_LEVEL) {
