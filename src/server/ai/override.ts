@@ -120,6 +120,12 @@ export async function detectManualOverride(input: {
   stage: string;
   observedLevel: number;
   currentOffsetTenthsC: number;
+  /** The CURRENT stage's scheduled level, before any offset. The person
+   *  states an ABSOLUTE level; the offset carried forward is derived from
+   *  it (observed − stage base), never accumulated incrementally — an
+   *  incremental delta re-applied to the base lands wherever the ledger
+   *  drifted, which is how a hand-set 25°C became a written 23.3°C. */
+  stageBaseLevel: number;
 }): Promise<OverrideResult | null> {
   const night = nightKeyFor(input.now, input.timezone, input.wakeupTime);
 
@@ -149,7 +155,12 @@ export async function detectManualOverride(input: {
   if (Math.abs(deltaC) < OVERRIDE_MIN_C) return null;
 
   const deltaTenthsC = Math.sign(deltaC) * Math.round(Math.abs(deltaC) * 10);
-  const newOffsetTenthsC = input.currentOffsetTenthsC + deltaTenthsC;
+  // Absolute, not incremental: the offset is exactly what makes
+  // stage base + offset reproduce the level the person chose.
+  const offsetC =
+    rawToCelsius(input.observedLevel) - rawToCelsius(input.stageBaseLevel);
+  const newOffsetTenthsC =
+    Math.sign(offsetC) * Math.round(Math.abs(offsetC) * 10);
   const direction: "warmer" | "cooler" = deltaTenthsC > 0 ? "warmer" : "cooler";
 
   await db.insert(temperatureEvents).values({

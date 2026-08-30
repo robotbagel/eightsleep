@@ -431,6 +431,7 @@ export async function adjustTemperature(
               stage: currentSleepStage,
               observedLevel: observedSetpoint,
               currentOffsetTenthsC: liveOffset,
+                    stageBaseLevel: stageTargetLevel,
                   });
             if (override) {
               liveOffset = override.newOffsetTenthsC;
