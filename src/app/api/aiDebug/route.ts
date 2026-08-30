@@ -94,6 +94,62 @@ export async function POST(request: NextRequest): Promise<Response> {
       prunedAdjustments: deletedAdjustments.length,
     });
   }
+  // Disable Eight's leftover cloud-side temperature schedules. The official
+  // app shows "Bedtime: Not set", yet the API carries an ENABLED daily
+  // schedule (23:00:28, bedtime level -40 = 22.2°C) left over from before
+  // this app took control. The old cron unknowingly fought it back every
+  // night; the follow-the-human override logic would instead honour it as a
+  // hand on the dial and hold 22.2°C all night. Kill it at the source.
+  // POST /api/aiDebug?action=disable-schedules&email=…
+  if (action === "disable-schedules") {
+    const emailParam = request.nextUrl.searchParams.get("email");
+    if (!emailParam) {
+      return Response.json({ error: "email required" }, { status: 400 });
+    }
+    const user = await db.query.users.findFirst({
+      where: eq(users.email, emailParam),
+    });
+    if (!user) return Response.json({ error: "no such user" }, { status: 404 });
+    const token = await getFreshToken(user);
+    const url = `${CLIENT_API_URL}/users/${user.eightUserId}/temperature`;
+    const headers = {
+      ...DEFAULT_API_HEADERS,
+      authorization: `Bearer ${token.eightAccessToken}`,
+      "content-type": "application/json",
+    };
+    const before = await fetch(url, { headers });
+    const beforeBody = (await before.json()) as {
+      settings?: { schedules?: { id: string; enabled: boolean }[] };
+    };
+    const schedules = beforeBody.settings?.schedules ?? [];
+    const enabled = schedules.filter((s) => s.enabled);
+    if (enabled.length === 0) {
+      return Response.json({ alreadyClean: true, schedules });
+    }
+    const put = await fetch(url, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        schedules: schedules.map((s) => ({ ...s, enabled: false })),
+      }),
+    });
+    const putBody = await put.text();
+    // Verify by reading back — a 200 that silently kept the schedule armed
+    // would be worse than a failure.
+    const after = await fetch(url, { headers });
+    const afterBody = (await after.json()) as {
+      settings?: { schedules?: { id: string; enabled: boolean }[] };
+      nextScheduledTimestamp?: string | null;
+    };
+    return Response.json({
+      putStatus: put.status,
+      putBody: putBody.slice(0, 300),
+      schedulesBefore: schedules,
+      schedulesAfter: afterBody.settings?.schedules ?? [],
+      nextScheduledTimestamp: afterBody.nextScheduledTimestamp ?? null,
+    });
+  }
+
   const email = request.nextUrl.searchParams.get("email");
   if (!email || (action !== "reassess" && action !== "comfort")) {
     return Response.json({ error: "Unknown action" }, { status: 400 });
