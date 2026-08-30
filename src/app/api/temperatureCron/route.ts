@@ -20,6 +20,7 @@ import { appConfig, temperatureEvents } from "~/server/db/schema";
 import { detectManualOverride, matchGhostSchedule } from "~/server/ai/override";
 import { nightKeyFor } from "~/server/ai/time";
 import { sql } from "drizzle-orm";
+import { rawToCelsius } from "~/lib/temperature";
 
 // Two schedulers call this route (the NAS timer every 10 minutes and the Mac
 // fallback every 30) and land on the same second at :00 and :30. Both used to
@@ -412,7 +413,16 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
           // Compare the pod's TARGET, not its ramping current level — the
           // ramp made this true on nearly every boundary tick (16-23
           // "scheduled" writes a night, all re-sending the same setpoint).
-          if (heatingStatus.targetHeatingLevel !== targetLevel) {
+          // With the same tolerance the override detector uses: the device
+          // reports its target with ±1-level jitter (read 6 when set 5,
+          // observed live 2026-08-30), and an exact-match guard re-sends the
+          // same level every tick over a difference no one can feel.
+          if (
+            Math.abs(
+              rawToCelsius(heatingStatus.targetHeatingLevel ?? targetLevel) -
+                rawToCelsius(targetLevel),
+            ) >= 0.25
+          ) {
             if (testMode?.enabled) {
               console.log(`[TEST MODE] Would set heating level to ${targetLevel} for user ${profile.users.email}`);
             } else {
