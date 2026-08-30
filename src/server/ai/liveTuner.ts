@@ -174,13 +174,16 @@ export async function runLiveTuningPass(): Promise<void> {
           ),
         )
         .orderBy(desc(aiLiveAdjustments.id))
-        .limit(20);
+        .limit(50);
       for (const adjustment of tonightRows) {
         const isManual = adjustment.reason.startsWith("Manual override");
         if (isManual && overrideTonight == null) {
           overrideTonight = adjustment.offsetDelta > 0 ? "warmer" : "cooler";
         }
-        if (!isManual && minutesSinceLastNudge == null) {
+        // ANY recent change — the tuner's or the sleeper's — starts the
+        // cooldown: a level the person just chose deserves the same time to
+        // land before the tuner may move again.
+        if (minutesSinceLastNudge == null) {
           minutesSinceLastNudge = Math.round(
             (now.getTime() - adjustment.createdAt.getTime()) / 60000,
           );

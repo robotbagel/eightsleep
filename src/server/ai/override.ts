@@ -28,6 +28,7 @@ import {
 } from "~/server/db/schema";
 import { rawToCelsius } from "~/lib/temperature";
 import { nightKeyFor } from "./time";
+import { shiftDate } from "./history";
 
 /**
  * Below this the difference is rounding between the level scale and °C, not a
@@ -124,11 +125,11 @@ export async function detectManualOverride(input: {
     reason: `Manual override during the ${input.stage} stage — ${Math.abs(deltaTenthsC) / 10}°C ${direction}. Following it rather than correcting it.`,
   });
 
-  // And tell the morning. Keyed on the local calendar date, which is the wake
-  // date — the same key the comfort prompt uses, so the two cannot disagree.
-  const feedbackNight = input.now.toLocaleDateString("en-CA", {
-    timeZone: input.timezone,
-  });
+  // And tell the morning. The comfort prompt keys feedback by the WAKE date;
+  // the night key is the date the night STARTED, so wake date = night + 1.
+  // Deriving it from the clock instead put an override made before midnight
+  // (23:00) under YESTERDAY's wake date — a report about the wrong night.
+  const feedbackNight = shiftDate(night, 1);
   const existing = await db.query.sleepFeedback.findFirst({
     where: and(
       eq(sleepFeedback.email, input.email),

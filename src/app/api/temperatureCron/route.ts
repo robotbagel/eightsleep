@@ -12,7 +12,7 @@ import {
   getActiveLiveOffset,
   runLiveTuningPass,
 } from "~/server/ai/liveTuner";
-import { appConfig, temperatureEvents, userAiSettings } from "~/server/db/schema";
+import { appConfig, temperatureEvents } from "~/server/db/schema";
 import { detectManualOverride } from "~/server/ai/override";
 import { nightKeyFor } from "~/server/ai/time";
 import { sql } from "drizzle-orm";
@@ -261,6 +261,54 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
 
         console.log(`Current sleep stage for user ${profile.users.email}: ${currentSleepStage}`);
 
+        // Did a person move the dial? Checked EVERY tick inside the sleep
+        // cycle, not only near stage boundaries — a hand adjustment at 01:30
+        // in the middle of the long mid stage used to stay invisible for
+        // hours, during which a live nudge could silently stomp it.
+        //
+        // The comparison uses the pod's TARGET level. `heatingLevel` is the
+        // current, physically ramping value: after a hard manual cooling the
+        // bed lags warm for an hour or more, and comparing that lag against
+        // our written setpoint fabricated a "+3.4°C warmer manual override"
+        // on 2026-08-30 at 00:40 — the sleeper had only ever cooled. The
+        // target only changes when someone (us, the Eight app, anything)
+        // actually sets it, which is exactly the signal wanted.
+        let liveOffset = 0;
+        if (
+          !testMode?.enabled &&
+          currentSleepStage !== "outside sleep cycle" &&
+          heatingStatus.targetHeatingLevel != null
+        ) {
+          try {
+            liveOffset = await getActiveLiveOffset(
+              profile.users.email,
+              userTemperatureProfile.timezoneTZ,
+              userTemperatureProfile.wakeupTime.slice(0, 5),
+              now,
+            );
+            const override = await detectManualOverride({
+              email: profile.users.email,
+              timezone: userTemperatureProfile.timezoneTZ,
+              wakeupTime: userTemperatureProfile.wakeupTime.slice(0, 5),
+              now,
+              stage: currentSleepStage,
+              observedLevel: heatingStatus.targetHeatingLevel,
+              currentOffsetTenthsC: liveOffset,
+            });
+            if (override) {
+              liveOffset = override.newOffsetTenthsC;
+              console.log(
+                `Manual override by ${profile.users.email}: ${override.deltaTenthsC / 10}°C ${override.direction}; following it for the rest of the night.`,
+              );
+            }
+          } catch (error) {
+            console.error(
+              `Manual-override check failed for user ${profile.users.email}:`,
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        }
+
         if (isNearPreHeating || isNearBedTime || isNearDeepStage || isNearDeepEnd || isNearFinalStage || isNearWakeup) {
           let targetLevel: number;
           let sleepStage: string;
@@ -291,52 +339,14 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
           console.log(`Adjusting temperature for ${sleepStage} stage for user ${profile.users.email}`);
 
           // Live tuning stores an in-night offset (tenths of °C); apply it on
-          // top of the scheduled level so this cron doesn't undo live nudges.
-          if (!testMode?.enabled) {
-            try {
-              const aiSettings = await db.query.userAiSettings.findFirst({
-                where: eq(userAiSettings.email, profile.users.email),
-              });
-              // BEFORE deciding what to write: did a person move it? The old
-              // code compared the pod against our target and corrected the
-              // difference, which meant someone waking up cold and turning
-              // the bed up had it silently undone within ten minutes. A hand
-              // on the dial is the strongest signal this system gets.
-              let offset = await getActiveLiveOffset(
-                profile.users.email,
-                userTemperatureProfile.timezoneTZ,
-                userTemperatureProfile.wakeupTime.slice(0, 5),
-                now,
-              );
-              const override = await detectManualOverride({
-                email: profile.users.email,
-                timezone: userTemperatureProfile.timezoneTZ,
-                wakeupTime: userTemperatureProfile.wakeupTime.slice(0, 5),
-                now,
-                stage: sleepStage,
-                observedLevel: heatingStatus.heatingLevel,
-                currentOffsetTenthsC: offset,
-              });
-              if (override) {
-                offset = override.newOffsetTenthsC;
-                console.log(
-                  `Manual override by ${profile.users.email}: ${override.deltaTenthsC / 10}°C ${override.direction}; following it for the rest of the night.`,
-                );
-              }
-              if (aiSettings?.liveTuningEnabled || override) {
-                if (offset !== 0) {
-                  targetLevel = applyOffsetToLevel(targetLevel, offset);
-                  console.log(
-                    `Applying live tuning offset of ${offset / 10}°C for user ${profile.users.email}; target level now ${targetLevel}`,
-                  );
-                }
-              }
-            } catch (error) {
-              console.error(
-                `Failed to apply live tuning offset for user ${profile.users.email}:`,
-                error instanceof Error ? error.message : String(error),
-              );
-            }
+          // top of the scheduled level so this cron doesn't undo live nudges
+          // — and doesn't undo a hand on the dial, which the check above has
+          // already folded into the offset.
+          if (!testMode?.enabled && liveOffset !== 0) {
+            targetLevel = applyOffsetToLevel(targetLevel, liveOffset);
+            console.log(
+              `Applying live offset of ${liveOffset / 10}°C for user ${profile.users.email}; target level now ${targetLevel}`,
+            );
           }
 
           if (!heatingStatus.isHeating) {
@@ -347,7 +357,10 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
               console.log(`Heating turned on for user ${profile.users.email}`);
             }
           }
-          if (heatingStatus.heatingLevel !== targetLevel) {
+          // Compare the pod's TARGET, not its ramping current level — the
+          // ramp made this true on nearly every boundary tick (16-23
+          // "scheduled" writes a night, all re-sending the same setpoint).
+          if (heatingStatus.targetHeatingLevel !== targetLevel) {
             if (testMode?.enabled) {
               console.log(`[TEST MODE] Would set heating level to ${targetLevel} for user ${profile.users.email}`);
             } else {
