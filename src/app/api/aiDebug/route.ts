@@ -199,6 +199,64 @@ export async function GET(request: NextRequest): Promise<Response> {
   const probe = request.nextUrl.searchParams.get("probe");
   if (probe) return handleProbe(request, probe);
 
+  // Raw decision trail for one night: every temperature event and live
+  // adjustment, exactly as stored. GET /api/aiDebug?events=YYYY-MM-DD&email=…
+  // (night key = the date the night STARTED). This exists because diagnosing
+  // a phantom override from summaries alone proved impossible.
+  const eventsNight = request.nextUrl.searchParams.get("events");
+  if (eventsNight) {
+    const email = request.nextUrl.searchParams.get("email");
+    if (!email) {
+      return Response.json({ error: "email required" }, { status: 400 });
+    }
+    const { temperatureEvents, aiLiveAdjustments } = await import(
+      "~/server/db/schema"
+    );
+    const { rawToCelsius } = await import("~/lib/temperature");
+    const events = await db
+      .select()
+      .from(temperatureEvents)
+      .where(
+        and(
+          eq(temperatureEvents.email, email),
+          eq(temperatureEvents.night, eventsNight),
+        ),
+      )
+      .orderBy(temperatureEvents.id);
+    const adjustments = await db
+      .select()
+      .from(aiLiveAdjustments)
+      .where(
+        and(
+          eq(aiLiveAdjustments.email, email),
+          eq(aiLiveAdjustments.night, eventsNight),
+        ),
+      )
+      .orderBy(aiLiveAdjustments.id);
+    return Response.json({
+      night: eventsNight,
+      events: events.map((e) => ({
+        id: e.id,
+        at: e.at,
+        stage: e.stage,
+        level: e.level,
+        levelC: e.level != null ? rawToCelsius(e.level) : null,
+        source: e.source,
+        note: e.note,
+      })),
+      adjustments: adjustments.map((a) => ({
+        id: a.id,
+        at: a.createdAt,
+        stage: a.stage,
+        offsetDelta: a.offsetDelta,
+        newOffset: a.newOffset,
+        appliedLevel: a.appliedLevel,
+        appliedC: rawToCelsius(a.appliedLevel),
+        reason: a.reason,
+      })),
+    });
+  }
+
   const report = [];
   const allUsers = await db.select().from(users);
   for (const user of allUsers) {
