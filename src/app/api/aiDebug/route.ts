@@ -48,6 +48,52 @@ export async function POST(request: NextRequest): Promise<Response> {
     return new Response("Unauthorized", { status: 401 });
   }
   const action = request.nextUrl.searchParams.get("action");
+
+  // Test cleanup: delete temperature events and live adjustments for one
+  // night from a given moment onward, so a daytime end-to-end test of the
+  // override detector leaves no trace in the history the nightly pass reads
+  // (manual rows feed livePressure and would steer a real fold decision).
+  // POST /api/aiDebug?action=prune&email=…&night=YYYY-MM-DD&after=<ISO>
+  if (action === "prune") {
+    const emailParam = request.nextUrl.searchParams.get("email");
+    const night = request.nextUrl.searchParams.get("night");
+    const after = request.nextUrl.searchParams.get("after");
+    const afterDate = after ? new Date(after) : null;
+    if (!emailParam || !night || !afterDate || isNaN(afterDate.getTime())) {
+      return Response.json(
+        { error: "email, night and after (ISO timestamp) required" },
+        { status: 400 },
+      );
+    }
+    const { temperatureEvents, aiLiveAdjustments } = await import(
+      "~/server/db/schema"
+    );
+    const { gte } = await import("drizzle-orm");
+    const deletedEvents = await db
+      .delete(temperatureEvents)
+      .where(
+        and(
+          eq(temperatureEvents.email, emailParam),
+          eq(temperatureEvents.night, night),
+          gte(temperatureEvents.at, afterDate),
+        ),
+      )
+      .returning({ id: temperatureEvents.id });
+    const deletedAdjustments = await db
+      .delete(aiLiveAdjustments)
+      .where(
+        and(
+          eq(aiLiveAdjustments.email, emailParam),
+          eq(aiLiveAdjustments.night, night),
+          gte(aiLiveAdjustments.createdAt, afterDate),
+        ),
+      )
+      .returning({ id: aiLiveAdjustments.id });
+    return Response.json({
+      prunedEvents: deletedEvents.length,
+      prunedAdjustments: deletedAdjustments.length,
+    });
+  }
   const email = request.nextUrl.searchParams.get("email");
   if (!email || (action !== "reassess" && action !== "comfort")) {
     return Response.json({ error: "Unknown action" }, { status: 400 });
