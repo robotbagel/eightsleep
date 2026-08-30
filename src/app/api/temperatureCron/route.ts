@@ -439,7 +439,18 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
               );
             }
           }
-        } else if (heatingStatus.isHeating && userNow > adjustedCycle.wakeupTime && !isWithinTimeRange(userNow, adjustedCycle.wakeupTime, 15)) {
+        } else if (
+          // Never turn the side off while a sleep stage is running. The
+          // wake-time day-adjustment moves any wake more than 12h away back
+          // into the past, so a long bedtime-to-wake gap (a 15:00 bedtime
+          // with an 07:10 wake, as in a daytime test) made this branch shut
+          // the bed off mid-cycle — the same tick that had just followed a
+          // hand adjustment.
+          currentSleepStage === "outside sleep cycle" &&
+          heatingStatus.isHeating &&
+          userNow > adjustedCycle.wakeupTime &&
+          !isWithinTimeRange(userNow, adjustedCycle.wakeupTime, 15)
+        ) {
           // Only turn off heating if it's more than 15 minutes past wake-up time
           if (testMode?.enabled) {
             console.log(`[TEST MODE] Would turn off heating for user ${profile.users.email}`);
