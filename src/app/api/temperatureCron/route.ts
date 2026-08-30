@@ -170,7 +170,14 @@ interface TestMode {
   currentTime: Date;
 }
 
-export async function adjustTemperature(testMode?: TestMode): Promise<void> {
+export async function adjustTemperature(
+  testMode?: TestMode,
+  trace?: string[],
+): Promise<void> {
+  const note = (line: string) => {
+    console.log(line);
+    trace?.push(line);
+  };
   try {
     const profiles = await db
       .select()
@@ -265,7 +272,7 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
           currentSleepStage = "final";
         }
 
-        console.log(`Current sleep stage for user ${profile.users.email}: ${currentSleepStage}`);
+        note(`stage=${currentSleepStage} isHeating=${String(heatingStatus.isHeating)} target=${heatingStatus.targetHeatingLevel} for ${profile.users.email}`);
 
         // Did a person move the dial? Checked EVERY tick inside the sleep
         // cycle, not only near stage boundaries — a hand adjustment at 01:30
@@ -347,9 +354,7 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
                 "scheduled",
                 "Re-established the schedule after the side came back on.",
               );
-              console.log(
-                `Re-established schedule for ${profile.users.email} at level ${reassert}.`,
-              );
+              note(`re-established schedule for ${profile.users.email} at level ${reassert}`);
               continue;
             }
 
@@ -521,12 +526,13 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
             );
           }
         } else {
-          console.log(`No temperature change needed for user ${profile.users.email}`);
+          note(`no change needed for ${profile.users.email}`);
         }
 
         console.log(`Successfully completed temperature adjustment check for user ${profile.users.email}`);
       } catch (error) {
         console.error(`Error adjusting temperature for user ${profile.users.email}:`, error instanceof Error ? error.message : String(error));
+        trace?.push(`ERROR for ${profile.users.email}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   } catch (error) {
@@ -541,6 +547,8 @@ export async function GET(request: NextRequest): Promise<Response> {
     return new Response("Unauthorized", { status: 401 });
   } else {
     try {
+      const trace: string[] | undefined =
+        request.nextUrl.searchParams.get("debug") === "1" ? [] : undefined;
       const testTimeParam = request.nextUrl.searchParams.get("testTime");
       if (testTimeParam) {
         const testTime = new Date(Number(testTimeParam)* 1000);
@@ -562,7 +570,7 @@ export async function GET(request: NextRequest): Promise<Response> {
           return Response.json({ success: true, skipped: "concurrent tick" });
         }
         try {
-          await adjustTemperature();
+          await adjustTemperature(undefined, trace);
         } catch (error) {
           console.error(
             "Temperature adjustment failed:",
@@ -588,7 +596,9 @@ export async function GET(request: NextRequest): Promise<Response> {
           );
         }
       }
-      return Response.json({ success: true });
+      return Response.json(
+        trace ? { success: true, trace } : { success: true },
+      );
     } catch (error) {
       console.error("Error in temperature adjustment cron job:", error instanceof Error ? error.message : String(error));
       return new Response("Internal server error", { status: 500 });
