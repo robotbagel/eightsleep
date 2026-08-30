@@ -89,9 +89,36 @@ export async function POST(request: NextRequest): Promise<Response> {
         ),
       )
       .returning({ id: aiLiveAdjustments.id });
+    // Overrides during a test also plant sleepFeedback rows keyed to the
+    // coming wake date ("Recorded from a hand adjustment..."), which the
+    // next daily pass would read as a genuine comfort report. Only rows
+    // carrying that exact provenance note are touched.
+    const feedbackNights = (
+      request.nextUrl.searchParams.get("feedbackNights") ?? ""
+    )
+      .split(",")
+      .filter(Boolean);
+    let prunedFeedback = 0;
+    for (const fbNight of feedbackNights) {
+      const gone = await db
+        .delete(sleepFeedback)
+        .where(
+          and(
+            eq(sleepFeedback.email, emailParam),
+            eq(sleepFeedback.night, fbNight),
+            eq(
+              sleepFeedback.note,
+              "Recorded from a hand adjustment made during the night.",
+            ),
+          ),
+        )
+        .returning({ id: sleepFeedback.id });
+      prunedFeedback += gone.length;
+    }
     return Response.json({
       prunedEvents: deletedEvents.length,
       prunedAdjustments: deletedAdjustments.length,
+      prunedFeedback,
     });
   }
   // Disable Eight's leftover cloud-side temperature schedules. The official
