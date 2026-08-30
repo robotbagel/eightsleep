@@ -259,6 +259,7 @@ export interface GhostSchedule {
 const scheduleSchema = z.object({
   settings: z
     .object({
+      timeBased: z.object({ level: z.number() }).optional(),
       schedules: z
         .array(
           z.object({
@@ -272,16 +273,32 @@ const scheduleSchema = z.object({
         .optional(),
     })
     .optional(),
+  currentState: z.object({ type: z.string() }).optional(),
 });
 
-export async function getGhostSchedules(
+export interface CloudTemperatureState {
+  /** The authoritative setpoint. The device-level `leftTargetHeatingLevel`
+   *  resets to 0 after the side is turned off and on and stops tracking the
+   *  real target (observed live 2026-08-30: device said 0 while the cloud
+   *  held the sleeper's level 5); `settings.timeBased.level` survives. */
+  setpoint: number | null;
+  /** "off" | "timeBased" | … — "off" means there is nothing to compare. */
+  stateType: string | null;
+  ghosts: GhostSchedule[];
+}
+
+export async function getCloudTemperatureState(
   token: Token,
   userId: string,
-): Promise<GhostSchedule[]> {
+): Promise<CloudTemperatureState> {
   const url = `${CLIENT_API_URL}/users/${userId}/temperature`;
   const data = await fetchWithAuth(url, token, scheduleSchema);
   const schedules = data.settings?.schedules ?? [];
-  return schedules
-    .filter((s) => s.enabled && s.startSettings?.bedtime != null)
-    .map((s) => ({ time: s.time, level: s.startSettings!.bedtime! }));
+  return {
+    setpoint: data.settings?.timeBased?.level ?? null,
+    stateType: data.currentState?.type ?? null,
+    ghosts: schedules
+      .filter((s) => s.enabled && s.startSettings?.bedtime != null)
+      .map((s) => ({ time: s.time, level: s.startSettings!.bedtime! })),
+  };
 }

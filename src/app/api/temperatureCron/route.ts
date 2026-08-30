@@ -6,8 +6,8 @@ import { obtainFreshAccessToken } from "~/server/eight/auth";
 import { type Token } from "~/server/eight/types";
 import { setHeatingLevel, turnOnSide, turnOffSide } from "~/server/eight/eight";
 import {
+  getCloudTemperatureState,
   getCurrentHeatingStatus,
-  getGhostSchedules,
   type GhostSchedule,
 } from "~/server/eight/user";
 import { recordCronHeartbeat, runDailyAiPass } from "~/server/ai/advisor";
@@ -287,11 +287,13 @@ export async function adjustTemperature(
         // target only changes when someone (us, the Eight app, anything)
         // actually sets it, which is exactly the signal wanted.
         let liveOffset = 0;
-        if (
-          !testMode?.enabled &&
-          currentSleepStage !== "outside sleep cycle" &&
-          heatingStatus.targetHeatingLevel != null
-        ) {
+        // The pod's authoritative setpoint. The device-level target field
+        // resets to 0 after an off/on cycle and stops tracking (observed
+        // live: device said 0 while the cloud held the sleeper's level), so
+        // the cloud's timeBased.level is the value every comparison uses.
+        let observedSetpoint: number = heatingStatus.targetHeatingLevel ?? NaN;
+        let cloudStateType: string | null = null;
+        if (!testMode?.enabled && currentSleepStage !== "outside sleep cycle") {
           try {
             liveOffset = await getActiveLiveOffset(
               profile.users.email,
@@ -299,6 +301,26 @@ export async function adjustTemperature(
               userTemperatureProfile.wakeupTime.slice(0, 5),
               now,
             );
+
+            let ghosts: GhostSchedule[] = [];
+            try {
+              const cloud = await getCloudTemperatureState(
+                token,
+                profile.users.eightUserId,
+              );
+              ghosts = cloud.ghosts;
+              cloudStateType = cloud.stateType;
+              if (cloud.setpoint != null) observedSetpoint = cloud.setpoint;
+            } catch (error) {
+              note(
+                `cloud temperature state unreadable for ${profile.users.email}: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+
+            // No readable setpoint from either source: nothing to compare.
+            if (isNaN(observedSetpoint)) {
+              throw new Error("no setpoint readable from cloud or device");
+            }
 
             const stageTargetLevel =
               currentSleepStage === "deep"
@@ -329,15 +351,17 @@ export async function adjustTemperature(
               ),
               orderBy: desc(temperatureEvents.id),
             });
+            note(
+              `detect: setpoint=${observedSetpoint} cloudState=${cloudStateType} newestLevel=${newestEvent ? String(newestEvent.level) : "none"} offset=${liveOffset}`,
+            );
             if (
               (!newestEvent || newestEvent.level == null) &&
-              heatingStatus.isHeating
+              (heatingStatus.isHeating || cloudStateType === "timeBased")
             ) {
               const reassert = applyOffsetToLevel(stageTargetLevel, liveOffset);
               if (
                 Math.abs(
-                  rawToCelsius(heatingStatus.targetHeatingLevel) -
-                    rawToCelsius(reassert),
+                  rawToCelsius(observedSetpoint) - rawToCelsius(reassert),
                 ) >= 0.25
               ) {
                 await retryApiCall(() =>
@@ -363,20 +387,10 @@ export async function adjustTemperature(
             // schedule's level near its firing time is that robot, not a
             // hand on the dial: reassert our own schedule instead of
             // honouring it, and record what happened by name.
-            let ghosts: GhostSchedule[] = [];
-            try {
-              ghosts = await getGhostSchedules(token, profile.users.eightUserId);
-            } catch {
-              // Unreadable schedules must not stop the override check.
-            }
-            const ghost = matchGhostSchedule(
-              ghosts,
-              heatingStatus.targetHeatingLevel,
-              userNow,
-            );
+            const ghost = matchGhostSchedule(ghosts, observedSetpoint, userNow);
             if (ghost) {
               const reassert = applyOffsetToLevel(stageTargetLevel, liveOffset);
-              if (reassert !== heatingStatus.targetHeatingLevel) {
+              if (reassert !== observedSetpoint) {
                 await retryApiCall(() =>
                   setHeatingLevel(token, profile.users.eightUserId, reassert),
                 );
@@ -395,15 +409,18 @@ export async function adjustTemperature(
                 );
               }
             } else {
-            const override = await detectManualOverride({
+            const override =
+              cloudStateType === "off"
+                ? null
+                : await detectManualOverride({
               email: profile.users.email,
               timezone: userTemperatureProfile.timezoneTZ,
               wakeupTime: userTemperatureProfile.wakeupTime.slice(0, 5),
               now,
               stage: currentSleepStage,
-              observedLevel: heatingStatus.targetHeatingLevel,
+              observedLevel: observedSetpoint,
               currentOffsetTenthsC: liveOffset,
-            });
+                  });
             if (override) {
               liveOffset = override.newOffsetTenthsC;
               console.log(
@@ -412,9 +429,8 @@ export async function adjustTemperature(
             }
             }
           } catch (error) {
-            console.error(
-              `Manual-override check failed for user ${profile.users.email}:`,
-              error instanceof Error ? error.message : String(error),
+            note(
+              `manual-override check FAILED for ${profile.users.email}: ${error instanceof Error ? error.message : String(error)}`,
             );
           }
         }
@@ -476,7 +492,7 @@ export async function adjustTemperature(
           // same level every tick over a difference no one can feel.
           if (
             Math.abs(
-              rawToCelsius(heatingStatus.targetHeatingLevel ?? targetLevel) -
+              rawToCelsius(observedSetpoint ?? targetLevel) -
                 rawToCelsius(targetLevel),
             ) >= 0.25
           ) {
