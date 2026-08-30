@@ -287,10 +287,15 @@ export async function adjustTemperature(
         // target only changes when someone (us, the Eight app, anything)
         // actually sets it, which is exactly the signal wanted.
         let liveOffset = 0;
-        // The pod's authoritative setpoint. The device-level target field
-        // resets to 0 after an off/on cycle and stops tracking (observed
-        // live: device said 0 while the cloud held the sleeper's level), so
-        // the cloud's timeBased.level is the value every comparison uses.
+        // The pod's setpoint, read from two half-truthful sources. The
+        // DEVICE target reflects Eight-app changes within a minute but
+        // resets to 0 after an off/on cycle; the CLOUD timeBased.level
+        // reflects OUR API writes instantly but lags Eight-app changes by
+        // minutes or more (observed live: device -18 for three minutes
+        // while the cloud still said 5). So: trust the device unless it
+        // reads the ambiguous 0, then fall back to the cloud. Residual
+        // blind spot, accepted: a hand-set of exactly 27.0°C (raw 0) right
+        // after an off/on is followed only once some write syncs the cloud.
         let observedSetpoint: number = heatingStatus.targetHeatingLevel ?? NaN;
         let cloudStateType: string | null = null;
         if (!testMode?.enabled && currentSleepStage !== "outside sleep cycle") {
@@ -310,7 +315,13 @@ export async function adjustTemperature(
               );
               ghosts = cloud.ghosts;
               cloudStateType = cloud.stateType;
-              if (cloud.setpoint != null) observedSetpoint = cloud.setpoint;
+              const deviceTarget = heatingStatus.targetHeatingLevel;
+              if (
+                (deviceTarget == null || deviceTarget === 0) &&
+                cloud.setpoint != null
+              ) {
+                observedSetpoint = cloud.setpoint;
+              }
             } catch (error) {
               note(
                 `cloud temperature state unreadable for ${profile.users.email}: ${error instanceof Error ? error.message : String(error)}`,
