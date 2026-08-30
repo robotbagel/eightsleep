@@ -241,3 +241,47 @@ export function convertStringToDateTime(
   const date = new Date(dateTimeStr);
   return new Date(date.toLocaleString("en-US", { timeZone: timezone }));
 }
+
+// Eight's cloud can carry leftover temperature schedules that the official
+// app no longer shows ("Bedtime: Not set") yet still fire nightly — one was
+// found armed at 23:00:28 setting level -40 (22.2°C). They cannot be
+// disabled through the temperature PUT (a 200 that keeps them enabled, and
+// the attempt resets timeBased.level as a side effect — do not retry that
+// shape). The cron guards against them instead: a target change matching an
+// enabled schedule's level near its firing time is the ghost, not a person.
+export interface GhostSchedule {
+  /** "HH:MM:SS" in the user's local time. */
+  time: string;
+  /** The raw level the schedule sets. */
+  level: number;
+}
+
+const scheduleSchema = z.object({
+  settings: z
+    .object({
+      schedules: z
+        .array(
+          z.object({
+            enabled: z.boolean(),
+            time: z.string(),
+            startSettings: z
+              .object({ bedtime: z.number().optional() })
+              .optional(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
+});
+
+export async function getGhostSchedules(
+  token: Token,
+  userId: string,
+): Promise<GhostSchedule[]> {
+  const url = `${CLIENT_API_URL}/users/${userId}/temperature`;
+  const data = await fetchWithAuth(url, token, scheduleSchema);
+  const schedules = data.settings?.schedules ?? [];
+  return schedules
+    .filter((s) => s.enabled && s.startSettings?.bedtime != null)
+    .map((s) => ({ time: s.time, level: s.startSettings!.bedtime! }));
+}

@@ -36,6 +36,52 @@ import { shiftDate } from "./history";
  */
 export const OVERRIDE_MIN_C = 0.25;
 
+// ---------------------------------------------------------------------------
+// Ghost schedules. Eight's cloud can carry a leftover temperature schedule
+// the official app no longer shows ("Bedtime: Not set") yet still fires
+// nightly — one was found armed at 23:00:28 setting level -40 (22.2°C). It
+// cannot be disabled through the temperature PUT (returns 200, keeps the
+// schedule enabled, and resets timeBased.level as a side effect). So the
+// cron recognises its signature instead: a target change to EXACTLY the
+// schedule's level within a tick's slack of its firing time is the robot,
+// not a person — reassert our schedule, never record it as a hand.
+// ---------------------------------------------------------------------------
+
+/** One tick's worth of slack either side of a schedule's firing time. */
+export const GHOST_WINDOW_MIN = 12;
+
+export interface GhostScheduleLike {
+  /** "HH:MM:SS" in the user's local time. */
+  time: string;
+  /** The raw level the schedule sets. */
+  level: number;
+}
+
+/** Minutes between a wall-clock Date and an "HH:MM:SS" clock time, across
+ *  the midnight wrap. */
+export function minutesFromClockTime(current: Date, clock: string): number {
+  const [h, m] = clock.split(":").map(Number);
+  const clockMinutes = (h ?? 0) * 60 + (m ?? 0);
+  const nowMinutes = current.getHours() * 60 + current.getMinutes();
+  let diff = Math.abs(nowMinutes - clockMinutes);
+  if (diff > 12 * 60) diff = 24 * 60 - diff;
+  return diff;
+}
+
+export function matchGhostSchedule<T extends GhostScheduleLike>(
+  ghosts: T[],
+  observedLevel: number,
+  userNow: Date,
+): T | null {
+  return (
+    ghosts.find(
+      (g) =>
+        g.level === observedLevel &&
+        minutesFromClockTime(userNow, g.time) <= GHOST_WINDOW_MIN,
+    ) ?? null
+  );
+}
+
 /** Levels the pod can be left at that mean "off", not "set to freezing". */
 const OFF_LEVEL = 0;
 

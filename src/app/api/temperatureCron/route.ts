@@ -5,7 +5,11 @@ import { eq } from "drizzle-orm";
 import { obtainFreshAccessToken } from "~/server/eight/auth";
 import { type Token } from "~/server/eight/types";
 import { setHeatingLevel, turnOnSide, turnOffSide } from "~/server/eight/eight";
-import { getCurrentHeatingStatus } from "~/server/eight/user";
+import {
+  getCurrentHeatingStatus,
+  getGhostSchedules,
+  type GhostSchedule,
+} from "~/server/eight/user";
 import { recordCronHeartbeat, runDailyAiPass } from "~/server/ai/advisor";
 import {
   applyOffsetToLevel,
@@ -13,7 +17,7 @@ import {
   runLiveTuningPass,
 } from "~/server/ai/liveTuner";
 import { appConfig, temperatureEvents } from "~/server/db/schema";
-import { detectManualOverride } from "~/server/ai/override";
+import { detectManualOverride, matchGhostSchedule } from "~/server/ai/override";
 import { nightKeyFor } from "~/server/ai/time";
 import { sql } from "drizzle-orm";
 
@@ -97,6 +101,7 @@ function isWithinTimeRange(current: Date, target: Date, rangeMinutes: number): b
   const diffMs = Math.abs(current.getTime() - target.getTime());
   return diffMs <= rangeMinutes * 60 * 1000;
 }
+
 
 async function retryApiCall<T>(apiCall: () => Promise<T>, retries = 3): Promise<T> {
   for (let i = 0; i < retries; i++) {
@@ -286,6 +291,52 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
               userTemperatureProfile.wakeupTime.slice(0, 5),
               now,
             );
+
+            // Eight's cloud carries a leftover schedule the app cannot see
+            // (23:00:28, level -40). A target change matching an enabled
+            // schedule's level near its firing time is that robot, not a
+            // hand on the dial: reassert our own schedule instead of
+            // honouring it, and record what happened by name.
+            let ghosts: GhostSchedule[] = [];
+            try {
+              ghosts = await getGhostSchedules(token, profile.users.eightUserId);
+            } catch {
+              // Unreadable schedules must not stop the override check.
+            }
+            const ghost = matchGhostSchedule(
+              ghosts,
+              heatingStatus.targetHeatingLevel,
+              userNow,
+            );
+            if (ghost) {
+              const stageLevel =
+                currentSleepStage === "deep"
+                  ? deepLevel
+                  : currentSleepStage === "mid"
+                    ? userTemperatureProfile.midStageSleepLevel
+                    : currentSleepStage === "final"
+                      ? userTemperatureProfile.finalSleepLevel
+                      : userTemperatureProfile.initialSleepLevel;
+              const reassert = applyOffsetToLevel(stageLevel, liveOffset);
+              if (reassert !== heatingStatus.targetHeatingLevel) {
+                await retryApiCall(() =>
+                  setHeatingLevel(token, profile.users.eightUserId, reassert),
+                );
+                await logTemperatureEvent(
+                  profile.users.email,
+                  userTemperatureProfile.timezoneTZ,
+                  userTemperatureProfile.wakeupTime.slice(0, 5),
+                  now,
+                  currentSleepStage,
+                  reassert,
+                  "scheduled",
+                  `Reasserted the schedule over Eight's leftover ${ghost.time.slice(0, 5)} cloud schedule — not a hand adjustment.`,
+                );
+                console.log(
+                  `Ghost schedule (${ghost.time}, level ${ghost.level}) reverted for ${profile.users.email}.`,
+                );
+              }
+            } else {
             const override = await detectManualOverride({
               email: profile.users.email,
               timezone: userTemperatureProfile.timezoneTZ,
@@ -300,6 +351,7 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
               console.log(
                 `Manual override by ${profile.users.email}: ${override.deltaTenthsC / 10}°C ${override.direction}; following it for the rest of the night.`,
               );
+            }
             }
           } catch (error) {
             console.error(

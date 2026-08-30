@@ -262,6 +262,28 @@ const nearAlarm = computeLiveNudge({
 assert.equal(nearAlarm, null, "the pre-wake window is hands-off");
 console.log("ok  nothing fires inside the pre-wake quiet period");
 
+// --- ghost schedule matcher --------------------------------------------------
+// Eight's cloud fires a leftover schedule (23:00:28, level -40) the app
+// cannot see or disable. Its signature — exact level at its firing time —
+// must be recognised as the robot, and nothing else may be.
+{
+  const { matchGhostSchedule } = await import("../override");
+  const ghosts = [{ time: "23:00:28", level: -40 }];
+  const at = (h: number, m: number) => {
+    const d = new Date(2026, 7, 30, h, m, 0);
+    return d;
+  };
+  const hit = matchGhostSchedule(ghosts, -40, at(23, 10));
+  if (!hit) throw new Error("ghost at its own level and time must match");
+  if (matchGhostSchedule(ghosts, -40, at(23, 45)) !== null)
+    throw new Error("same level outside the window is a person");
+  if (matchGhostSchedule(ghosts, -38, at(23, 5)) !== null)
+    throw new Error("a different level inside the window is a person");
+  if (matchGhostSchedule(ghosts, -40, at(22, 55)) === null)
+    throw new Error("the window reaches back across the firing time");
+  console.log("ok  the ghost schedule matches only its own level at its own time");
+}
+
 console.log("\nall control-law assertions passed");
 
 // --- manual override --------------------------------------------------------
