@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { db } from "~/server/db";
 import { userTemperatureProfile, users } from "~/server/db/schema";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { obtainFreshAccessToken } from "~/server/eight/auth";
 import { type Token } from "~/server/eight/types";
 import { setHeatingLevel, turnOnSide, turnOffSide } from "~/server/eight/eight";
@@ -293,6 +293,66 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
               now,
             );
 
+            const stageTargetLevel =
+              currentSleepStage === "deep"
+                ? deepLevel
+                : currentSleepStage === "mid"
+                  ? userTemperatureProfile.midStageSleepLevel
+                  : currentSleepStage === "final"
+                    ? userTemperatureProfile.finalSleepLevel
+                    : userTemperatureProfile.initialSleepLevel;
+
+            // A turn-off writes a row with no level, which erases the
+            // baseline the override detector compares against — and nothing
+            // used to re-establish it until the next stage boundary, up to
+            // two hours away in the mid stage. If the side is back on with
+            // no standing written level, claim the schedule now: the pod
+            // gets tonight's stage target and the baseline exists again.
+            const newestEvent = await db.query.temperatureEvents.findFirst({
+              where: and(
+                eq(temperatureEvents.email, profile.users.email),
+                eq(
+                  temperatureEvents.night,
+                  nightKeyFor(
+                    now,
+                    userTemperatureProfile.timezoneTZ,
+                    userTemperatureProfile.wakeupTime.slice(0, 5),
+                  ),
+                ),
+              ),
+              orderBy: desc(temperatureEvents.id),
+            });
+            if (
+              (!newestEvent || newestEvent.level == null) &&
+              heatingStatus.isHeating
+            ) {
+              const reassert = applyOffsetToLevel(stageTargetLevel, liveOffset);
+              if (
+                Math.abs(
+                  rawToCelsius(heatingStatus.targetHeatingLevel) -
+                    rawToCelsius(reassert),
+                ) >= 0.25
+              ) {
+                await retryApiCall(() =>
+                  setHeatingLevel(token, profile.users.eightUserId, reassert),
+                );
+              }
+              await logTemperatureEvent(
+                profile.users.email,
+                userTemperatureProfile.timezoneTZ,
+                userTemperatureProfile.wakeupTime.slice(0, 5),
+                now,
+                currentSleepStage,
+                reassert,
+                "scheduled",
+                "Re-established the schedule after the side came back on.",
+              );
+              console.log(
+                `Re-established schedule for ${profile.users.email} at level ${reassert}.`,
+              );
+              continue;
+            }
+
             // Eight's cloud carries a leftover schedule the app cannot see
             // (23:00:28, level -40). A target change matching an enabled
             // schedule's level near its firing time is that robot, not a
@@ -310,15 +370,7 @@ export async function adjustTemperature(testMode?: TestMode): Promise<void> {
               userNow,
             );
             if (ghost) {
-              const stageLevel =
-                currentSleepStage === "deep"
-                  ? deepLevel
-                  : currentSleepStage === "mid"
-                    ? userTemperatureProfile.midStageSleepLevel
-                    : currentSleepStage === "final"
-                      ? userTemperatureProfile.finalSleepLevel
-                      : userTemperatureProfile.initialSleepLevel;
-              const reassert = applyOffsetToLevel(stageLevel, liveOffset);
+              const reassert = applyOffsetToLevel(stageTargetLevel, liveOffset);
               if (reassert !== heatingStatus.targetHeatingLevel) {
                 await retryApiCall(() =>
                   setHeatingLevel(token, profile.users.eightUserId, reassert),
