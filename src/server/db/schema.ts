@@ -71,7 +71,11 @@ export const aiLiveAdjustments = createTable(
     id: serial("id").primaryKey(),
     email: varchar("email", { length: 255 }).references(() => users.email).notNull(),
     night: varchar("night", { length: 10 }).notNull(),
-    stage: varchar("stage", { length: 10 }).notNull(),
+    // 16, not 10: "pre-heating" is 11 characters, and at length 10 the
+    // insert failed SILENTLY inside detectManualOverride — the event row
+    // saved, the offset didn't, and the next boundary write reverted the
+    // sleeper's pre-bed adjustment (observed live 2026-08-30 23:10).
+    stage: varchar("stage", { length: 16 }).notNull(),
     offsetDelta: integer("offsetDelta").notNull(),
     newOffset: integer("newOffset").notNull(),
     appliedLevel: integer("appliedLevel").notNull(),

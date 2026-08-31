@@ -594,6 +594,13 @@ async function readComfort(
     tosses: { firstThird: number | null; middleThird: number | null; finalThird: number | null };
     bedTemp: { firstThird: number | null; middleThird: number | null; finalThird: number | null };
   },
+  /** Night key of the last profile change. A report the loop has already
+   *  acted on is SPENT: without this, two aging "too hot" rows kept
+   *  outvoting a fresh "too cold" and fired the same whole-profile cooling
+   *  three mornings in a row (2026-08-29..31). Only reports about nights
+   *  AFTER the last change — i.e. evidence about the current profile —
+   *  may still vote. */
+  lastChangeNight: string | null,
 ): Promise<{
   lines: string[];
   /** A stage the sleeper has reported the same way on 2+ of the last 3 nights. */
@@ -613,12 +620,27 @@ async function readComfort(
   } | null;
 }> {
   try {
-    const rows = await db
+    const allRows = await db
       .select()
       .from(sleepFeedback)
       .where(eq(sleepFeedback.email, email))
       .orderBy(desc(sleepFeedback.night))
       .limit(3);
+    // Spent reports don't vote. A change applied on night D governs the
+    // night keyed D+1, so a report with night > D is the outcome of the
+    // current profile; anything at or before D was already on the table
+    // when that change was made.
+    let rows = allRows.filter(
+      (row) => lastChangeNight == null || row.night > lastChangeNight,
+    );
+    // Directions conflicting among the remaining reports resolve to the
+    // NEWEST report, never to a majority of older ones.
+    const directions = new Set(
+      rows
+        .filter((r) => r.felt !== "just_right")
+        .map((r) => (r.felt === "too_hot" ? "cooler" : "warmer")),
+    );
+    if (directions.size > 1) rows = rows.slice(0, 1);
     if (rows.length === 0) return { lines: [], consistent: null };
 
     const lines = rows.map(
@@ -772,18 +794,23 @@ export async function generateRecommendationForUser(
     settings.displayUnit === "level" ? "level" : "celsius";
   const fmt = (raw: number) => formatRawByUnit(raw, unit);
   const comfortSession = sleepContext.recentSessions[0];
-  const comfort = await readComfort(email, todayKey, {
-    tosses: comfortSession?.tossesAndTurns ?? {
-      firstThird: null,
-      middleThird: null,
-      finalThird: null,
+  const comfort = await readComfort(
+    email,
+    todayKey,
+    {
+      tosses: comfortSession?.tossesAndTurns ?? {
+        firstThird: null,
+        middleThird: null,
+        finalThird: null,
+      },
+      bedTemp: comfortSession?.avgBedTempC ?? {
+        firstThird: null,
+        middleThird: null,
+        finalThird: null,
+      },
     },
-    bedTemp: comfortSession?.avgBedTempC ?? {
-      firstThird: null,
-      middleThird: null,
-      finalThird: null,
-    },
-  });
+    history.lastChangeNight,
+  );
   // The measurements the explanation cites, per stage, from last night.
   const session = sleepContext.recentSessions[0];
   const thirdFor = (stage: Stage) =>
