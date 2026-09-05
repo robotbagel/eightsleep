@@ -198,8 +198,8 @@ export async function persistNightMetrics(
   email: string,
   metrics: NightMetric[],
   options: { rescore?: boolean } = {},
-): Promise<void> {
-  if (metrics.length === 0) return;
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (metrics.length === 0) return { ok: true };
   try {
     const nights = metrics.map((m) => m.night);
 
@@ -236,13 +236,19 @@ export async function persistNightMetrics(
             .map((row) => [row.night, row.thermalScore!]),
     );
 
-    await db
-      .delete(nightMetrics)
-      .where(
-        and(eq(nightMetrics.email, email), inArray(nightMetrics.night, nights)),
-      );
-    await db.insert(nightMetrics).values(
-      metrics.map((m) => ({
+    // Delete + insert in ONE transaction. On 2026-09-05 the insert failed
+    // (a column the schema push had not created) after the delete had
+    // already run, and both accounts' cached nights vanished — the writer
+    // "never throws", so nothing said so either. Now a failed insert keeps
+    // the old rows, and the failure is returned to the caller.
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(nightMetrics)
+        .where(
+          and(eq(nightMetrics.email, email), inArray(nightMetrics.night, nights)),
+        );
+      await tx.insert(nightMetrics).values(
+        metrics.map((m) => ({
         email,
         night: m.night,
         score: frozen.get(m.night) ?? m.score,
@@ -268,12 +274,13 @@ export async function persistNightMetrics(
         wakeMinutes: m.wakeMinutes,
         source: m.source,
       })),
-    );
+      );
+    });
+    return { ok: true };
   } catch (error) {
-    console.error(
-      `Failed to cache night metrics for ${email}:`,
-      error instanceof Error ? error.message : String(error),
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to cache night metrics for ${email}:`, message);
+    return { ok: false, error: message };
   }
 }
 

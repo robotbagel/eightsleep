@@ -5,7 +5,7 @@
 import type { NextRequest } from "next/server";
 import { db } from "~/server/db";
 import { users, userTemperatureProfile } from "~/server/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getFreshToken, reassessToday } from "~/server/ai/advisor";
 import { sleepFeedback } from "~/server/db/schema";
 import { and } from "drizzle-orm";
@@ -178,6 +178,23 @@ export async function POST(request: NextRequest): Promise<Response> {
     });
   }
 
+  // Schema safety net: add columns the code expects but the database lacks.
+  // The Vercel build is meant to run `db:push`; on 2026-09-05 it did not add
+  // `latencyTenthHours`, and every cache write failed until this existed.
+  // Idempotent (IF NOT EXISTS), so it is safe to run on every deploy.
+  // POST /api/aiDebug?action=migrate
+  if (action === "migrate") {
+    const statements = [
+      sql`ALTER TABLE "8slp_nightMetrics" ADD COLUMN IF NOT EXISTS "latencyTenthHours" integer`,
+    ];
+    const applied: string[] = [];
+    for (const statement of statements) {
+      await db.execute(statement);
+      applied.push(statement.queryChunks.map(String).join("").slice(0, 120));
+    }
+    return Response.json({ applied: applied.length });
+  }
+
   // Re-score every held night on the CURRENT rubric. The only sanctioned way
   // past the score freeze: run it once after score.ts changes, for each user,
   // so history is comparable with itself again.
@@ -195,7 +212,13 @@ export async function POST(request: NextRequest): Promise<Response> {
     const token = await getFreshToken(user);
     const sessions = await fetchPodSessions(token, user.eightUserId, pages);
     const metrics = sessionsToMetrics(sessions, timezone);
-    await persistNightMetrics(email, metrics, { rescore: true });
+    const persisted = await persistNightMetrics(email, metrics, { rescore: true });
+    if (!persisted.ok) {
+      return Response.json(
+        { email, error: "nothing stored", reason: persisted.error },
+        { status: 500 },
+      );
+    }
     return Response.json({
       email,
       rescored: metrics.map((m) => ({
