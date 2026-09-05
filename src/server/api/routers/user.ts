@@ -50,6 +50,7 @@ import {
   byWeekday,
   pagesForDays,
   persistNightMetrics,
+  SYNC_PAGES,
   readNightMetrics,
   sessionsToMetrics,
   shiftDate,
@@ -565,7 +566,11 @@ export const userRouter = createTRPCRouter({
       if (user) {
         try {
           const token = await getFreshToken(user);
-          const sessions = await fetchPodSessions(token, user.eightUserId);
+          const sessions = await fetchPodSessions(
+            token,
+            user.eightUserId,
+            SYNC_PAGES,
+          );
           const completed = sessions
             .filter((s) => s.sleepEnd)
             .sort((a, b) => (a.sleepEnd! < b.sleepEnd! ? -1 : 1));
@@ -631,6 +636,7 @@ export const userRouter = createTRPCRouter({
               decoded.email,
               sessionInfo.night,
               sessionInfo.night,
+              timezone,
             );
             metrics =
               stored[0] ??
@@ -733,7 +739,12 @@ export const userRouter = createTRPCRouter({
       const previousFrom = shiftDate(today, -(input.days * 2 - 1));
       const previousTo = shiftDate(from, -1);
 
-      let cached = await readNightMetrics(decoded.email, previousFrom, today);
+      let cached = await readNightMetrics(
+        decoded.email,
+        previousFrom,
+        today,
+        timezone,
+      );
       // Only reach for more pod pages when the cache cannot cover the window,
       // so the common case stays a single database read.
       const covered = cached.filter((n) => n.night >= from).length;
@@ -748,7 +759,12 @@ export const userRouter = createTRPCRouter({
             timezone,
             pagesForDays(input.days * 2),
           );
-          cached = await readNightMetrics(decoded.email, previousFrom, today);
+          cached = await readNightMetrics(
+            decoded.email,
+            previousFrom,
+            today,
+            timezone,
+          );
         } catch (error) {
           console.error("Sleep history: pod sync failed:", error);
         }
@@ -765,6 +781,7 @@ export const userRouter = createTRPCRouter({
         "deepHours",
         "remHours",
         "awakeHours",
+        "sleepLatencyHours",
         "tosses",
         "restingHeartRate",
         "hrv",
@@ -815,6 +832,7 @@ export const userRouter = createTRPCRouter({
       decoded.email,
       shiftDate(todayKey, -10),
       todayKey,
+      timezone,
     );
     // The cache is filled by every night fetch, but a cold session (or a
     // brand-new night) can beat it, so top it up rather than show nothing.
@@ -826,12 +844,13 @@ export const userRouter = createTRPCRouter({
           token,
           user.eightUserId,
           timezone,
-          1,
+          SYNC_PAGES,
         );
         nights = await readNightMetrics(
           decoded.email,
           shiftDate(todayKey, -10),
           todayKey,
+          timezone,
         );
       } catch (error) {
         console.error("Night outlook: pod sync failed:", error);
@@ -1115,7 +1134,7 @@ export const userRouter = createTRPCRouter({
         pressure: [],
       };
       try {
-        ledger = await readLedgerForApp(decoded.email, tonight);
+        ledger = await readLedgerForApp(decoded.email, tonight, timezone);
       } catch (error) {
         console.error("Ledger read failed:", error);
       }
@@ -1173,7 +1192,12 @@ export const userRouter = createTRPCRouter({
           profile.wakeupTime.slice(0, 5),
         )
       : NaN;
-    const recorded = await readNightMetrics(decoded.email, todayKey, todayKey);
+    const recorded = await readNightMetrics(
+      decoded.email,
+      todayKey,
+      todayKey,
+      timezone,
+    );
 
     return {
       night: todayKey,
@@ -1299,10 +1323,14 @@ export const userRouter = createTRPCRouter({
     // `forDate` is the day the assessment ran, so it governs the night that
     // BEGINS that evening — the night you wake from on forDate + 1.
     const oldest = rows[rows.length - 1]!.forDate;
+    const profile = await db.query.userTemperatureProfile.findFirst({
+      where: eq(userTemperatureProfile.email, decoded.email),
+    });
     const metrics = await readNightMetrics(
       decoded.email,
       shiftDate(oldest, -1),
       shiftDate(rows[0]!.forDate, 2),
+      profile?.timezoneTZ ?? "UTC",
     );
     const scoreFor = (night: string) =>
       metrics.find((m) => m.night === night)?.score ?? null;

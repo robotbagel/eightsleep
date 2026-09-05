@@ -134,6 +134,28 @@ export function awakeAfterOnsetHours(session: PodSession): number | null {
   return total / 3600;
 }
 
+/**
+ * Hours in bed before falling asleep (sleep-onset latency). The pod reports
+ * it directly as `awakeBeforeSleepDuration`; failing that, the awake runs at
+ * the head of the hypnogram before the first sleep stage. Null when neither
+ * exists.
+ */
+export function sleepLatencyHours(session: PodSession): number | null {
+  const before = session.stageSummary?.awakeBeforeSleepDuration;
+  if (before != null) return before / 3600;
+  const stages = session.stages ?? [];
+  let total = 0;
+  let sawAwake = false;
+  for (const run of stages) {
+    if (!isAwakeLike(run.stage)) break;
+    if (run.stage === "awake") {
+      total += run.duration;
+      sawAwake = true;
+    }
+  }
+  return sawAwake ? total / 3600 : null;
+}
+
 function isAwakeLike(stage: string): boolean {
   return stage === "awake" || stage === "out";
 }
@@ -282,6 +304,8 @@ export interface NightTrend {
    *  and a third bedtime consistency, neither of which a bed can change. */
   thermalScore: number | null;
   sleepDurationHours: number | null;
+  /** Minutes in bed before falling asleep. */
+  sleepLatencyMinutes: number | null;
   hrv: number | null;
   restingHeartRate: number | null;
   respiratoryRate: number | null;
@@ -297,6 +321,8 @@ export interface SessionDetail {
   date: string;
   score: number | null;
   stageHours: Record<string, number>;
+  /** Minutes in bed before falling asleep. */
+  sleepLatencyMinutes: number | null;
   tossesAndTurns: ThirdsBreakdown;
   avgBedTempC: ThirdsBreakdown;
   avgRoomTempC: number | null;
@@ -310,6 +336,11 @@ export interface SleepContext {
 
 function round1(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+function latencyMinutesOf(session: PodSession): number | null {
+  const hours = sleepLatencyHours(session);
+  return hours == null ? null : Math.round(hours * 60);
 }
 
 function average(values: number[]): number | null {
@@ -425,6 +456,10 @@ function buildSessionDetail(
     date: day.day,
     score: day.score ?? session?.score ?? null,
     stageHours,
+    sleepLatencyMinutes:
+      session && sleepLatencyHours(session) != null
+        ? Math.round(sleepLatencyHours(session)! * 60)
+        : null,
     tossesAndTurns: byThirds(session?.timeseries?.tnt, "sum"),
     avgBedTempC: byThirds(session?.timeseries?.tempBedC, "mean"),
     avgRoomTempC: average(roomTemps),
@@ -490,8 +525,10 @@ export function buildContextFromPodSessions(
         remHours: (summary.remDuration ?? 0) / 3600,
         awakeHours,
         tosses: (session.timeseries?.tnt ?? []).length,
+        latencyMinutes: latencyMinutesOf(session),
       }),
       sleepDurationHours: round1(asleepHours),
+      sleepLatencyMinutes: latencyMinutesOf(session),
       hrv: average(hrvSeries.map(([, v]) => v)),
       restingHeartRate:
         heartRates.length > 0 ? round1(Math.min(...heartRates)) : null,
@@ -523,6 +560,7 @@ export function buildContextFromPodSessions(
       date,
       score: night?.score ?? null,
       stageHours,
+      sleepLatencyMinutes: latencyMinutesOf(session),
       tossesAndTurns: byThirds(session.timeseries?.tnt, "sum"),
       avgBedTempC: byThirds(session.timeseries?.tempBedC, "mean"),
       avgRoomTempC: average(
@@ -580,6 +618,7 @@ export async function collectSleepContext(
       hrv: day.sleepQualityScore?.hrv?.current ?? null,
       restingHeartRate: day.sleepRoutineScore?.heartRate?.current ?? null,
       respiratoryRate: day.sleepQualityScore?.respiratoryRate?.current ?? null,
+      sleepLatencyMinutes: null,
     });
   }
 

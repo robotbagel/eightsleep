@@ -153,9 +153,17 @@ export interface ThermalInput {
   asleepHours: number;
   deepHours: number | null;
   remHours: number | null;
+  /** Awake AFTER sleep onset only (WASO) — see awakeAfterOnsetHours(). */
   awakeHours: number | null;
   tosses: number | null;
+  /** Minutes in bed before falling asleep. Null = unknown. */
+  latencyMinutes: number | null;
 }
+
+/** Sleep-onset latency inside this is normal (Ohayon 2017 consensus: ≤20). */
+export const LATENCY_TARGET_MIN = 20;
+/** Latency credit reaches zero here (30+ min is the clinical onset-insomnia line). */
+export const LATENCY_FADE_MIN = 40;
 
 /** Triangular credit: full marks inside [lo, hi], tapering to zero at `fade`. */
 function band(value: number, lo: number, hi: number, fade: number): number {
@@ -167,7 +175,12 @@ function band(value: number, lo: number, hi: number, fade: number): number {
 export function thermalScore(input: ThermalInput): number | null {
   // Too short a night tells you nothing about temperature.
   if (!isFinite(input.asleepHours) || input.asleepHours < 2) return null;
-  if (input.deepHours == null && input.remHours == null && input.tosses == null) {
+  if (
+    input.deepHours == null &&
+    input.remHours == null &&
+    input.tosses == null &&
+    input.latencyMinutes == null
+  ) {
     return null;
   }
 
@@ -198,6 +211,16 @@ export function thermalScore(input: ThermalInput): number | null {
   if (input.awakeHours != null) {
     available += 20;
     earned += 20 * band(input.awakeHours / (asleep + input.awakeHours), 0, 0.1, 0.18);
+  }
+
+  // Time to fall asleep. The most direct thing a bed's first stage moves:
+  // sleep onset needs a core-temperature drop that happens by shedding heat
+  // through the skin, and the bed sets how fast that can go. Measured on
+  // this account 30–70 min a night before this term existed, while the loop
+  // had no way to see it.
+  if (input.latencyMinutes != null) {
+    available += 15;
+    earned += 15 * band(input.latencyMinutes, 0, LATENCY_TARGET_MIN, LATENCY_FADE_MIN);
   }
 
   if (available === 0) return null;

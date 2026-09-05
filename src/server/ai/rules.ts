@@ -20,6 +20,7 @@
 //   and cut HR -2.3 bpm; their protocol escalates the offset magnitude when
 //   deep sleep is under 15% or REM under 20% of the night. Notably, warmer
 //   bed temperatures correlated with REDUCED wake time in the same data.
+import { LATENCY_TARGET_MIN } from "./score";
 import { type SleepContext } from "./sleepData";
 import { type SleepStage } from "./time";
 
@@ -92,10 +93,37 @@ export const PRE_WAKE_QUIET_MIN = 45;
 // below the best-known night; two in a row triggers a revert to best.
 export const REGRESSION_SCORE_DROP = 8;
 
+/** Mean sleep-onset latency at or above this is a signal on its own. */
+export const LATENCY_SIGNAL_MIN = 30;
+
 export function deriveNightSignals(context: SleepContext): string[] {
   const signals: string[] = [];
   const session = context.recentSessions[0];
   if (!session) return signals;
+
+  // Time to fall asleep, averaged over the nights on hand (up to three), so
+  // one restless evening does not move the first stage by itself. Onset is
+  // a heat-loss problem: the core must drop, and it does so through the
+  // skin, which the first stage's bed temperature either helps or blocks.
+  const latencies = context.recentSessions
+    .slice(0, 3)
+    .map((s) => s.sleepLatencyMinutes)
+    .filter((m): m is number => m != null);
+  if (latencies.length > 0) {
+    const meanLatency = latencies.reduce((a, b) => a + b, 0) / latencies.length;
+    if (meanLatency >= LATENCY_SIGNAL_MIN) {
+      const bedAtOnset = session.avgBedTempC.firstThird;
+      const direction =
+        bedAtOnset != null && bedAtOnset >= HOT_BED_TEMP_C
+          ? `the bed measured ${bedAtOnset}°C in the first third, so a cooler initial stage lets the core shed heat`
+          : bedAtOnset != null && bedAtOnset <= COLD_BED_TEMP_C
+            ? `the bed measured only ${bedAtOnset}°C in the first third, so mild warmth at bedtime (distal skin warming) may speed onset`
+            : "move the initial stage in the direction the first-third restlessness and past nights support";
+      signals.push(
+        `Took ${Math.round(meanLatency)} min on average to fall asleep over the last ${latencies.length} night${latencies.length === 1 ? "" : "s"} (target under ${LATENCY_TARGET_MIN}): ${direction}.`,
+      );
+    }
+  }
 
   const totalHours = Object.values(session.stageHours).reduce(
     (sum, h) => sum + h,

@@ -101,3 +101,31 @@ console.log("ok  bedtime grace and caps");
 assert.equal(scoreNightBreakdown({ asleepHours: 9, awakeHours: 0, wakeCount: 0, bedtimeMinutes: null, referenceBedtimeMinutes: null }).duration, 50);
 assert.equal(scoreNightBreakdown({ asleepHours: 7.67, awakeHours: 0, wakeCount: 0, bedtimeMinutes: null, referenceBedtimeMinutes: null }).duration, 50);
 console.log("ok  duration saturates at the target");
+
+// --- thermal score: sleep-onset latency is a term --------------------------
+import { thermalScore, LATENCY_TARGET_MIN } from "../score";
+import { sleepLatencyHours } from "../sleepData";
+const quick = thermalScore({ asleepHours: 6.5, deepHours: 1.2, remHours: 1.4, awakeHours: 0.3, tosses: 15, latencyMinutes: 12 });
+const slow = thermalScore({ asleepHours: 6.5, deepHours: 1.2, remHours: 1.4, awakeHours: 0.3, tosses: 15, latencyMinutes: 55 });
+const unknown = thermalScore({ asleepHours: 6.5, deepHours: 1.2, remHours: 1.4, awakeHours: 0.3, tosses: 15, latencyMinutes: null });
+assert.ok(quick! > slow!, `a 55-min onset (${slow}) must score below a 12-min one (${quick})`);
+assert.ok(quick! >= unknown! - 1, "a fast onset never costs against an unknown one");
+assert.equal(
+  thermalScore({ asleepHours: 6.5, deepHours: 1.2, remHours: 1.4, awakeHours: 0.3, tosses: 15, latencyMinutes: LATENCY_TARGET_MIN }),
+  quick,
+  "anything inside the target is full marks",
+);
+assert.equal(sleepLatencyHours(base), 3270 / 3600, "latency = the pod's awakeBeforeSleepDuration");
+assert.equal(sleepLatencyHours(hypno), 3000 / 3600, "fallback: leading awake runs of the hypnogram");
+console.log("ok  sleep-onset latency scores and reads");
+
+// --- second opinion --------------------------------------------------------
+import { compareSources } from "../secondOpinion";
+const pod = { score: 79, asleepHours: 6.08, awakeHours: 56 / 60, wakeCount: 5, deepHours: 1.2, remHours: 1.5 };
+const watch = { score: 86, asleepHours: 6.07, awakeHours: 11 / 60, wakeCount: 4, deepHours: 1.0, remHours: 1.3 };
+const opinion = compareSources(pod, watch);
+assert.equal(opinion.score, 86);
+assert.equal(opinion.disagreements.length, 1, JSON.stringify(opinion.disagreements));
+assert.ok(opinion.disagreements[0]!.startsWith("Awake mid-night: pod 56m, Watch 11m"));
+assert.equal(compareSources(pod, { ...pod }).disagreements.length, 0, "identical readings agree");
+console.log("ok  second opinion flags only real disagreements");

@@ -13,6 +13,7 @@ type MetricKey =
   | "deepHours"
   | "remHours"
   | "awakeHours"
+  | "sleepLatencyHours"
   | "tosses"
   | "restingHeartRate"
   | "hrv"
@@ -66,6 +67,13 @@ const METRICS: MetricMeta[] = [
     color: "var(--stage-awake)",
     higherIsBetter: false,
     format: formatHours,
+  },
+  {
+    key: "sleepLatencyHours",
+    label: "Time to fall asleep",
+    color: "var(--stage-light)",
+    higherIsBetter: false,
+    format: (v) => `${Math.round(v * 60)}m`,
   },
   {
     key: "tosses",

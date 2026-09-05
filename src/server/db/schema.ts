@@ -194,6 +194,8 @@ export const nightMetrics = createTable(
     remTenthHours: integer("remTenthHours"),
     lightTenthHours: integer("lightTenthHours"),
     awakeTenthHours: integer("awakeTenthHours"),
+    /** Time in bed before falling asleep (sleep-onset latency). */
+    latencyTenthHours: integer("latencyTenthHours"),
     tosses: integer("tosses"),
     wakeCount: integer("wakeCount"),
     restingHeartRate: integer("restingHeartRate"),

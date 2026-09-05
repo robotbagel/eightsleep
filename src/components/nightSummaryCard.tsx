@@ -1,12 +1,12 @@
 "use client";
 import React from "react";
-import { apiR } from "~/trpc/react";
+import { apiR, type RouterOutputs } from "~/trpc/react";
 import { Card, Skeleton, Tile } from "./ui/card";
 import { NightNav } from "./nightNav";
 import { ScoreRing } from "./charts/scoreRing";
 import { StageBar } from "./charts/stageBar";
 import { Sparkline } from "./charts/sparkline";
-import { TONE_VAR, type Point } from "./charts/chartUtils";
+import { formatHours, TONE_VAR, type Point } from "./charts/chartUtils";
 import { buildVerdict } from "~/lib/verdict";
 
 function clockOf(minutes: number | null | undefined): string {
@@ -166,6 +166,12 @@ export const NightSummaryCard: React.FC<{
             style={{ color: "var(--text-faint)" }}
           >
             {clockOf(metrics.bedtimeMinutes)} → {clockOf(metrics.wakeMinutes)}
+            {metrics.sleepLatencyHours != null && (
+              <span title="Time in bed before falling asleep. Sleep onset is a heat-loss problem: the bed's first stage sets how fast your core can cool.">
+                {" · fell asleep in "}
+                {Math.round(metrics.sleepLatencyHours * 60)}m
+              </span>
+            )}
             {metrics.score != null && (
               <span
                 title="Apple-style overall score: half duration, a third bedtime consistency. Useful context, but not what the autopilot tunes."
@@ -175,6 +181,9 @@ export const NightSummaryCard: React.FC<{
               </span>
             )}
           </p>
+          {metrics.secondOpinion && (
+            <SecondOpinionRow opinion={metrics.secondOpinion} />
+          )}
           {Object.keys(stageHours).length > 0 && (
             <div className="mt-4">
               <StageBar stageHours={stageHours} compact />
@@ -251,6 +260,48 @@ export const NightSummaryCard: React.FC<{
         />
       </div>
     </Card>
+  );
+};
+
+/**
+ * The Apple Watch's reading of the same night. Two sensors on one night:
+ * where they agree the pod is confirmed, where they differ the gap is shown
+ * rather than silently resolved in the pod's favour.
+ */
+const SecondOpinionRow: React.FC<{
+  opinion: NonNullable<
+    NonNullable<RouterOutputs["user"]["getNightTimeline"]["metrics"]>["secondOpinion"]
+  >;
+}> = ({ opinion }) => {
+  const parts: string[] = [];
+  if (opinion.score != null) parts.push(`${opinion.score}/100`);
+  if (opinion.asleepHours != null) parts.push(`${formatHours(opinion.asleepHours)} asleep`);
+  if (opinion.awakeHours != null) parts.push(`${Math.round(opinion.awakeHours * 60)}m awake`);
+  const disagrees = opinion.disagreements.length > 0;
+  return (
+    <div className="mt-2 text-xs" style={{ color: "var(--text-faint)" }}>
+      <span className="tabular">Apple Watch: {parts.join(" · ")}</span>
+      {disagrees ? (
+        <span
+          className="chip ml-2"
+          style={{ color: "var(--warning)", borderColor: "var(--warning)", background: "var(--warning-soft)" }}
+          title={opinion.disagreements.join(" ")}
+        >
+          sensors disagree
+        </span>
+      ) : (
+        <span className="chip ml-2" style={{ color: "var(--success)", borderColor: "var(--success)", background: "var(--success-soft)" }}>
+          agrees
+        </span>
+      )}
+      {disagrees && (
+        <ul className="mt-1 space-y-0.5" style={{ color: "var(--text-muted)" }}>
+          {opinion.disagreements.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 };
 

@@ -49,7 +49,12 @@ import {
   type Stage,
 } from "./control";
 import { minutesSinceTimeOfDay } from "./time";
-import { readNightMetrics, shiftDate, syncNightMetrics } from "./history";
+import {
+  readNightMetrics,
+  shiftDate,
+  SYNC_PAGES,
+  syncNightMetrics,
+} from "./history";
 import { sendPushToUser } from "~/server/push";
 import {
   celsiusToRaw,
@@ -366,6 +371,7 @@ async function buildExperimentHistory(
     date: night.date,
     score: night.thermalScore!,
     overall: night.score,
+    latencyMinutes: night.sleepLatencyMinutes,
     profile: profileForNight(night.date),
     verified: driven.has(night.date),
   }));
@@ -434,7 +440,7 @@ async function buildExperimentHistory(
     .reverse()
     .map(
       (night) =>
-        `${night.date}: thermal ${night.score}${night.overall != null ? ` (overall ${night.overall})` : ""} at ${formatProfileC(night.profile)}` +
+        `${night.date}: thermal ${night.score}${night.overall != null ? ` (overall ${night.overall})` : ""}${night.latencyMinutes != null ? `, fell asleep in ${night.latencyMinutes} min` : ""} at ${formatProfileC(night.profile)}` +
         (night.date === bestDate ? " (best night)" : "") +
         (night.verified
           ? ""
@@ -453,12 +459,14 @@ async function buildExperimentHistory(
 export async function readLedgerForApp(
   email: string,
   currentLevels: ProfileLevels,
+  timezone: string,
 ): Promise<{ ledger: LedgerEntry[]; pressure: LivePressure[] }> {
   const [metrics, driven, appliedRecs, adjustments] = await Promise.all([
     readNightMetrics(
       email,
       shiftDate(new Date().toISOString().slice(0, 10), -21),
       new Date().toISOString().slice(0, 10),
+      timezone,
     ),
     drivenNights(email),
     db
@@ -823,6 +831,9 @@ export async function generateRecommendationForUser(
     session?.tossesAndTurns[thirdFor(stage)] ?? null;
   const bedTempAt = (stage: Stage) =>
     session?.avgBedTempC[thirdFor(stage)] ?? null;
+  // Sleep-onset latency belongs to the first stage only.
+  const latencyAt = (stage: Stage) =>
+    stage === "initial" ? (session?.sleepLatencyMinutes ?? null) : null;
   const decision = decide({
     current: currentLevels,
     ledger: history.ledger,
@@ -881,6 +892,7 @@ export async function generateRecommendationForUser(
         direction: reported.direction,
         tosses: tossesAt(reported.stage),
         bedTempC: bedTempAt(reported.stage),
+        latencyMinutes: latencyAt(reported.stage),
         liveNights: null,
         reportedNights: reported.nights,
       })} What you report beats anything inferred from movement.${
@@ -928,6 +940,7 @@ export async function generateRecommendationForUser(
         direction: cooler ? "cooler" : "warmer",
         tosses: tossesAt(decision.stage),
         bedTempC: bedTempAt(decision.stage),
+        latencyMinutes: latencyAt(decision.stage),
         liveNights: decision.pressure.nights,
         reportedNights: null,
       })} So the ${STAGE_NAME[decision.stage]} stage starts ${Math.abs(decision.toC - decision.fromC).toFixed(1)}°C ${cooler ? "cooler" : "warmer"} tonight — ${fmt(currentLevels[decision.stage])} to ${fmt(celsiusToRaw(decision.toC))} — rather than waiting to be corrected again once you are already asleep. Nothing else moves, so the effect of this one change can be measured.`,
@@ -947,6 +960,7 @@ export async function generateRecommendationForUser(
                 direction: cooler ? "cooler" : "warmer",
                 tosses: tossesAt(stage),
                 bedTempC: bedTempAt(stage),
+                latencyMinutes: latencyAt(stage),
                 liveNights: decision.pressure.nights,
                 reportedNights: null,
               })}`
@@ -1510,7 +1524,7 @@ export async function runDailyAiPass(): Promise<void> {
             token,
             user.eightUserId,
             profile.timezoneTZ,
-            1,
+            SYNC_PAGES,
           );
         }
       } catch (error) {

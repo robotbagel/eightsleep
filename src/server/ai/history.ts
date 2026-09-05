@@ -14,9 +14,11 @@ import { type Token } from "../eight/types";
 import {
   awakeAfterOnsetHours,
   fetchPodSessions,
+  sleepLatencyHours,
   wakeEventCount,
   type PodSession,
 } from "./sleepData";
+import { compareSources, type SecondOpinion } from "./secondOpinion";
 import {
   BEDTIME_REFERENCE_NIGHTS,
   circularMeanMinutes,
@@ -36,6 +38,8 @@ export interface NightMetric {
   remHours: number | null;
   lightHours: number | null;
   awakeHours: number | null;
+  /** Hours in bed before falling asleep (sleep-onset latency). */
+  sleepLatencyHours: number | null;
   tosses: number | null;
   wakeCount: number | null;
   restingHeartRate: number | null;
@@ -47,6 +51,8 @@ export interface NightMetric {
   bedtimeMinutes: number | null; // minutes past midnight, local
   wakeMinutes: number | null;
   source: "pod" | "health";
+  /** The Apple Watch's reading of the same night, when one was imported. */
+  secondOpinion?: SecondOpinion | null;
 }
 
 const tenth = (value: number | null | undefined): number | null =>
@@ -99,6 +105,7 @@ export function metricsFromSession(
   // in both scores below.
   const awakeHours = awakeAfterOnsetHours(session);
   const wakeCount = wakeEventCount(session);
+  const latencyHours = sleepLatencyHours(session);
 
   const asleepHours = asleepSeconds / 3600;
   const deepHours = (summary.deepDuration ?? 0) / 3600;
@@ -113,6 +120,7 @@ export function metricsFromSession(
       remHours,
       awakeHours,
       tosses,
+      latencyMinutes: latencyHours == null ? null : Math.round(latencyHours * 60),
     }),
     score: scoreNight({
       asleepHours: asleepSeconds / 3600,
@@ -130,6 +138,7 @@ export function metricsFromSession(
     remHours: (summary.remDuration ?? 0) / 3600,
     lightHours: (summary.lightDuration ?? 0) / 3600,
     awakeHours,
+    sleepLatencyHours: latencyHours,
     tosses: (timeseries.tnt ?? []).length,
     wakeCount,
     restingHeartRate: heartRates.length > 0 ? Math.min(...heartRates) : null,
@@ -244,6 +253,7 @@ export async function persistNightMetrics(
         remTenthHours: tenth(m.remHours),
         lightTenthHours: tenth(m.lightHours),
         awakeTenthHours: tenth(m.awakeHours),
+        latencyTenthHours: tenth(m.sleepLatencyHours),
         tosses: m.tosses,
         wakeCount: m.wakeCount,
         restingHeartRate:
@@ -266,6 +276,14 @@ export async function persistNightMetrics(
     );
   }
 }
+
+/**
+ * Pages of pod sessions to pull when a night is first stored. Two, not one:
+ * the bedtime-consistency term is measured against up to
+ * BEDTIME_REFERENCE_NIGHTS prior nights and then frozen, and one page (~10
+ * nights) left the newest night judged against at most nine.
+ */
+export const SYNC_PAGES = 2;
 
 export async function syncNightMetrics(
   email: string,
@@ -293,6 +311,7 @@ function rowToMetric(row: typeof nightMetrics.$inferSelect): NightMetric {
     remHours: fromTenth(row.remTenthHours),
     lightHours: fromTenth(row.lightTenthHours),
     awakeHours: fromTenth(row.awakeTenthHours),
+    sleepLatencyHours: fromTenth(row.latencyTenthHours),
     tosses: row.tosses,
     wakeCount: row.wakeCount,
     restingHeartRate: row.restingHeartRate,
@@ -318,6 +337,7 @@ async function readHealthNights(
   email: string,
   from: string,
   to: string,
+  timezone: string,
 ): Promise<NightMetric[]> {
   const rows = await db
     .select()
@@ -341,6 +361,7 @@ async function readHealthNights(
     remHours: fromTenth(row.remTenthHours),
     lightHours: fromTenth(row.coreTenthHours),
     awakeHours: fromTenth(row.awakeTenthHours),
+    sleepLatencyHours: null,
     tosses: null,
     wakeCount: row.wakeCount,
     restingHeartRate: null,
@@ -349,14 +370,11 @@ async function readHealthNights(
     respiratoryRate: fromTenth(row.respiratoryRateTenths),
     avgBedTempC: null,
     avgRoomTempC: null,
+    // In the sleeper's zone, not the server's (Vercel runs in UTC).
     bedtimeMinutes:
-      row.sleepStart == null
-        ? null
-        : row.sleepStart.getHours() * 60 + row.sleepStart.getMinutes(),
+      row.sleepStart == null ? null : minutesOfDayInZone(row.sleepStart, timezone),
     wakeMinutes:
-      row.sleepEnd == null
-        ? null
-        : row.sleepEnd.getHours() * 60 + row.sleepEnd.getMinutes(),
+      row.sleepEnd == null ? null : minutesOfDayInZone(row.sleepEnd, timezone),
     source: "health" as const,
   }));
 }
@@ -365,6 +383,7 @@ export async function readNightMetrics(
   email: string,
   from: string,
   to: string,
+  timezone: string,
 ): Promise<NightMetric[]> {
   const rows = await db
     .select()
@@ -377,12 +396,18 @@ export async function readNightMetrics(
       ),
     );
   const byNight = new Map<string, NightMetric>();
-  for (const night of await readHealthNights(email, from, to)) {
+  for (const night of await readHealthNights(email, from, to, timezone)) {
     byNight.set(night.night, night);
   }
   for (const row of rows) {
     const metric = rowToMetric(row);
-    byNight.set(metric.night, metric); // pod overwrites health for the same date
+    // Pod wins for the same date, but the Watch's reading rides along as a
+    // second opinion so a sensor disagreement is visible instead of lost.
+    const watch = byNight.get(metric.night);
+    if (watch && watch.source === "health") {
+      metric.secondOpinion = compareSources(metric, watch);
+    }
+    byNight.set(metric.night, metric);
   }
   return [...byNight.values()].sort((a, b) => a.night.localeCompare(b.night));
 }
@@ -398,6 +423,7 @@ export type MetricKey =
   | "deepHours"
   | "remHours"
   | "awakeHours"
+  | "sleepLatencyHours"
   | "tosses"
   | "restingHeartRate"
   | "hrv"
@@ -423,6 +449,7 @@ export const HIGHER_IS_BETTER: Record<MetricKey, boolean> = {
   deepHours: true,
   remHours: true,
   awakeHours: false,
+  sleepLatencyHours: false,
   tosses: false,
   restingHeartRate: false,
   hrv: true,

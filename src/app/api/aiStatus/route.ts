@@ -126,6 +126,7 @@ export async function GET(request: NextRequest): Promise<Response> {
         email,
         shiftDate(new Date().toISOString().slice(0, 10), -9),
         new Date().toISOString().slice(0, 10),
+        profile?.timezoneTZ ?? "UTC",
       );
 
       const runs = await db
@@ -238,6 +239,13 @@ export async function GET(request: NextRequest): Promise<Response> {
           night: n.night,
           score: n.score,
           quality: n.thermalScore,
+          latencyMin:
+            n.sleepLatencyHours == null
+              ? null
+              : Math.round(n.sleepLatencyHours * 60),
+          // The Watch's reading of the same night, when imported.
+          watchScore: n.secondOpinion?.score ?? null,
+          disagreements: n.secondOpinion?.disagreements ?? [],
         })),
         // The decision trail, so oscillation (moving a stage down then back
         // up on successive days) is visible instead of having to be inferred

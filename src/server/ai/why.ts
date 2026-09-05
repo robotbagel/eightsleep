@@ -76,6 +76,8 @@ export function observation(input: {
   direction: "cooler" | "warmer";
   tosses: number | null;
   bedTempC: number | null;
+  /** Minutes in bed before falling asleep; only meaningful for `initial`. */
+  latencyMinutes?: number | null;
   liveNights: number | null;
   reportedNights: number | null;
 }): string {
@@ -91,6 +93,9 @@ export function observation(input: {
     bits.push(
       `the pod had to be ${input.direction === "cooler" ? "cooled" : "warmed"} mid-night on ${input.liveNights} of the last 3 nights`,
     );
+  }
+  if (input.stage === "initial" && input.latencyMinutes != null) {
+    bits.push(`it took you ${input.latencyMinutes} minutes to fall asleep`);
   }
   if (input.tosses != null && input.tosses > 0) {
     bits.push(`you turned over ${input.tosses} times during ${where}`);
