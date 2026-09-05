@@ -369,6 +369,15 @@ export async function GET(request: NextRequest): Promise<Response> {
       "aiStatus failed:",
       error instanceof Error ? error.message : String(error),
     );
-    return new Response("Internal server error", { status: 500 });
+    // Operator endpoint behind CRON_SECRET: the failure reason is the whole
+    // point of a status probe, so it is returned, not just logged.
+    return Response.json(
+      {
+        error: "aiStatus failed",
+        reason: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? (error.stack ?? "").split("\n").slice(0, 6) : [],
+      },
+      { status: 500 },
+    );
   }
 }
