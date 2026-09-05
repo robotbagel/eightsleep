@@ -251,6 +251,57 @@ export function computeSleepScore(
   });
 }
 
+/**
+ * Re-scores every imported Apple Health night on the CURRENT rubric, each
+ * against the bedtimes imported before it. The score is stored at import
+ * time, so after score.ts changes an old import carries the old rubric's
+ * number — and a "disagreement" between pod and Watch is then our two
+ * rubrics disagreeing, not the two sensors.
+ */
+export async function rescoreHealthNights(
+  email: string,
+  timezone: string,
+): Promise<{ night: string; before: number; after: number }[]> {
+  const rows = await db
+    .select()
+    .from(healthNights)
+    .where(eq(healthNights.email, email))
+    .orderBy(healthNights.night);
+  const changes: { night: string; before: number; after: number }[] = [];
+  const priorStarts: number[] = [];
+  for (const row of rows) {
+    const reference =
+      priorStarts.length > 0
+        ? circularMeanMinutes(priorStarts.slice(-BEDTIME_REFERENCE_NIGHTS))
+        : null;
+    const after = computeSleepScore(
+      {
+        asleepHours: row.asleepTenthHours / 10,
+        deepHours: row.deepTenthHours == null ? null : row.deepTenthHours / 10,
+        remHours: row.remTenthHours == null ? null : row.remTenthHours / 10,
+        coreHours: row.coreTenthHours == null ? null : row.coreTenthHours / 10,
+        awakeHours: row.awakeTenthHours == null ? null : row.awakeTenthHours / 10,
+        wakeCount: row.wakeCount,
+        sleepStart: row.sleepStart,
+        sleepEnd: row.sleepEnd,
+      },
+      reference,
+      timezone,
+    );
+    if (after !== row.score) {
+      await db
+        .update(healthNights)
+        .set({ score: after })
+        .where(eq(healthNights.id, row.id));
+      changes.push({ night: row.night, before: row.score, after });
+    }
+    if (row.sleepStart != null) {
+      priorStarts.push(minutesOfDayInZone(row.sleepStart, timezone));
+    }
+  }
+  return changes;
+}
+
 export interface StoredHealthNight {
   night: string;
   score: number;

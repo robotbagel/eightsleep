@@ -11,6 +11,7 @@ import { sleepFeedback } from "~/server/db/schema";
 import { and } from "drizzle-orm";
 import { collectSleepContext, fetchPodSessions } from "~/server/ai/sleepData";
 import { persistNightMetrics, sessionsToMetrics } from "~/server/ai/history";
+import { rescoreHealthNights } from "~/server/ai/health";
 import {
   APP_API_URL,
   CLIENT_API_URL,
@@ -219,8 +220,12 @@ export async function POST(request: NextRequest): Promise<Response> {
         { status: 500 },
       );
     }
+    // Imported Apple nights carry a score stored at import time; bring them
+    // onto the same rubric so a second opinion compares sensors, not rubrics.
+    const healthRescored = await rescoreHealthNights(email, timezone);
     return Response.json({
       email,
+      healthRescored,
       rescored: metrics.map((m) => ({
         night: m.night,
         score: m.score,
