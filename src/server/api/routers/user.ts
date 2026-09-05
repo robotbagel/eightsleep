@@ -40,7 +40,11 @@ import {
   isAiConfigured,
   type RecommendationRationale,
 } from "~/server/ai/gemini";
-import { collectSleepContext, fetchPodSessions } from "~/server/ai/sleepData";
+import {
+  awakeAfterOnsetHours,
+  collectSleepContext,
+  fetchPodSessions,
+} from "~/server/ai/sleepData";
 import {
   aggregate,
   byWeekday,
@@ -588,12 +592,14 @@ export const userRouter = createTRPCRouter({
               ["deep", summary.deepDuration],
               ["rem", summary.remDuration],
               ["light", summary.lightDuration],
-              ["awake", summary.awakeDuration],
             ] as [string, number | null | undefined][]) {
               if (seconds != null) {
                 stageHours[k] = Math.round((seconds / 3600) * 10) / 10;
               }
             }
+            // Awake = interruptions of sleep, not the whole time in bed.
+            const waso = awakeAfterOnsetHours(chosen);
+            if (waso != null) stageHours.awake = Math.round(waso * 10) / 10;
             sessionInfo = {
               night: nightOf(chosen),
               sessionStart: chosen.ts ?? chosen.sleepStart ?? null,

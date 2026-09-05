@@ -15,6 +15,12 @@ import { db } from "~/server/db";
 import { healthNights } from "~/server/db/schema";
 import { and, desc, eq, gte } from "drizzle-orm";
 import { type NightTrend, type SessionDetail } from "./sleepData";
+import {
+  BEDTIME_REFERENCE_NIGHTS,
+  circularMeanMinutes,
+  minutesOfDayInZone,
+  scoreNight,
+} from "./score";
 
 export const HealthImportSchema = z.object({
   samples: z.string().max(200_000).optional(),
@@ -224,39 +230,25 @@ function parseSampleLines(samples: string): ParsedNight | null {
   };
 }
 
-// Transparent score, 0-100, mirroring the Apple Watch Sleep Score rubric
-// (Duration up to 50, Bedtime consistency up to 30, Interruptions up to 20):
-// - Duration: 50 x min(asleep / 8.5h, 1)
-// - Bedtime: 30 minus 1 point per 6 minutes of deviation from the reference
-//   bedtime (the trailing average of past imports, or the scheduled bedtime
-//   for the first night); floor 0.
-// - Interruptions: 20 minus 1 per merged awakening minus 5 per awake hour;
-//   floor 0. Neutral 14 when awakenings are unknown.
+// The shared rubric in score.ts, fed with Apple's own figures. Apple's
+// "awake" samples only ever fall inside the sleep session, so awakeHours and
+// wakeCount here are already interruptions of sleep, the same meaning the
+// pod path feeds it.
 export function computeSleepScore(
   night: ParsedNight,
-  referenceBedtimeMs: number | null = null,
+  referenceBedtimeMinutes: number | null,
+  timezone: string,
 ): number {
-  const duration = 50 * Math.min(night.asleepHours / 8.5, 1);
-
-  let bedtime = 24; // neutral when no reference is available
-  if (referenceBedtimeMs != null && night.sleepStart != null) {
-    const minutesOfDay = (ms: number) => {
-      const d = new Date(ms);
-      return d.getHours() * 60 + d.getMinutes();
-    };
-    let dev = Math.abs(
-      minutesOfDay(night.sleepStart.getTime()) - minutesOfDay(referenceBedtimeMs),
-    );
-    if (dev > 12 * 60) dev = 24 * 60 - dev; // wrap around midnight
-    bedtime = Math.max(30 - dev / 6, 0);
-  }
-
-  const interruptions =
-    night.wakeCount != null
-      ? Math.max(20 - night.wakeCount - 5 * (night.awakeHours ?? 0), 0)
-      : 14;
-
-  return Math.round(duration + bedtime + interruptions);
+  return scoreNight({
+    asleepHours: night.asleepHours,
+    awakeHours: night.awakeHours,
+    wakeCount: night.wakeCount,
+    bedtimeMinutes:
+      night.sleepStart != null
+        ? minutesOfDayInZone(night.sleepStart, timezone)
+        : null,
+    referenceBedtimeMinutes,
+  });
 }
 
 export interface StoredHealthNight {
@@ -296,34 +288,22 @@ export async function storeHealthImport(
     (payload.sleepEnd ? new Date(payload.sleepEnd) : new Date());
   const night = reference.toLocaleDateString("en-CA", { timeZone: timezone });
 
-  // Bedtime reference: circular mean of the last 14 imported bedtimes.
-  let referenceBedtimeMs: number | null = null;
+  // Bedtime reference: circular mean of the previous imported bedtimes, in
+  // the sleeper's own timezone (the server runs in UTC).
   const prior = await db
     .select()
     .from(healthNights)
     .where(eq(healthNights.email, email))
     .orderBy(desc(healthNights.night))
-    .limit(14);
+    .limit(BEDTIME_REFERENCE_NIGHTS + 1);
   const starts = prior
     .filter((row) => row.night !== night && row.sleepStart != null)
-    .map((row) => row.sleepStart!.getTime());
-  if (starts.length > 0) {
-    let sx = 0;
-    let sy = 0;
-    for (const ms of starts) {
-      const d = new Date(ms);
-      const angle = ((d.getHours() * 60 + d.getMinutes()) / 1440) * 2 * Math.PI;
-      sx += Math.cos(angle);
-      sy += Math.sin(angle);
-    }
-    let meanMinutes = (Math.atan2(sy, sx) / (2 * Math.PI)) * 1440;
-    if (meanMinutes < 0) meanMinutes += 1440;
-    const ref = new Date();
-    ref.setHours(Math.floor(meanMinutes / 60), Math.round(meanMinutes % 60), 0, 0);
-    referenceBedtimeMs = ref.getTime();
-  }
+    .slice(0, BEDTIME_REFERENCE_NIGHTS)
+    .map((row) => minutesOfDayInZone(row.sleepStart!, timezone));
+  const referenceBedtimeMinutes =
+    starts.length > 0 ? circularMeanMinutes(starts) : null;
 
-  const score = computeSleepScore(parsed, referenceBedtimeMs);
+  const score = computeSleepScore(parsed, referenceBedtimeMinutes, timezone);
 
   const tenth = (hours: number | null) =>
     hours != null ? Math.round(hours * 10) : null;

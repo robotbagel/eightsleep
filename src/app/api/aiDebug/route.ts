@@ -9,7 +9,8 @@ import { eq } from "drizzle-orm";
 import { getFreshToken, reassessToday } from "~/server/ai/advisor";
 import { sleepFeedback } from "~/server/db/schema";
 import { and } from "drizzle-orm";
-import { collectSleepContext } from "~/server/ai/sleepData";
+import { collectSleepContext, fetchPodSessions } from "~/server/ai/sleepData";
+import { persistNightMetrics, sessionsToMetrics } from "~/server/ai/history";
 import {
   APP_API_URL,
   CLIENT_API_URL,
@@ -174,6 +175,39 @@ export async function POST(request: NextRequest): Promise<Response> {
       schedulesBefore: schedules,
       schedulesAfter: afterBody.settings?.schedules ?? [],
       nextScheduledTimestamp: afterBody.nextScheduledTimestamp ?? null,
+    });
+  }
+
+  // Re-score every held night on the CURRENT rubric. The only sanctioned way
+  // past the score freeze: run it once after score.ts changes, for each user,
+  // so history is comparable with itself again.
+  // POST /api/aiDebug?action=rescore&email=…&pages=3   (≈10 nights per page)
+  if (action === "rescore") {
+    const email =
+      request.nextUrl.searchParams.get("email") ?? "getnathan@outlook.com";
+    const pages = Number(request.nextUrl.searchParams.get("pages") ?? "3");
+    const user = await db.query.users.findFirst({ where: eq(users.email, email) });
+    if (!user) return Response.json({ error: "user not found" }, { status: 404 });
+    const profile = await db.query.userTemperatureProfile.findFirst({
+      where: eq(userTemperatureProfile.email, email),
+    });
+    const timezone = profile?.timezoneTZ ?? "UTC";
+    const token = await getFreshToken(user);
+    const sessions = await fetchPodSessions(token, user.eightUserId, pages);
+    const metrics = sessionsToMetrics(sessions, timezone);
+    await persistNightMetrics(email, metrics, { rescore: true });
+    return Response.json({
+      email,
+      rescored: metrics.map((m) => ({
+        night: m.night,
+        score: m.score,
+        quality: m.thermalScore,
+        asleepH:
+          m.asleepHours == null ? null : Math.round(m.asleepHours * 100) / 100,
+        awakeAfterOnsetH:
+          m.awakeHours == null ? null : Math.round(m.awakeHours * 100) / 100,
+        wakeCount: m.wakeCount,
+      })),
     });
   }
 

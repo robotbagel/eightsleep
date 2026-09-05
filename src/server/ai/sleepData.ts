@@ -69,6 +69,13 @@ const PodSessionSchema = z
         deepDuration: z.number().nullish(),
         remDuration: z.number().nullish(),
         outDuration: z.number().nullish(),
+        // Awake time split by WHERE in the night it fell. `awakeDuration`
+        // above is the sum of all three; only the middle one is sleep
+        // interruption.
+        awakeBeforeSleepDuration: z.number().nullish(),
+        awakeBetweenSleepDuration: z.number().nullish(),
+        awakeAfterSleepDuration: z.number().nullish(),
+        wasoDuration: z.number().nullish(),
       })
       .catchall(z.unknown())
       .nullish(),
@@ -98,6 +105,66 @@ const PodSessionsSchema = z
   .catchall(z.unknown());
 
 export type PodSession = z.infer<typeof PodSessionSchema>;
+
+/**
+ * Hours awake AFTER falling asleep and BEFORE the final wake (WASO). This is
+ * the only awake figure the score, the thermal score and the AI context may
+ * use. The pod's `stageSummary.awakeDuration` is NOT it: it also counts the
+ * time lying in bed before sleep onset (typically 30–70 min on these
+ * accounts) and after the final wake, which is why every night used to read
+ * as 1.5–1.9h "awake" and lost ~8 interruption points for reading in bed.
+ * Prefers the pod's own `wasoDuration`, then `awakeBetweenSleepDuration`,
+ * then the awake runs of the hypnogram with the leading/trailing awake or
+ * out runs trimmed. Null when none of those exist.
+ */
+export function awakeAfterOnsetHours(session: PodSession): number | null {
+  const summary = session.stageSummary ?? {};
+  const seconds = summary.wasoDuration ?? summary.awakeBetweenSleepDuration;
+  if (seconds != null) return seconds / 3600;
+  const stages = session.stages ?? [];
+  let first = 0;
+  while (first < stages.length && isAwakeLike(stages[first]!.stage)) first++;
+  let last = stages.length;
+  while (last > first && isAwakeLike(stages[last - 1]!.stage)) last--;
+  if (first >= last) return null;
+  let total = 0;
+  for (const run of stages.slice(first, last)) {
+    if (run.stage === "awake") total += run.duration;
+  }
+  return total / 3600;
+}
+
+function isAwakeLike(stage: string): boolean {
+  return stage === "awake" || stage === "out";
+}
+
+/** Merge gap: two short-awake markers this close apart are one awakening. */
+export const WAKE_EVENT_MERGE_MS = 10 * 60_000;
+
+/**
+ * Distinct awakenings inside the sleep window. The pod's `shortAwakes`
+ * series marks every brief arousal it saw; markers within ten minutes of
+ * each other are one awakening (a restless quarter hour is one interruption,
+ * not four), and markers outside sleepStart..sleepEnd are not interruptions
+ * of sleep. Null when the series is absent.
+ */
+export function wakeEventCount(session: PodSession): number | null {
+  const markers = session.timeseries?.shortAwakes;
+  if (!markers) return null;
+  const start = session.sleepStart ? Date.parse(session.sleepStart) : NaN;
+  const end = session.sleepEnd ? Date.parse(session.sleepEnd) : NaN;
+  let count = 0;
+  let last: number | null = null;
+  for (const [ts] of markers) {
+    const at = Date.parse(ts);
+    if (isNaN(at)) continue;
+    if (!isNaN(start) && at < start) continue;
+    if (!isNaN(end) && at > end) continue;
+    if (last == null || at - last > WAKE_EVENT_MERGE_MS) count++;
+    last = at;
+  }
+  return count;
+}
 
 /**
  * The sessions endpoint always returns the newest ~10 sessions and ignores
@@ -389,9 +456,8 @@ export function buildContextFromPodSessions(
   for (const session of usable) {
     const summary = session.stageSummary ?? {};
     const asleepHours = (summary.sleepDuration ?? 0) / 3600;
-    const awakeHours = (summary.awakeDuration ?? 0) / 3600;
-    const shortAwakes = session.timeseries?.shortAwakes ?? [];
-    const wakeCount = shortAwakes.length > 0 ? shortAwakes.length : null;
+    const awakeHours = awakeAfterOnsetHours(session);
+    const wakeCount = wakeEventCount(session);
     const startDate = session.sleepStart ? new Date(session.sleepStart) : null;
     const bedtimeMinutes =
       startDate && !isNaN(startDate.getTime())
@@ -444,11 +510,12 @@ export function buildContextFromPodSessions(
       ["deep", summary.deepDuration],
       ["rem", summary.remDuration],
       ["light", summary.lightDuration],
-      ["awake", summary.awakeDuration],
     ];
     for (const [stage, seconds] of stageMap) {
       if (seconds != null) stageHours[stage] = round1(seconds / 3600);
     }
+    const waso = awakeAfterOnsetHours(session);
+    if (waso != null) stageHours.awake = round1(waso);
     const night = context.nights.find((n) => n.date === date);
     const heartRates = (session.timeseries?.heartRate ?? []).map(([, v]) => v);
 

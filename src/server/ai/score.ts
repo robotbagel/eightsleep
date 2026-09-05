@@ -1,11 +1,30 @@
 // score.ts
 // One sleep-score rubric shared by every data source (Eight Sleep pod
 // sessions and Apple Health imports), so scores are comparable across nights
-// regardless of where the night came from. Mirrors the Apple Watch Sleep
-// Score weighting: Duration 50 / Bedtime consistency 30 / Interruptions 20.
+// regardless of where the night came from — and comparable with the Apple
+// Watch Sleep Score, which is what Nathan reads next to ours.
+//
+// Weighting follows Apple's published split (Duration 50 / Bedtime
+// consistency 30 / Interruptions 20). The shape of each term was fitted on
+// 2026-09-05 against five nights where Apple's per-term breakdown was known
+// (1–5 Sep 2026) plus the5krunner's reverse-engineering of watchOS 26
+// (the5krunner.com, 2025-10-06); the fit hits all five duration and bedtime
+// terms exactly and the interruption terms within ±0.5 pt. Before that fit
+// the rubric charged 1 pt per wake-up and 5 pts per awake HOUR with no free
+// allowance, and the pod's "awake" figure it was fed included the time lying
+// in bed BEFORE falling asleep and AFTER waking — so a 54-minute read before
+// sleep cost 4.5 points of "interruptions". That is why our scores ran 10–16
+// below Apple's for the same nights.
 export interface ScoreInput {
   asleepHours: number;
+  /**
+   * Hours awake AFTER sleep onset and BEFORE the final wake — the clinical
+   * WASO. Never the pod's total `awakeDuration`, which also counts time in
+   * bed before falling asleep and after waking up; use
+   * `awakeAfterOnsetHours()` in sleepData.ts. Null = unknown.
+   */
   awakeHours: number | null;
+  /** Distinct awakenings inside the sleep window. Null = unknown. */
   wakeCount: number | null;
   // Local minutes-of-day the sleeper fell asleep, and the reference bedtime
   // to compare against (circular mean of recent nights). Null = neutral.
@@ -13,24 +32,78 @@ export interface ScoreInput {
   referenceBedtimeMinutes: number | null;
 }
 
-export const DURATION_TARGET_HOURS = 8.5;
+/** Full duration marks at or above this; Apple deducts below ~7h50m. */
+export const DURATION_TARGET_HOURS = 7.67;
+/** Points lost per hour short of the target (linear fit, 6–7.5h band). */
+export const DURATION_POINTS_PER_HOUR_SHORT = 8.2;
+/** Going to bed up to this many minutes late costs nothing. */
+export const BEDTIME_LATE_GRACE_MIN = 15;
+/** Then one point per this many minutes late (60 min late ≈ −10, 150 ≈ −30). */
+export const BEDTIME_LATE_MIN_PER_POINT = 4.5;
+/** Going to bed early is free for an hour, then 1 pt / 30 min, capped at 6. */
+export const BEDTIME_EARLY_GRACE_MIN = 60;
+export const BEDTIME_EARLY_MIN_PER_POINT = 30;
+export const BEDTIME_EARLY_MAX_PENALTY = 6;
+/** The first 11 minutes awake and the first 2 awakenings are free. */
+export const AWAKE_FREE_MINUTES = 11;
+export const AWAKE_POINTS_PER_MINUTE = 0.15;
+export const WAKE_FREE_COUNT = 2;
+export const WAKE_POINTS_PER_EVENT = 0.55;
+/** Bedtime consistency looks back this many nights (Apple: 13). */
+export const BEDTIME_REFERENCE_NIGHTS = 13;
 
-export function scoreNight(input: ScoreInput): number {
-  const duration = 50 * Math.min(input.asleepHours / DURATION_TARGET_HOURS, 1);
+export interface ScoreBreakdown {
+  duration: number;
+  bedtime: number;
+  interruptions: number;
+  total: number;
+}
+
+export function scoreNightBreakdown(input: ScoreInput): ScoreBreakdown {
+  const short = Math.max(0, DURATION_TARGET_HOURS - input.asleepHours);
+  const duration = Math.max(0, 50 - DURATION_POINTS_PER_HOUR_SHORT * short);
 
   let bedtime = 24; // neutral until a reference exists
   if (input.bedtimeMinutes != null && input.referenceBedtimeMinutes != null) {
-    let dev = Math.abs(input.bedtimeMinutes - input.referenceBedtimeMinutes);
-    if (dev > 12 * 60) dev = 24 * 60 - dev; // wrap around midnight
-    bedtime = Math.max(30 - dev / 6, 0);
+    // Signed deviation, later = positive, wrapped around midnight.
+    let dev = input.bedtimeMinutes - input.referenceBedtimeMinutes;
+    if (dev > 12 * 60) dev -= 24 * 60;
+    if (dev < -12 * 60) dev += 24 * 60;
+    let penalty = 0;
+    if (dev > 0) {
+      penalty = Math.max(0, dev - BEDTIME_LATE_GRACE_MIN) / BEDTIME_LATE_MIN_PER_POINT;
+    } else {
+      penalty = Math.min(
+        BEDTIME_EARLY_MAX_PENALTY,
+        Math.max(0, -dev - BEDTIME_EARLY_GRACE_MIN) / BEDTIME_EARLY_MIN_PER_POINT,
+      );
+    }
+    bedtime = Math.max(30 - penalty, 0);
   }
 
-  const interruptions =
-    input.wakeCount != null
-      ? Math.max(20 - input.wakeCount - 5 * (input.awakeHours ?? 0), 0)
-      : 14;
+  let interruptions = 14; // neutral when awakenings are unknown
+  if (input.awakeHours != null || input.wakeCount != null) {
+    const minutes = (input.awakeHours ?? 0) * 60;
+    const events = input.wakeCount ?? 0;
+    interruptions = Math.max(
+      20 -
+        Math.max(0, minutes - AWAKE_FREE_MINUTES) * AWAKE_POINTS_PER_MINUTE -
+        Math.max(0, events - WAKE_FREE_COUNT) * WAKE_POINTS_PER_EVENT,
+      0,
+    );
+  }
 
-  return Math.round(duration + bedtime + interruptions);
+  const total = Math.round(duration + bedtime + interruptions);
+  return {
+    duration: Math.round(duration),
+    bedtime: Math.round(bedtime),
+    interruptions: Math.round(interruptions),
+    total,
+  };
+}
+
+export function scoreNight(input: ScoreInput): number {
+  return scoreNightBreakdown(input).total;
 }
 
 // Circular mean of clock times (handles the midnight wrap), in minutes of day.

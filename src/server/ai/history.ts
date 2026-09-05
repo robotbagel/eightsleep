@@ -11,8 +11,14 @@ import { db } from "~/server/db";
 import { healthNights, nightMetrics } from "~/server/db/schema";
 import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import { type Token } from "../eight/types";
-import { fetchPodSessions, type PodSession } from "./sleepData";
 import {
+  awakeAfterOnsetHours,
+  fetchPodSessions,
+  wakeEventCount,
+  type PodSession,
+} from "./sleepData";
+import {
+  BEDTIME_REFERENCE_NIGHTS,
   circularMeanMinutes,
   minutesOfDayInZone,
   scoreNight,
@@ -84,13 +90,15 @@ export function metricsFromSession(
   ).map(([, v]) => v);
   const bedTemps = (timeseries.tempBedC ?? []).map(([, v]) => v);
   const roomTemps = (timeseries.tempRoomC ?? []).map(([, v]) => v);
-  const shortAwakes = timeseries.shortAwakes ?? [];
-
   const bedtimeMinutes =
     start && !isNaN(start.getTime())
       ? minutesOfDayInZone(start, timezone)
       : null;
-  const awakeHours = (summary.awakeDuration ?? 0) / 3600;
+  // Awake AFTER sleep onset only — see awakeAfterOnsetHours(). Feeding the
+  // pod's total awakeDuration here charged reading in bed as interruptions
+  // in both scores below.
+  const awakeHours = awakeAfterOnsetHours(session);
+  const wakeCount = wakeEventCount(session);
 
   const asleepHours = asleepSeconds / 3600;
   const deepHours = (summary.deepDuration ?? 0) / 3600;
@@ -109,7 +117,7 @@ export function metricsFromSession(
     score: scoreNight({
       asleepHours: asleepSeconds / 3600,
       awakeHours,
-      wakeCount: shortAwakes.length > 0 ? shortAwakes.length : null,
+      wakeCount,
       bedtimeMinutes,
       referenceBedtimeMinutes,
     }),
@@ -123,7 +131,7 @@ export function metricsFromSession(
     lightHours: (summary.lightDuration ?? 0) / 3600,
     awakeHours,
     tosses: (timeseries.tnt ?? []).length,
-    wakeCount: shortAwakes.length,
+    wakeCount,
     restingHeartRate: heartRates.length > 0 ? Math.min(...heartRates) : null,
     avgHeartRate: mean(heartRates),
     hrv: mean(hrvSeries),
@@ -151,16 +159,24 @@ export function sessionsToMetrics(
     .sort((a, b) => (a.sleepEnd! < b.sleepEnd! ? -1 : 1));
   if (usable.length === 0) return [];
 
-  // Bedtime consistency is scored against the circular mean of the window we
-  // actually have, so a longer window gives a more stable reference.
-  const bedtimes = usable
-    .map((s) => (s.sleepStart ? new Date(s.sleepStart) : null))
-    .filter((d): d is Date => d != null && !isNaN(d.getTime()))
-    .map((d) => minutesOfDayInZone(d, timezone));
-  const reference = circularMeanMinutes(bedtimes);
+  // Bedtime consistency is scored against the circular mean of the nights
+  // BEFORE each one (up to BEDTIME_REFERENCE_NIGHTS, as Apple does), so a
+  // night is judged against the habit it followed, not against itself or
+  // nights that came later.
+  const bedtimes = usable.map((s) => {
+    const d = s.sleepStart ? new Date(s.sleepStart) : null;
+    return d != null && !isNaN(d.getTime()) ? minutesOfDayInZone(d, timezone) : null;
+  });
 
   return usable
-    .map((session) => metricsFromSession(session, timezone, reference))
+    .map((session, index) => {
+      const prior = bedtimes
+        .slice(Math.max(0, index - BEDTIME_REFERENCE_NIGHTS), index)
+        .filter((m): m is number => m != null);
+      const reference =
+        prior.length > 0 ? circularMeanMinutes(prior) : null;
+      return metricsFromSession(session, timezone, reference);
+    })
     .filter((m): m is NightMetric => m != null);
 }
 
@@ -172,6 +188,7 @@ export function sessionsToMetrics(
 export async function persistNightMetrics(
   email: string,
   metrics: NightMetric[],
+  options: { rescore?: boolean } = {},
 ): Promise<void> {
   if (metrics.length === 0) return;
   try {
@@ -192,15 +209,22 @@ export async function persistNightMetrics(
       .where(
         and(eq(nightMetrics.email, email), inArray(nightMetrics.night, nights)),
       );
+    // `rescore` is the one deliberate exception: after the rubric itself
+    // changes, every held night is re-scored on the new basis in one pass
+    // (aiDebug?action=rescore), so history stays comparable with itself.
     const frozen = new Map(
-      existing
-        .filter((row) => row.score != null)
-        .map((row) => [row.night, row.score!]),
+      options.rescore
+        ? []
+        : existing
+            .filter((row) => row.score != null)
+            .map((row) => [row.night, row.score!]),
     );
     const frozenThermal = new Map(
-      existing
-        .filter((row) => row.thermalScore != null)
-        .map((row) => [row.night, row.thermalScore!]),
+      options.rescore
+        ? []
+        : existing
+            .filter((row) => row.thermalScore != null)
+            .map((row) => [row.night, row.thermalScore!]),
     );
 
     await db

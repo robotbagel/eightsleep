@@ -12,7 +12,7 @@
     "dev": "next dev --turbo",
     "lint": "next lint",
     "start": "next start",
-    "test": "tsx src/server/ai/__tests__/control.test.mts"
+    "test": "tsx src/server/ai/__tests__/control.test.mts && tsx src/server/ai/__tests__/score.test.mts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
