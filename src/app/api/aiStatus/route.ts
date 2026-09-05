@@ -122,9 +122,15 @@ export async function GET(request: NextRequest): Promise<Response> {
         .orderBy(desc(sleepFeedback.night))
         .limit(5);
 
+      // ?days=N widens the stored-night window (default 10) so an operator
+      // can check older nights — e.g. one with an Apple Health import.
+      const daysBack = Math.min(
+        60,
+        Math.max(1, Number(request.nextUrl.searchParams.get("days") ?? "10")),
+      );
       const storedNights = await readNightMetrics(
         email,
-        shiftDate(new Date().toISOString().slice(0, 10), -9),
+        shiftDate(new Date().toISOString().slice(0, 10), -(daysBack - 1)),
         new Date().toISOString().slice(0, 10),
         profile?.timezoneTZ ?? "UTC",
       );

@@ -129,3 +129,33 @@ assert.equal(opinion.disagreements.length, 1, JSON.stringify(opinion.disagreemen
 assert.ok(opinion.disagreements[0]!.startsWith("Awake mid-night: pod 56m, Watch 11m"));
 assert.equal(compareSources(pod, { ...pod }).disagreements.length, 0, "identical readings agree");
 console.log("ok  second opinion flags only real disagreements");
+
+// --- latency reaches the model as a signal and the sleeper as an observation
+import { deriveNightSignals, LATENCY_SIGNAL_MIN } from "../rules";
+import { observation } from "../why";
+const detail = (latency: number | null, firstThirdBedC: number | null) => ({
+  date: "2026-09-05",
+  score: 89,
+  stageHours: { deep: 0.9, rem: 1.3, light: 4.4, awake: 0.3 },
+  sleepLatencyMinutes: latency,
+  tossesAndTurns: { firstThird: 4, middleThird: 11, finalThird: 13 },
+  avgBedTempC: { firstThird: firstThirdBedC, middleThird: 30.4, finalThird: 30.4 },
+  avgRoomTempC: 22,
+  avgHeartRate: 58,
+});
+const slowOnset = deriveNightSignals({
+  nights: [],
+  recentSessions: [detail(54, 31.2), detail(60, 30.8), detail(36, 30.9)],
+});
+const latencySignal = slowOnset.find((s) => s.startsWith("Took 50 min on average to fall asleep"));
+assert.ok(latencySignal, `expected a latency signal, got ${JSON.stringify(slowOnset)}`);
+assert.ok(latencySignal!.includes("cooler initial stage"), "warm first third → cool the onset");
+const fastOnset = deriveNightSignals({ nights: [], recentSessions: [detail(12, 31.2), detail(15, 30.8)] });
+assert.ok(!fastOnset.some((s) => s.includes("fall asleep")), "inside the target: no signal");
+const oneBadNight = deriveNightSignals({ nights: [], recentSessions: [detail(60, 31), detail(10, 31), detail(10, 31)] });
+assert.ok(!oneBadNight.some((s) => s.includes("fall asleep")), `one slow night alone (mean 27 < ${LATENCY_SIGNAL_MIN}) does not fire`);
+const said = observation({ stage: "initial", direction: "cooler", tosses: 4, bedTempC: 31.2, latencyMinutes: 54, liveNights: null, reportedNights: null });
+assert.ok(said.includes("took you 54 minutes to fall asleep"), said);
+const deepSaid = observation({ stage: "deep", direction: "warmer", tosses: 6, bedTempC: 29.1, latencyMinutes: 54, liveNights: 2, reportedNights: null });
+assert.ok(!deepSaid.includes("fall asleep"), "latency is only cited for the first stage");
+console.log("ok  latency signal and explanation");
