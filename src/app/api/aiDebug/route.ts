@@ -192,6 +192,19 @@ export async function POST(request: NextRequest): Promise<Response> {
       sql`ALTER TABLE "8slp_nightMetrics" ADD COLUMN IF NOT EXISTS "identityReason" varchar(400)`,
       sql`ALTER TABLE "8slp_userAiSettings" ADD COLUMN IF NOT EXISTS "awayUntil" varchar(10)`,
       sql`ALTER TABLE "8slp_userAiSettings" ADD COLUMN IF NOT EXISTS "emptyBedShutoff" boolean NOT NULL DEFAULT true`,
+      sql`CREATE TABLE IF NOT EXISTS "8slp_shareLinks" (
+        "id" serial PRIMARY KEY,
+        "email" varchar(255) NOT NULL REFERENCES "8slp_users"("email"),
+        "tokenHash" varchar(64) NOT NULL,
+        "role" varchar(16) NOT NULL,
+        "label" varchar(60),
+        "expiresAt" timestamp,
+        "revokedAt" timestamp,
+        "lastUsedAt" timestamp,
+        "created_at" timestamp DEFAULT now() NOT NULL
+      )`,
+      sql`CREATE INDEX IF NOT EXISTS "shareLinks_tokenHash_idx" ON "8slp_shareLinks" ("tokenHash")`,
+      sql`CREATE INDEX IF NOT EXISTS "shareLinks_email_idx" ON "8slp_shareLinks" ("email")`,
     ];
     const applied: string[] = [];
     for (const statement of statements) {

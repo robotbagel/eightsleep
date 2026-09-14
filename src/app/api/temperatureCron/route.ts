@@ -55,7 +55,7 @@ async function winTickGate(now: Date): Promise<boolean> {
   }
 }
 
-async function logTemperatureEvent(
+export async function logTemperatureEvent(
   email: string,
   timezone: string,
   wakeupTime: string,

@@ -190,6 +190,47 @@ export const aiRunLog = createTable(
 // Eight Sleep API on every view (and so history outlives what the API keeps).
 // Fractional values are stored in tenths as integers, matching the rest of
 // the schema. Keyed by the WAKE date, like every other night key in the app.
+/**
+ * A link that lets somebody who is NOT the account holder control one side of
+ * the bed. Two kinds, from one mechanism:
+ *
+ *  - "guest": a visitor sleeping in the bed for a night or two. Can change
+ *    tonight's temperature and say how it feels, nothing else, and every
+ *    night they drive is recorded as not the owner's so it never teaches the
+ *    owner's temperature loop.
+ *  - "household": a partner with their own side, permanently. Full control of
+ *    their own side, and their nights are their own.
+ *
+ * The token is an opaque random secret, NOT a signed JWT: a signed token
+ * cannot be withdrawn once sent, and this one opens a heating device in
+ * somebody's bedroom. Every request looks the row up, so revoking is
+ * immediate and there is a record of what was issued to whom.
+ */
+export const shareLinks = createTable(
+  "shareLinks",
+  {
+    id: serial("id").primaryKey(),
+    /** The account, and therefore the side of the bed, this link controls. */
+    email: varchar("email", { length: 255 })
+      .references(() => users.email)
+      .notNull(),
+    /** The secret from the URL, stored hashed — see shareLinks.ts. */
+    tokenHash: varchar("tokenHash", { length: 64 }).notNull(),
+    role: varchar("role", { length: 16 }).notNull(),
+    /** Who it was made for, in the owner's words. Shown on the manage list. */
+    label: varchar("label", { length: 60 }),
+    /** Null for a household link, which does not expire on its own. */
+    expiresAt: timestamp("expiresAt"),
+    revokedAt: timestamp("revokedAt"),
+    lastUsedAt: timestamp("lastUsedAt"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    tokenIdx: index("shareLinks_tokenHash_idx").on(table.tokenHash),
+    emailIdx: index("shareLinks_email_idx").on(table.email),
+  }),
+);
+
 export const nightMetrics = createTable(
   "nightMetrics",
   {

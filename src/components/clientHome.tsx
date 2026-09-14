@@ -6,7 +6,7 @@ import { EightLoginDialog } from "~/components/eightLogin";
 import { TemperatureProfileForm } from "~/components/temperatureProfileForm";
 import { LogoutButton } from "~/components/logout";
 import { ThemeToggle } from "~/components/themeToggle";
-import { AiAdvisorCard, AiSettingsCard } from "~/components/aiPanel";
+import { AiAdvisorCard, AiSettingsCard, ShareLinks } from "~/components/aiPanel";
 import { NightSummaryCard } from "~/components/nightSummaryCard";
 import { AutopilotStrip } from "~/components/autopilotStrip";
 import { ComfortPrompt } from "~/components/comfortPrompt";
@@ -204,6 +204,7 @@ const SignedIn: React.FC = () => {
         </Disclosure>
 
         <AiSettingsCard index={4} />
+        <ShareLinks index={5} />
       </div>
     </div>
   );

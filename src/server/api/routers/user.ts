@@ -58,6 +58,13 @@ import {
   type MetricKey,
   type NightMetric,
 } from "~/server/ai/history";
+import {
+  createShareLink,
+  GUEST_LINK_MAX_DAYS,
+  listShareLinks,
+  revokeShareLink,
+  SHARE_ROLES,
+} from "~/server/ai/shareLinks";
 
 class DatabaseError extends Error {
   constructor(message: string) {
@@ -492,6 +499,44 @@ export const userRouter = createTRPCRouter({
           error instanceof Error ? error.message : String(error),
         );
       }
+      return { success: true };
+    }),
+
+  /**
+   * Links that let somebody else control this side of the bed. The secret is
+   * returned exactly once, at creation, because only its hash is kept — so
+   * the owner must copy it there and then, and a leaked database is not a
+   * leaked bed.
+   */
+  createShareLink: publicProcedure
+    .input(
+      z.object({
+        role: z.enum(SHARE_ROLES),
+        label: z.string().max(60).nullable(),
+        days: z.number().int().min(1).max(GUEST_LINK_MAX_DAYS).nullable(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const decoded = await checkAuthCookie(ctx.headers);
+      const issued = await createShareLink({
+        email: decoded.email,
+        role: input.role,
+        label: input.label,
+        days: input.days,
+      });
+      return issued;
+    }),
+
+  listShareLinks: publicProcedure.query(async ({ ctx }) => {
+    const decoded = await checkAuthCookie(ctx.headers);
+    return listShareLinks(decoded.email);
+  }),
+
+  revokeShareLink: publicProcedure
+    .input(z.object({ id: z.number().int() }))
+    .mutation(async ({ input, ctx }) => {
+      const decoded = await checkAuthCookie(ctx.headers);
+      await revokeShareLink(decoded.email, input.id);
       return { success: true };
     }),
 

@@ -1112,6 +1112,189 @@ const EmptyAdvisor: React.FC<{
 
 
 // ---------------------------------------------------------------------------
+/**
+ * Links that hand one side of the bed to somebody else. The secret is shown
+ * once, at creation, and never again — so the copy button matters, and the
+ * list below can only ever offer to withdraw a link, not to reveal it.
+ */
+export const ShareLinks: React.FC<{ index?: number }> = ({ index = 0 }) => {
+  const utils = apiR.useUtils();
+  const links = apiR.user.listShareLinks.useQuery(undefined, { retry: 1 });
+  const [role, setRole] = useState<"guest" | "household">("guest");
+  const [label, setLabel] = useState("");
+  const [days, setDays] = useState(2);
+  const [issued, setIssued] = useState<{ token: string; label: string | null } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const create = apiR.user.createShareLink.useMutation({
+    onSuccess: async (result) => {
+      setIssued({ token: result.token, label: result.label });
+      setLabel("");
+      await utils.user.listShareLinks.invalidate();
+    },
+  });
+  const revoke = apiR.user.revokeShareLink.useMutation({
+    onSuccess: async () => {
+      await utils.user.listShareLinks.invalidate();
+    },
+  });
+
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  const url = issued ? `${origin}/s/${issued.token}` : "";
+  const active = links.data?.filter((l) => l.active) ?? [];
+  const summary =
+    active.length === 0
+      ? "Nobody else can control this bed"
+      : `${active.length} active link${active.length === 1 ? "" : "s"}`;
+
+  return (
+    <Disclosure icon="share" title="Share the bed" summary={summary} index={index}>
+      <div className="space-y-4 px-2">
+        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+          A link lets someone control this side without your Eight Sleep
+          login. A guest&apos;s nights never affect your own settings.
+        </p>
+
+        <div className="flex flex-wrap gap-2">
+          {(
+            [
+              ["guest", "Guest"],
+              ["household", "Household"],
+            ] as const
+          ).map(([value, text]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setRole(value)}
+              className={role === value ? "btn btn-primary" : "btn btn-secondary"}
+            >
+              {text}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs" style={{ color: "var(--text-faint)" }}>
+          {role === "guest"
+            ? "Can set the temperature and say how it feels, until the link expires. No history, no schedule, and their nights never tune your bed."
+            : "Full control of their own side: temperature, schedule and their own sleep history. Does not expire."}
+        </p>
+
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex-1">
+            <label htmlFor="shareLabel" className="block text-xs" style={{ color: "var(--text-muted)" }}>
+              Who is it for?
+            </label>
+            <input
+              id="shareLabel"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              maxLength={60}
+              placeholder={role === "guest" ? "e.g. Sam, weekend" : "e.g. Laurence"}
+              className="field mt-1"
+            />
+          </div>
+          {role === "guest" && (
+            <div>
+              <label htmlFor="shareDays" className="block text-xs" style={{ color: "var(--text-muted)" }}>
+                Lasts
+              </label>
+              <select
+                id="shareDays"
+                value={days}
+                onChange={(e) => setDays(Number(e.target.value))}
+                className="field mt-1"
+              >
+                <option value={1}>1 night</option>
+                <option value={2}>2 nights</option>
+                <option value={7}>A week</option>
+                <option value={30}>A month</option>
+              </select>
+            </div>
+          )}
+          <button
+            type="button"
+            disabled={create.isPending}
+            onClick={() =>
+              create.mutate({
+                role,
+                label: label.trim() === "" ? null : label.trim(),
+                days: role === "guest" ? days : null,
+              })
+            }
+            className="btn btn-primary"
+          >
+            {create.isPending ? "Making…" : "Make a link"}
+          </button>
+        </div>
+        {create.isError && (
+          <p className="text-xs" style={{ color: "var(--danger)" }}>
+            {create.error.message}
+          </p>
+        )}
+
+        {issued && (
+          <div
+            className="rounded-lg p-3"
+            style={{ background: "var(--success-soft)", border: "1px solid var(--success)" }}
+          >
+            <p className="text-sm font-medium" style={{ color: "var(--text)" }}>
+              Copy this now — it is not shown again
+            </p>
+            <p className="tabular mt-2 break-all text-xs" style={{ color: "var(--text-muted)" }}>
+              {url}
+            </p>
+            <button
+              type="button"
+              className="btn btn-secondary mt-2"
+              onClick={() => {
+                void navigator.clipboard?.writeText(url);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              }}
+            >
+              {copied ? "Copied" : "Copy link"}
+            </button>
+          </div>
+        )}
+
+        {active.length > 0 && (
+          <ul className="space-y-2">
+            {active.map((link) => (
+              <li
+                key={link.id}
+                className="flex items-center justify-between gap-3 rounded-lg px-3 py-2"
+                style={{ background: "var(--surface-raised)" }}
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm" style={{ color: "var(--text)" }}>
+                    {link.label ?? "Unnamed link"}{" "}
+                    <span style={{ color: "var(--text-faint)" }}>· {link.role}</span>
+                  </p>
+                  <p className="text-xs" style={{ color: "var(--text-faint)" }}>
+                    {link.expiresAt
+                      ? `until ${new Date(link.expiresAt).toLocaleDateString()}`
+                      : "no expiry"}
+                    {link.lastUsedAt
+                      ? ` · last used ${new Date(link.lastUsedAt).toLocaleDateString()}`
+                      : " · never used"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={revoke.isPending}
+                  onClick={() => revoke.mutate({ id: link.id })}
+                  className="btn btn-secondary shrink-0"
+                >
+                  Withdraw
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Disclosure>
+  );
+};
+
 // Settings, folded away under a disclosure
 // ---------------------------------------------------------------------------
 
