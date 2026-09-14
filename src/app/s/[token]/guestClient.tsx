@@ -97,6 +97,40 @@ export const GuestClient: React.FC<{ token: string }> = ({ token }) => {
     );
   }
 
+  // What the top control reads and writes.
+  //
+  // While the bed is RUNNING that is the pod itself, live. While it is OFF —
+  // which is how a guest arriving in the afternoon finds it — a "current
+  // temperature" read back from the pod is meaningless (the hardware reports
+  // its neutral level and it looks like a real setting), so the control
+  // reads what the night will START at and a press shifts THE WHOLE NIGHT by
+  // half a degree, keeping its shape. That matches how the system already
+  // treats an unscoped "too warm": a person who has not named a stage means
+  // all of them.
+  const clamp = (v: number) =>
+    Math.min(data.maxC, Math.max(data.minC, Math.round(v * 2) / 2));
+  const liveValue = data.isHeating ? (data.currentC ?? stages.initial) : stages.initial;
+  const busy = nudge.isPending || save.isPending;
+
+  const shift = (delta: number) => {
+    if (data.isHeating) {
+      const next = Math.min(
+        data.maxC,
+        Math.max(data.minC, Math.round((liveValue + delta) * 2) / 2),
+      );
+      nudge.mutate({ token, celsius: next });
+      return;
+    }
+    const shifted = {
+      initial: clamp(stages.initial + delta),
+      deep: clamp(stages.deep + delta),
+      mid: clamp(stages.mid + delta),
+      final: clamp(stages.final + delta),
+    };
+    setStages(shifted);
+    save.mutate({ token, bedTime, wakeupTime, ...shifted });
+  };
+
   const move = (key: StageKey, delta: number) => {
     setStages((prev) =>
       prev == null
@@ -125,6 +159,84 @@ export const GuestClient: React.FC<{ token: string }> = ({ token }) => {
           not change anybody else&apos;s.
         </p>
       </header>
+
+      {/* FIRST, always. Someone opening this link is either lying in the bed
+          wanting it changed now, or standing in the room wanting to know what
+          it will do tonight. Either way it is the first question, so it goes
+          above the setup rather than below it. */}
+      <section
+        className="mt-5 rounded-2xl p-5"
+        style={{ background: "var(--surface-raised)", border: "1px solid var(--border)" }}
+      >
+        <p className="text-sm font-semibold" style={{ color: "var(--text)" }}>
+          {data.isHeating ? "Too warm? Too cold?" : "Tonight starts at"}
+        </p>
+        <p className="mt-0.5 text-xs" style={{ color: "var(--text-muted)" }}>
+          {data.isHeating
+            ? "Half a degree either way, right now."
+            : `The bed is off. It warms up before your ${bedTime} bedtime — press to change how warm.`}
+        </p>
+
+        <div className="mt-4 flex items-center justify-center gap-4">
+          <StepButton
+            direction="cooler"
+            disabled={busy}
+            onPress={() => shift(-STEP_C)}
+          />
+          <div className="min-w-[6.5rem] text-center">
+            <span
+              key={liveValue}
+              className="tabular block text-4xl font-semibold"
+              style={{
+                color: "var(--text-headline)",
+                animation: "rise var(--motion-fast) var(--ease-out-snap) both",
+              }}
+            >
+              {liveValue.toFixed(1)}°
+            </span>
+            <span className="text-xs" style={{ color: "var(--text-faint)" }}>
+              {data.isHeating ? "running now" : "when it starts"}
+            </span>
+          </div>
+          <StepButton
+            direction="warmer"
+            disabled={busy}
+            onPress={() => shift(STEP_C)}
+          />
+        </div>
+
+        {data.capabilities.giveComfortFeedback && (
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
+            {(
+              [
+                ["too_hot", "Too hot"],
+                ["just_right", "Just right"],
+                ["too_cold", "Too cold"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                disabled={comfort.isPending}
+                onClick={() => comfort.mutate({ token, felt: value, whenFelt: "not_sure" })}
+                className="btn btn-secondary"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+        {said && (
+          <p className="mt-2 text-center text-xs" style={{ color: "var(--success)" }}>
+            {said}
+          </p>
+        )}
+        {(nudge.isError || save.isError) && (
+          <p className="mt-2 text-center text-xs" style={{ color: "var(--danger)" }}>
+            {(nudge.error ?? save.error)?.message}
+          </p>
+        )}
+      </section>
 
       {canSetStages && (
         <section className="mt-6">
@@ -217,70 +329,6 @@ export const GuestClient: React.FC<{ token: string }> = ({ token }) => {
           </div>
         </section>
       )}
-
-      <section
-        className="mt-6 rounded-xl p-4"
-        style={{ background: "var(--surface-raised)", border: "1px solid var(--border)" }}
-      >
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium" style={{ color: "var(--text)" }}>
-              Right now
-            </p>
-            <p className="mt-0.5 text-xs" style={{ color: "var(--text-faint)" }}>
-              {data.isHeating
-                ? `The bed is running at ${data.currentC?.toFixed(1) ?? "—"}°.`
-                : `Off until it warms up for your ${bedTime} bedtime.`}
-            </p>
-          </div>
-          {data.currentC != null && (
-            <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                disabled={nudge.isPending}
-                onClick={() => nudge.mutate({ token, celsius: data.currentC! - STEP_C })}
-                className="btn btn-secondary"
-              >
-                Cooler
-              </button>
-              <button
-                type="button"
-                disabled={nudge.isPending}
-                onClick={() => nudge.mutate({ token, celsius: data.currentC! + STEP_C })}
-                className="btn btn-secondary"
-              >
-                Warmer
-              </button>
-            </div>
-          )}
-        </div>
-        {data.capabilities.giveComfortFeedback && (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {(
-              [
-                ["too_hot", "Too hot"],
-                ["just_right", "Just right"],
-                ["too_cold", "Too cold"],
-              ] as const
-            ).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                disabled={comfort.isPending}
-                onClick={() => comfort.mutate({ token, felt: value, whenFelt: "not_sure" })}
-                className="btn btn-secondary"
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
-        {said && (
-          <p className="mt-2 text-xs" style={{ color: "var(--success)" }}>
-            {said}
-          </p>
-        )}
-      </section>
 
       <NightsRead nights={nights.data?.nights ?? []} loading={nights.isLoading} />
 
@@ -498,4 +546,29 @@ const TimeField: React.FC<{
 
 const Shell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <main className="mx-auto min-h-screen w-full max-w-md px-5 py-10">{children}</main>
+);
+
+/**
+ * Large on purpose: pressed in the dark, one-handed, by someone who is a
+ * visitor in an unfamiliar room. 56px clears the 44px minimum with room for
+ * a missed tap. All five interaction states come from `.btn`.
+ */
+const StepButton: React.FC<{
+  direction: "cooler" | "warmer";
+  disabled: boolean;
+  onPress: () => void;
+}> = ({ direction, disabled, onPress }) => (
+  <button
+    type="button"
+    onClick={onPress}
+    disabled={disabled}
+    aria-label={direction === "cooler" ? "Half a degree cooler" : "Half a degree warmer"}
+    className="btn btn-secondary h-14 w-14 shrink-0 text-2xl"
+    style={{
+      color: direction === "cooler" ? "var(--cool)" : "var(--warm)",
+      borderColor: direction === "cooler" ? "var(--cool)" : "var(--warm)",
+    }}
+  >
+    {direction === "cooler" ? "−" : "+"}
+  </button>
 );
