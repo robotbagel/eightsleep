@@ -231,6 +231,44 @@ export const shareLinks = createTable(
   }),
 );
 
+/**
+ * A guest's own four-stage schedule, for the length of their stay.
+ *
+ * A guest needs to set up their whole night — they arrive in the afternoon
+ * to a bed that is off, and two live buttons are no use then. But they must
+ * NOT write to `userTemperatureProfile`: that row is the owner's, it is what
+ * the autopilot has spent weeks tuning, and a visitor's taste must not
+ * survive their visit. So their settings live here and OVERLAY the owner's
+ * while their link is valid. When the link expires or is withdrawn the
+ * overlay simply stops applying and the owner's profile resumes untouched —
+ * nothing has to be restored, because nothing was overwritten.
+ */
+export const guestProfiles = createTable(
+  "guestProfiles",
+  {
+    id: serial("id").primaryKey(),
+    /** The link this belongs to; its validity is what makes this active. */
+    shareLinkId: integer("shareLinkId")
+      .references(() => shareLinks.id)
+      .notNull(),
+    /** The side being lent. Denormalised so the cron reads one table. */
+    email: varchar("email", { length: 255 })
+      .references(() => users.email)
+      .notNull(),
+    bedTime: time("bedTime").notNull(),
+    wakeupTime: time("wakeupTime").notNull(),
+    initialSleepLevel: integer("initialSleepLevel").notNull(),
+    deepSleepLevel: integer("deepSleepLevel").notNull(),
+    midStageSleepLevel: integer("midStageSleepLevel").notNull(),
+    finalSleepLevel: integer("finalSleepLevel").notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    emailIdx: index("guestProfiles_email_idx").on(table.email),
+    linkIdx: index("guestProfiles_shareLinkId_idx").on(table.shareLinkId),
+  }),
+);
+
 export const nightMetrics = createTable(
   "nightMetrics",
   {

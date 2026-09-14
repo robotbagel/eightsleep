@@ -32,6 +32,38 @@ import {
   rawToCelsius,
 } from "~/lib/temperature";
 import { nightKeyFor } from "~/server/ai/time";
+import { readNightMetrics, shiftDate } from "~/server/ai/history";
+import { activeGuestProfile, guestProfileFor, saveGuestProfile } from "~/server/ai/shareLinks";
+import { adjustTemperature } from "~/app/api/temperatureCron/route";
+
+/** One night, read the way the owner reads their own. */
+export interface NightReading {
+  night: string;
+  score: number | null;
+  quality: number | null;
+  asleepHours: number | null;
+  deepHours: number | null;
+  remHours: number | null;
+  lightHours: number | null;
+  awakeHours: number | null;
+  latencyMinutes: number | null;
+  tosses: number | null;
+  wakeCount: number | null;
+  restingHeartRate: number | null;
+  hrv: number | null;
+  respiratoryRate: number | null;
+  avgBedTempC: number | null;
+  avgRoomTempC: number | null;
+  bedtimeMinutes: number | null;
+  wakeMinutes: number | null;
+}
+
+/** Midnight of the link's creation day, so its first night counts. */
+function startOfDay(at: Date): Date {
+  const d = new Date(at);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
 import { logTemperatureEvent } from "~/app/api/temperatureCron/route";
 
 async function session(token: string): Promise<ShareSession> {
@@ -74,6 +106,13 @@ export const shareRouter = createTRPCRouter({
       });
     }
 
+    // A guest's own stages if they have set them, otherwise the owner's as
+    // a starting point.
+    const stay = share.capabilities.setStayProfile
+      ? await guestProfileFor(share.id)
+      : null;
+    const schedule = stay ?? profile;
+
     let currentC: number | null = null;
     let isHeating = false;
     try {
@@ -95,13 +134,139 @@ export const shareRouter = createTRPCRouter({
       label: share.label,
       capabilities: share.capabilities,
       expiresAt: share.expiresAt,
-      bedTime: profile.bedTime.slice(0, 5),
-      wakeupTime: profile.wakeupTime.slice(0, 5),
+      bedTime: schedule.bedTime.slice(0, 5),
+      wakeupTime: schedule.wakeupTime.slice(0, 5),
       timezone: profile.timezoneTZ,
+      // The four stages this link controls, in °C. For a guest these are
+      // their own if they have saved any, otherwise the owner's as a sane
+      // starting point — never an arbitrary default they have to fix.
+      stages: {
+        initial: rawToCelsius(schedule.initialSleepLevel),
+        // The owner's deep level is nullable on rows written before the
+        // four-stage model; it falls back to mid, exactly as the cron does.
+        deep: rawToCelsius(schedule.deepSleepLevel ?? schedule.midStageSleepLevel),
+        mid: rawToCelsius(schedule.midStageSleepLevel),
+        final: rawToCelsius(schedule.finalSleepLevel),
+      },
+      hasOwnSchedule: stay != null,
       currentC,
       isHeating,
       minC: MIN_BED_TEMP_C,
       maxC: MAX_BED_TEMP_C,
+    };
+  }),
+
+  /**
+   * Save all four stages and the times for the length of the stay. A guest
+   * writes an overlay; a household link writes its own account's real row,
+   * because that side is theirs.
+   */
+  setStages: publicProcedure
+    .input(
+      tokenInput.extend({
+        bedTime: z.string().regex(/^\d{2}:\d{2}$/),
+        wakeupTime: z.string().regex(/^\d{2}:\d{2}$/),
+        initial: z.number().min(MIN_BED_TEMP_C).max(MAX_BED_TEMP_C),
+        deep: z.number().min(MIN_BED_TEMP_C).max(MAX_BED_TEMP_C),
+        mid: z.number().min(MIN_BED_TEMP_C).max(MAX_BED_TEMP_C),
+        final: z.number().min(MIN_BED_TEMP_C).max(MAX_BED_TEMP_C),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const share = await session(input.token);
+      if (!share.capabilities.setStayProfile && !share.capabilities.editOwnerSchedule) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "This link does not allow that." });
+      }
+      const levels = {
+        bedTime: `${input.bedTime}:00`,
+        wakeupTime: `${input.wakeupTime}:00`,
+        initialSleepLevel: celsiusToRaw(input.initial),
+        deepSleepLevel: celsiusToRaw(input.deep),
+        midStageSleepLevel: celsiusToRaw(input.mid),
+        finalSleepLevel: celsiusToRaw(input.final),
+      };
+
+      if (share.capabilities.editOwnerSchedule) {
+        await db
+          .update(userTemperatureProfile)
+          .set({ ...levels, updatedAt: new Date() })
+          .where(eq(userTemperatureProfile.email, share.email));
+      } else {
+        // NEVER the owner's row: their profile is what the autopilot has
+        // spent weeks tuning, and a visitor's taste must not outlive them.
+        await saveGuestProfile(share.id, share.email, levels);
+      }
+
+      // Take effect now rather than at the next stage boundary, so a guest
+      // who sets this up at 16:00 sees the bed behave before bedtime.
+      try {
+        await adjustTemperature();
+      } catch (error) {
+        console.error(
+          "Share: could not apply the new schedule immediately:",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      return { success: true };
+    }),
+
+  /**
+   * The nights THIS link slept, read exactly the way the owner reads theirs.
+   *
+   * Scoped in the query, not in the UI: a guest sees only nights recorded as
+   * not the owner's, and only from the day their link was made. The owner's
+   * own nights can never appear here however this is called.
+   */
+  nights: publicProcedure.input(tokenInput).query(async ({ input }) => {
+    const share = await session(input.token);
+    if (!share.capabilities.seeOwnNights) return { nights: [] as NightReading[] };
+
+    const profile = await db.query.userTemperatureProfile.findFirst({
+      where: eq(userTemperatureProfile.email, share.email),
+    });
+    const timezone = profile?.timezoneTZ ?? "UTC";
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: timezone });
+    const from = shiftDate(today, -30);
+    const all = await readNightMetrics(share.email, from, today, timezone);
+
+    const mine = share.capabilities.seeOwnerHistory
+      ? all
+      : all.filter(
+          (night) =>
+            night.notMe === true &&
+            // Only nights from this stay, never an earlier visitor's.
+            new Date(`${night.night}T12:00:00Z`) >= startOfDay(share.createdAt),
+        );
+
+    return {
+      nights: mine
+        .slice()
+        .reverse()
+        .map(
+          (m): NightReading => ({
+            night: m.night,
+            score: m.score,
+            quality: m.thermalScore,
+            asleepHours: m.asleepHours,
+            deepHours: m.deepHours,
+            remHours: m.remHours,
+            lightHours: m.lightHours,
+            awakeHours: m.awakeHours,
+            latencyMinutes:
+              m.sleepLatencyHours == null
+                ? null
+                : Math.round(m.sleepLatencyHours * 60),
+            tosses: m.tosses,
+            wakeCount: m.wakeCount,
+            restingHeartRate: m.restingHeartRate,
+            hrv: m.hrv,
+            respiratoryRate: m.respiratoryRate,
+            avgBedTempC: m.avgBedTempC,
+            avgRoomTempC: m.avgRoomTempC,
+            bedtimeMinutes: m.bedtimeMinutes,
+            wakeMinutes: m.wakeMinutes,
+          }),
+        ),
     };
   }),
 

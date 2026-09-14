@@ -12,10 +12,20 @@ import {
 const guest = CAPABILITIES.guest;
 assert.equal(guest.setTemperature, true, "the entire point of the link");
 assert.equal(guest.giveComfortFeedback, true);
-assert.equal(guest.editSchedule, false, "a visitor must not redefine the bed");
-assert.equal(guest.seeHistory, false, "nor read the owner's sleep history");
+assert.equal(
+  guest.setStayProfile,
+  true,
+  "a visitor arriving at four needs to set up the whole night, not nudge a bed that is off",
+);
+assert.equal(
+  guest.editOwnerSchedule,
+  false,
+  "but never by writing the owner's row, which the autopilot has spent weeks tuning",
+);
+assert.equal(guest.seeOwnNights, true, "their own night is theirs to read");
+assert.equal(guest.seeOwnerHistory, false, "the owner's nights are not");
 assert.equal(guest.administer, false, "nor issue further links");
-console.log("ok  a guest link can change tonight and nothing else");
+console.log("ok  a guest sets up their own night and reads only their own sleep");
 
 // --- and a guest's nights never teach the owner's loop --------------------
 assert.equal(
@@ -28,14 +38,30 @@ console.log("ok  guest nights are excluded from the owner's learning");
 
 // --- household is full control of its OWN side, never of the owner's ------
 const household = CAPABILITIES.household;
-assert.equal(household.editSchedule, true);
-assert.equal(household.seeHistory, true);
+assert.equal(household.editOwnerSchedule, true, "their side, their stored row");
+assert.equal(
+  household.setStayProfile,
+  false,
+  "a resident has no need of an overlay: the schedule they edit IS theirs",
+);
+assert.equal(household.seeOwnNights, true);
+assert.equal(household.seeOwnerHistory, true);
 assert.equal(
   household.administer,
   false,
   "issuing links stays with the account holder",
 );
 console.log("ok  a household link runs its own side but cannot administer");
+
+// --- exactly one way to write a schedule, per role -----------------------
+for (const role of SHARE_ROLES) {
+  const c = CAPABILITIES[role];
+  assert.ok(
+    !(c.setStayProfile && c.editOwnerSchedule),
+    `${role} must not have two ways to write a schedule`,
+  );
+}
+console.log("ok  each role writes a schedule exactly one way");
 
 // --- no role may administer: that is the owner's cookie alone ------------
 for (const role of SHARE_ROLES) {

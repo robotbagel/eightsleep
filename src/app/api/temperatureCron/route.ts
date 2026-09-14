@@ -20,6 +20,7 @@ import { appConfig, temperatureEvents, userAiSettings } from "~/server/db/schema
 import { detectManualOverride, matchGhostSchedule } from "~/server/ai/override";
 import { nightKeyFor } from "~/server/ai/time";
 import { isAway, presenceDecision } from "~/server/ai/presence";
+import { activeGuestProfile } from "~/server/ai/shareLinks";
 import { isHumanHeartRate } from "~/server/ai/rules";
 import { fetchCurrentSessionWindow } from "~/server/ai/sleepData";
 import { sql } from "drizzle-orm";
@@ -242,7 +243,26 @@ export async function adjustTemperature(
             .where(eq(users.email, profile.users.email));
         }
 
-        const userTemperatureProfile = profile.userTemperatureProfiles;
+        // A guest staying here sets up their own night. Their schedule is
+        // OVERLAID on the owner's here, at the single point every stage read
+        // below flows through, so nothing downstream needs to know about
+        // guests — and the owner's stored row is never written to, so when
+        // the visit's link lapses the owner's profile is simply used again.
+        const ownerProfile = profile.userTemperatureProfiles;
+        const guestOverlay = await activeGuestProfile(profile.users.email).catch(
+          (error) => {
+            note(
+              `guest profile unreadable for ${profile.users.email}, using the owner's: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            return null;
+          },
+        );
+        const userTemperatureProfile = guestOverlay
+          ? { ...ownerProfile, ...guestOverlay }
+          : ownerProfile;
+        if (guestOverlay) {
+          note(`using a guest's schedule for ${profile.users.email}`);
+        }
         const userNow = new Date(now.toLocaleString("en-US", { timeZone: userTemperatureProfile.timezoneTZ }));
 
         // Create the sleep cycle based on the user's bed time and wake-up time

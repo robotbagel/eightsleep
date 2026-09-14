@@ -210,6 +210,20 @@ export async function POST(request: NextRequest): Promise<Response> {
       )`,
       sql`CREATE INDEX IF NOT EXISTS "shareLinks_tokenHash_idx" ON "8slp_shareLinks" ("tokenHash")`,
       sql`CREATE INDEX IF NOT EXISTS "shareLinks_email_idx" ON "8slp_shareLinks" ("email")`,
+      sql`CREATE TABLE IF NOT EXISTS "8slp_guestProfiles" (
+        "id" serial PRIMARY KEY,
+        "shareLinkId" integer NOT NULL REFERENCES "8slp_shareLinks"("id"),
+        "email" varchar(255) NOT NULL REFERENCES "8slp_users"("email"),
+        "bedTime" time NOT NULL,
+        "wakeupTime" time NOT NULL,
+        "initialSleepLevel" integer NOT NULL,
+        "deepSleepLevel" integer NOT NULL,
+        "midStageSleepLevel" integer NOT NULL,
+        "finalSleepLevel" integer NOT NULL,
+        "updated_at" timestamp DEFAULT now() NOT NULL
+      )`,
+      sql`CREATE INDEX IF NOT EXISTS "guestProfiles_email_idx" ON "8slp_guestProfiles" ("email")`,
+      sql`CREATE INDEX IF NOT EXISTS "guestProfiles_shareLinkId_idx" ON "8slp_guestProfiles" ("shareLinkId")`,
     ];
     const applied: string[] = [];
     for (const statement of statements) {
