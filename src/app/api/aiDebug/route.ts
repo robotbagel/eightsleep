@@ -13,6 +13,11 @@ import { collectSleepContext, fetchPodSessions } from "~/server/ai/sleepData";
 import { persistNightMetrics, sessionsToMetrics } from "~/server/ai/history";
 import { rescoreHealthNights } from "~/server/ai/health";
 import {
+  createShareLink,
+  listShareLinks,
+  revokeShareLink,
+} from "~/server/ai/shareLinks";
+import {
   APP_API_URL,
   CLIENT_API_URL,
   DEFAULT_API_HEADERS,
@@ -212,6 +217,49 @@ export async function POST(request: NextRequest): Promise<Response> {
       applied.push(statement.queryChunks.map(String).join("").slice(0, 120));
     }
     return Response.json({ applied: applied.length });
+  }
+
+  // Mint or withdraw a share link from the command line, for an owner who is
+  // not sitting in front of the app. Same operator surface as reassess and
+  // rescore; the secret is returned once, exactly as in the UI.
+  // POST /api/aiDebug?action=sharelink&email=…&role=guest|household&label=…&days=2
+  // POST /api/aiDebug?action=sharelink&email=…&revoke=<id>
+  if (action === "sharelink") {
+    const email =
+      request.nextUrl.searchParams.get("email") ?? "getnathan@outlook.com";
+    const user = await db.query.users.findFirst({ where: eq(users.email, email) });
+    if (!user) return Response.json({ error: "user not found" }, { status: 404 });
+
+    const revoke = request.nextUrl.searchParams.get("revoke");
+    if (revoke) {
+      await revokeShareLink(email, Number(revoke));
+      return Response.json({ email, revoked: Number(revoke) });
+    }
+    if (request.nextUrl.searchParams.get("list") === "1") {
+      return Response.json({ email, links: await listShareLinks(email) });
+    }
+
+    const role =
+      request.nextUrl.searchParams.get("role") === "household"
+        ? "household"
+        : "guest";
+    const daysParam = request.nextUrl.searchParams.get("days");
+    const issued = await createShareLink({
+      email,
+      role,
+      label: request.nextUrl.searchParams.get("label"),
+      days: daysParam ? Number(daysParam) : null,
+    });
+    const origin = request.nextUrl.origin;
+    return Response.json({
+      email,
+      role: issued.role,
+      label: issued.label,
+      expiresAt: issued.expiresAt,
+      id: issued.id,
+      url: `${origin}/s/${issued.token}`,
+      note: "Copy this now; only its hash is stored.",
+    });
   }
 
   // Re-score every held night on the CURRENT rubric. The only sanctioned way
