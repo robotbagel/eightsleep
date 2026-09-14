@@ -9,6 +9,7 @@ import {
   aiRunLog,
   appConfig,
   sleepFeedback,
+  nightMetrics,
   temperatureEvents,
   userAiSettings,
   userTemperatureProfile,
@@ -71,6 +72,10 @@ export const DEFAULT_AI_SETTINGS = {
   displayUnit: "celsius",
   sleepGoal: null as string | null,
   maxDailyShift: 20,
+  awayUntil: null as string | null,
+  // On by default: heating a bed nobody is in has no upside, and the shutoff
+  // reverses itself the moment somebody gets in.
+  emptyBedShutoff: true,
 };
 
 type UserRow = typeof users.$inferSelect;
@@ -169,30 +174,71 @@ interface ExperimentHistory {
   lastChangeNight: string | null;
 }
 
-async function stagesLockedByRecentChanges(
-  email: string,
-  todayKey: string,
-): Promise<{
+/**
+ * How long the current settings have actually been TESTED.
+ *
+ * This used to be calendar arithmetic: today minus the date of the last
+ * change. That silently equated "two days passed" with "two nights
+ * measured", and they are not the same thing. Over 11-13 Sep 2026 nobody
+ * slept in either bed, the pod recorded nothing, and the day counter kept
+ * ticking anyway — so the hold expired, the loop re-judged a night it had
+ * already used, and both profiles moved twice on evidence that never grew.
+ *
+ * `measuredNights` is the wake dates of nights that were really recorded and
+ * really the owner's, so an empty bed or a guest advances nothing.
+ */
+/** One applied recommendation, reduced to what the hold calculation needs. */
+export interface HoldRecord {
+  forDate: string;
+  previousInitialLevel: number;
+  recommendedInitialLevel: number;
+  previousDeepLevel: number | null;
+  recommendedDeepLevel: number | null;
+  previousMidLevel: number;
+  recommendedMidLevel: number;
+  previousFinalLevel: number;
+  recommendedFinalLevel: number;
+}
+
+export interface HoldState {
   locked: string[];
   heldNights: number;
   lockDirection: Partial<Record<Stage, "cooler" | "warmer">>;
   lastChangeNight: string | null;
-}> {
-  const recent = await db
-    .select()
-    .from(aiRecommendations)
-    .where(
-      and(
-        eq(aiRecommendations.email, email),
-        inArray(aiRecommendations.status, ["applied", "auto_applied"]),
-      ),
-    )
-    .orderBy(desc(aiRecommendations.forDate))
-    .limit(MIN_HOLD_NIGHTS + 2);
+}
 
-  const cutoff = new Date(`${todayKey}T12:00:00Z`);
-  cutoff.setUTCDate(cutoff.getUTCDate() - MIN_HOLD_NIGHTS);
-  const cutoffKey = cutoff.toISOString().slice(0, 10);
+/**
+ * How long the current settings have actually been TESTED, and which stages
+ * are therefore still under measurement.
+ *
+ * This used to be calendar arithmetic: today minus the date of the last
+ * change. That silently equated "two days passed" with "two nights
+ * measured", and they are not the same thing. Over 11-13 September 2026
+ * nobody slept in either bed, the pod recorded nothing, and the day counter
+ * kept ticking anyway — so the hold expired, the loop re-judged a night it
+ * had already used, and both profiles moved twice on evidence that never
+ * grew.
+ *
+ * `measuredNights` is the wake dates of nights that were really recorded and
+ * really the owner's, newest last, so an empty bed or a guest advances
+ * nothing. Pure, so the distinction is pinned by a test.
+ */
+export function holdFromRecommendations(
+  recent: HoldRecord[],
+  measuredNights: string[],
+  todayKey: string,
+): HoldState {
+  // ONE notion of "has this been tested", used for both the counter and the
+  // lock. An earlier version kept two — measured nights for the counter, a
+  // calendar date for the lock — and they disagreed in exactly the case that
+  // matters: with no nights measured at all, the calendar cutoff had already
+  // slid past the change and unlocked it.
+  const measured = measuredNights.filter((n) => n <= todayKey);
+  const nightsTesting = (forDate: string): number => {
+    // A change made on D first governs the night woken from on D+1.
+    const first = shiftDate(forDate, 1);
+    return measured.filter((night) => night >= first).length;
+  };
 
   const locked = new Set<string>();
   const lockDirection: Partial<Record<Stage, "cooler" | "warmer">> = {};
@@ -218,13 +264,11 @@ async function stagesLockedByRecentChanges(
     ]);
     const anyChange = changed.some(([, did]) => did);
     if (anyChange) {
-      const since = Math.round(
-        (new Date(`${todayKey}T12:00:00Z`).getTime() -
-          new Date(`${rec.forDate}T12:00:00Z`).getTime()) /
-          86_400_000,
-      );
+      const since = nightsTesting(rec.forDate);
       heldNights = Math.min(heldNights, since);
-      if (rec.forDate > cutoffKey) {
+      // Locked until real nights have judged it — never because a date slid
+      // by while the bed was empty.
+      if (since < MIN_HOLD_NIGHTS) {
         for (const [stage, from, to] of pairs) {
           if (from === to) continue;
           locked.add(stage);
@@ -248,6 +292,25 @@ async function stagesLockedByRecentChanges(
   };
 }
 
+async function stagesLockedByRecentChanges(
+  email: string,
+  todayKey: string,
+  measuredNights: string[],
+): Promise<HoldState> {
+  const recent = await db
+    .select()
+    .from(aiRecommendations)
+    .where(
+      and(
+        eq(aiRecommendations.email, email),
+        inArray(aiRecommendations.status, ["applied", "auto_applied"]),
+      ),
+    )
+    .orderBy(desc(aiRecommendations.forDate))
+    .limit(MIN_HOLD_NIGHTS + 2);
+  return holdFromRecommendations(recent, measuredNights, todayKey);
+}
+
 /**
  * Which nights we can PROVE the pod ran our schedule, from the temperature
  * changes the cron logged. Nights the scheduler was down still produce a
@@ -260,6 +323,29 @@ async function stagesLockedByRecentChanges(
  * sleep nights are keyed by the wake date, so the night woken from on D was
  * driven by events stored under D-1.
  */
+/**
+ * Wake dates whose vitals say the owner was not the one in the bed. Kept out
+ * of every experiment: a guest's deep sleep is not a verdict on the owner's
+ * temperature profile, and a nudge fired for the guest's comfort must not
+ * fold into the owner's baseline two nights later.
+ */
+async function foreignNights(email: string): Promise<Set<string>> {
+  const foreign = new Set<string>();
+  try {
+    const rows = await db
+      .select({ night: nightMetrics.night, notMe: nightMetrics.notMe })
+      .from(nightMetrics)
+      .where(and(eq(nightMetrics.email, email), eq(nightMetrics.notMe, true)));
+    for (const row of rows) foreign.add(row.night);
+  } catch (error) {
+    console.error(
+      `Could not read foreign nights for ${email}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  return foreign;
+}
+
 async function drivenNights(email: string): Promise<Set<string>> {
   const driven = new Set<string>();
   try {
@@ -316,12 +402,21 @@ async function buildExperimentHistory(
   // asleep and −0.38 with deep sleep, so optimising it steered away from the
   // very thing the bed is for. Nights with no thermal score (Apple Health, or
   // the /trends fallback) cannot judge a profile and are left out.
+  // Nights somebody else slept through are real nights and keep their
+  // scores, but they measure a stranger on our settings, so they cannot
+  // judge a profile — the same reasoning that excludes nights the scheduler
+  // never actually drove.
+  const foreign = await foreignNights(email);
   const scoredNights = sleepContext.nights
-    .filter((night) => night.thermalScore != null)
+    .filter((night) => night.thermalScore != null && !foreign.has(night.date))
     .sort((a, b) => a.date.localeCompare(b.date));
 
   const driven = await drivenNights(email);
-  const hold = await stagesLockedByRecentChanges(email, todayKey);
+  const hold = await stagesLockedByRecentChanges(
+    email,
+    todayKey,
+    scoredNights.map((night) => night.date),
+  );
 
   const result: ExperimentHistory = {
     historyLines: [],

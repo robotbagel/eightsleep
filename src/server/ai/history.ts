@@ -20,6 +20,12 @@ import {
 } from "./sleepData";
 import { compareSources, type SecondOpinion } from "./secondOpinion";
 import {
+  identityCheck,
+  robustBaseline,
+  type IdentityVerdict,
+  type VitalsNight,
+} from "./identity";
+import {
   BEDTIME_REFERENCE_NIGHTS,
   circularMeanMinutes,
   minutesOfDayInZone,
@@ -53,6 +59,11 @@ export interface NightMetric {
   source: "pod" | "health";
   /** The Apple Watch's reading of the same night, when one was imported. */
   secondOpinion?: SecondOpinion | null;
+  /** True when the night's vitals say somebody else slept here. */
+  notMe?: boolean | null;
+  /** Set once a person has answered the app's "was that you?" prompt. */
+  identityConfirmed?: boolean | null;
+  identityReason?: string | null;
 }
 
 const tenth = (value: number | null | undefined): number | null =>
@@ -177,7 +188,7 @@ export function sessionsToMetrics(
     return d != null && !isNaN(d.getTime()) ? minutesOfDayInZone(d, timezone) : null;
   });
 
-  return usable
+  const metrics = usable
     .map((session, index) => {
       const prior = bedtimes
         .slice(Math.max(0, index - BEDTIME_REFERENCE_NIGHTS), index)
@@ -187,6 +198,23 @@ export function sessionsToMetrics(
       return metricsFromSession(session, timezone, reference);
     })
     .filter((m): m is NightMetric => m != null);
+
+  // Whose nights are these? Judged against the batch's own robust centre,
+  // which is why median/MAD and not mean/SD: a guest night sitting inside
+  // the window must not drag the baseline far enough to hide itself.
+  const vitals: VitalsNight[] = metrics.map((m) => ({
+    restingHeartRate: m.restingHeartRate,
+    hrv: m.hrv,
+    respiratoryRate: m.respiratoryRate,
+  }));
+  const baseline = robustBaseline(vitals);
+  for (const [index, metric] of metrics.entries()) {
+    const verdict = identityCheck(vitals[index]!, baseline);
+    metric.notMe = verdict.someoneElse;
+    metric.identityReason = verdict.someoneElse ? verdict.reason : null;
+  }
+
+  return metrics;
 }
 
 /**
@@ -213,6 +241,8 @@ export async function persistNightMetrics(
         night: nightMetrics.night,
         score: nightMetrics.score,
         thermalScore: nightMetrics.thermalScore,
+        notMe: nightMetrics.notMe,
+        identityConfirmed: nightMetrics.identityConfirmed,
       })
       .from(nightMetrics)
       .where(
@@ -234,6 +264,16 @@ export async function persistNightMetrics(
         : existing
             .filter((row) => row.thermalScore != null)
             .map((row) => [row.night, row.thermalScore!]),
+    );
+    // An answered "was that you?" is a fact, not an inference, and survives
+    // every re-sync and every rescore.
+    const confirmed = new Map(
+      existing
+        .filter((row) => row.identityConfirmed)
+        .map((row) => [row.night, row.notMe]),
+    );
+    const confirmedFlag = new Set(
+      existing.filter((row) => row.identityConfirmed).map((row) => row.night),
     );
 
     // Delete + insert in ONE transaction. On 2026-09-05 the insert failed
@@ -260,6 +300,11 @@ export async function persistNightMetrics(
         lightTenthHours: tenth(m.lightHours),
         awakeTenthHours: tenth(m.awakeHours),
         latencyTenthHours: tenth(m.sleepLatencyHours),
+        // A person's own answer always wins over the inference, so a night
+        // already confirmed keeps its verdict when it is re-synced.
+        notMe: confirmed.get(m.night) ?? m.notMe ?? null,
+        identityConfirmed: confirmedFlag.has(m.night) ? true : null,
+        identityReason: confirmed.has(m.night) ? null : (m.identityReason ?? null),
         tosses: m.tosses,
         wakeCount: m.wakeCount,
         restingHeartRate:
@@ -330,6 +375,9 @@ function rowToMetric(row: typeof nightMetrics.$inferSelect): NightMetric {
     bedtimeMinutes: row.bedtimeMinutes,
     wakeMinutes: row.wakeMinutes,
     source: row.source === "health" ? "health" : "pod",
+    notMe: row.notMe,
+    identityConfirmed: row.identityConfirmed,
+    identityReason: row.identityReason,
   };
 }
 

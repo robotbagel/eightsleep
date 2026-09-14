@@ -55,6 +55,17 @@ export const userAiSettings = createTable(
     healthImportToken: varchar("healthImportToken", { length: 64 }),
     sleepGoal: text("sleepGoal"),
     maxDailyShift: integer("maxDailyShift").notNull().default(20),
+    /**
+     * Last wake date of a planned absence, "YYYY-MM-DD" inclusive. While set
+     * and not past, the scheduler leaves the bed alone entirely.
+     */
+    awayUntil: varchar("awayUntil", { length: 10 }),
+    /**
+     * Stop heating when the bed turns out to be empty, rather than running
+     * the whole schedule for nobody. On by default: an empty bed is the one
+     * case where doing nothing is certainly right.
+     */
+    emptyBedShutoff: boolean("emptyBedShutoff").notNull().default(true),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
@@ -196,6 +207,17 @@ export const nightMetrics = createTable(
     awakeTenthHours: integer("awakeTenthHours"),
     /** Time in bed before falling asleep (sleep-onset latency). */
     latencyTenthHours: integer("latencyTenthHours"),
+    /**
+     * Whose night this was. null = not judged (too few own nights, or no
+     * vitals), false = confirmed the owner's, true = the vitals say somebody
+     * else slept here. A flagged night is kept and shown, but never teaches
+     * the temperature loop.
+     */
+    notMe: boolean("notMe"),
+    /** Set when a person answers the app's "was that you?" prompt. */
+    identityConfirmed: boolean("identityConfirmed"),
+    /** Why the night was flagged, for the app and the operator log. */
+    identityReason: varchar("identityReason", { length: 400 }),
     tosses: integer("tosses"),
     wakeCount: integer("wakeCount"),
     restingHeartRate: integer("restingHeartRate"),

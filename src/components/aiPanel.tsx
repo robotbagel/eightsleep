@@ -1127,6 +1127,8 @@ export const AiSettingsCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
   const [displayUnit, setDisplayUnit] = useState<DisplayUnit>("celsius");
   const [sleepGoal, setSleepGoal] = useState("");
   const [maxDailyShift, setMaxDailyShift] = useState(20);
+  const [awayUntil, setAwayUntil] = useState("");
+  const [emptyBedShutoff, setEmptyBedShutoff] = useState(true);
   const [dirty, setDirty] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
@@ -1139,6 +1141,8 @@ export const AiSettingsCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
       setDisplayUnit(settings.displayUnit);
       setSleepGoal(settings.sleepGoal ?? "");
       setMaxDailyShift(settings.maxDailyShift);
+      setAwayUntil(settings.awayUntil ?? "");
+      setEmptyBedShutoff(settings.emptyBedShutoff);
     }
   }, [settingsQuery.isSuccess, settingsQuery.data, dirty]);
 
@@ -1159,10 +1163,13 @@ export const AiSettingsCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
   if (settingsQuery.isLoading) return null;
 
   const mark = () => setDirty(true);
+  const today = new Date().toLocaleDateString("en-CA");
+  const awayActive = awayUntil !== "" && awayUntil >= today;
   const summary = [
     aiEnabled ? "Autopilot on" : "Autopilot off",
     autoApply ? "auto-applies" : "asks first",
     liveTuningEnabled ? "live tuning on" : "live tuning off",
+    ...(awayActive ? [`away until ${awayUntil}`] : []),
   ].join(" · ");
 
   return (
@@ -1298,6 +1305,62 @@ export const AiSettingsCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
           />
         </div>
 
+        {/* An empty bed is the one case where doing nothing is certainly
+            right, so both controls live together. */}
+        <Toggle
+          id="empty-bed-shutoff"
+          label="Stop heating an empty bed"
+          hint="If nobody is in bed an hour after your bedtime, the heating stops until somebody is."
+          checked={emptyBedShutoff}
+          onChange={(next) => {
+            setEmptyBedShutoff(next);
+            mark();
+          }}
+        />
+
+        <div className="px-2 pt-3">
+          <label
+            htmlFor="awayUntil"
+            className="block text-sm font-medium"
+            style={{ color: "var(--text)" }}
+          >
+            Away until
+          </label>
+          <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
+            The bed stays off through this date. Leave it empty when you are home.
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              id="awayUntil"
+              type="date"
+              value={awayUntil}
+              min={today}
+              onChange={(event) => {
+                setAwayUntil(event.target.value);
+                mark();
+              }}
+              className="field"
+            />
+            {awayUntil !== "" && (
+              <button
+                type="button"
+                onClick={() => {
+                  setAwayUntil("");
+                  mark();
+                }}
+                className="btn btn-secondary"
+              >
+                I am home
+              </button>
+            )}
+          </div>
+          {awayActive && (
+            <p className="mt-2 text-xs" style={{ color: "var(--warning)" }}>
+              The bed will not heat until {awayUntil} has passed.
+            </p>
+          )}
+        </div>
+
         <div className="flex items-center gap-3 px-2 pt-4">
           <button
             type="button"
@@ -1309,6 +1372,8 @@ export const AiSettingsCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
                 displayUnit,
                 sleepGoal: sleepGoal.trim() === "" ? null : sleepGoal.trim(),
                 maxDailyShift,
+                awayUntil: awayUntil === "" ? null : awayUntil,
+                emptyBedShutoff,
               })
             }
             disabled={!dirty || updateSettingsMutation.isPending}

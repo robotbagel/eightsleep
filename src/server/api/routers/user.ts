@@ -390,6 +390,8 @@ export const userRouter = createTRPCRouter({
       displayUnit: settings.displayUnit === "level" ? ("level" as const) : ("celsius" as const),
       sleepGoal: settings.sleepGoal,
       maxDailyShift: settings.maxDailyShift,
+      awayUntil: settings.awayUntil ?? null,
+      emptyBedShutoff: settings.emptyBedShutoff ?? true,
       aiAvailable: isAiConfigured(),
     };
   }),
@@ -403,6 +405,13 @@ export const userRouter = createTRPCRouter({
         displayUnit: z.enum(["celsius", "level"]),
         sleepGoal: z.string().max(500).nullable(),
         maxDailyShift: z.number().int().min(5).max(40),
+        /** Last night of a planned absence, "YYYY-MM-DD". Null = home. */
+        awayUntil: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD")
+          .nullable()
+          .optional(),
+        emptyBedShutoff: z.boolean().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -417,6 +426,8 @@ export const userRouter = createTRPCRouter({
           displayUnit: input.displayUnit,
           sleepGoal: input.sleepGoal,
           maxDailyShift: input.maxDailyShift,
+          awayUntil: input.awayUntil ?? null,
+          emptyBedShutoff: input.emptyBedShutoff ?? true,
           updatedAt: new Date(),
         })
         .onConflictDoUpdate({
@@ -428,10 +439,59 @@ export const userRouter = createTRPCRouter({
             displayUnit: input.displayUnit,
             sleepGoal: input.sleepGoal,
             maxDailyShift: input.maxDailyShift,
+            ...(input.awayUntil !== undefined
+              ? { awayUntil: input.awayUntil }
+              : {}),
+            ...(input.emptyBedShutoff !== undefined
+              ? { emptyBedShutoff: input.emptyBedShutoff }
+              : {}),
             updatedAt: new Date(),
           },
         })
         .execute();
+      return { success: true };
+    }),
+
+  /**
+   * Answer the app's "was that you?" prompt for one night. A person's own
+   * answer is a fact and outranks the vitals inference permanently: it
+   * survives every re-sync and every rescore, and it decides whether the
+   * night is allowed to teach the temperature loop.
+   */
+  confirmNightIdentity: publicProcedure
+    .input(
+      z.object({
+        night: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        wasMe: z.boolean(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const decoded = await checkAuthCookie(ctx.headers);
+      await db
+        .update(nightMetrics)
+        .set({
+          notMe: !input.wasMe,
+          identityConfirmed: true,
+          identityReason: input.wasMe
+            ? null
+            : "You told us somebody else slept here.",
+        })
+        .where(
+          and(
+            eq(nightMetrics.email, decoded.email),
+            eq(nightMetrics.night, input.night),
+          ),
+        );
+      // The answer changes what the loop is allowed to learn from, so
+      // tonight's plan is rebuilt on the corrected evidence straight away.
+      try {
+        await reassessToday(decoded.email);
+      } catch (error) {
+        console.error(
+          "Identity confirmation: reassess failed:",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
       return { success: true };
     }),
 

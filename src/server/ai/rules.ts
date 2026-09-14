@@ -78,6 +78,21 @@ export const LIVE_OFFSET_CAP = 15;
 // ---------------------------------------------------------------------------
 
 /** Short window a burst is measured over, in minutes. */
+/**
+ * Heart-rate band a sleeping adult falls inside. The pod's piezo sensors
+ * register any load on the mattress — a 5 kg cat on the blanket reads as "in
+ * use" — so a credible human heart rate is what separates "someone is
+ * sleeping here" from "something is lying here". A cat's 140-220 bpm is far
+ * outside it. Used by the live tuner before it touches the temperature, and
+ * by the empty-bed check before it decides nobody is home.
+ */
+export const HUMAN_HR_MIN = 30;
+export const HUMAN_HR_MAX = 110;
+
+export function isHumanHeartRate(bpm: number | null | undefined): boolean {
+  return bpm != null && bpm >= HUMAN_HR_MIN && bpm <= HUMAN_HR_MAX;
+}
+
 export const BURST_WINDOW_MIN = 15;
 /** Fewest tosses in the burst window that can count as a burst. */
 export const BURST_MIN_TOSSES = 2;

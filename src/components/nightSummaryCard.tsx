@@ -181,6 +181,18 @@ export const NightSummaryCard: React.FC<{
               </span>
             )}
           </p>
+          {metrics.notMe && !metrics.identityConfirmed && (
+            <WhoseNightRow
+              night={metrics.night}
+              reason={metrics.identityReason ?? null}
+            />
+          )}
+          {metrics.notMe && metrics.identityConfirmed && (
+            <p className="mt-2 text-xs" style={{ color: "var(--text-faint)" }}>
+              Someone else slept here. This night is kept, but it does not
+              steer your temperatures.
+            </p>
+          )}
           {metrics.secondOpinion && (
             <SecondOpinionRow opinion={metrics.secondOpinion} />
           )}
@@ -260,6 +272,69 @@ export const NightSummaryCard: React.FC<{
         />
       </div>
     </Card>
+  );
+};
+
+/**
+ * The vitals say this night was probably somebody else. It is a question,
+ * never an assertion: the sleeper's own answer is the only thing that
+ * settles it, and until they answer the night simply stays out of the
+ * temperature loop's evidence.
+ */
+const WhoseNightRow: React.FC<{ night: string; reason: string | null }> = ({
+  night,
+  reason,
+}) => {
+  const utils = apiR.useUtils();
+  const confirm = apiR.user.confirmNightIdentity.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.user.getNightTimeline.invalidate(),
+        utils.user.getSleepHistory.invalidate(),
+        utils.user.getAiRecommendations.invalidate(),
+      ]);
+    },
+  });
+  return (
+    <div
+      className="mt-3 rounded-lg p-3"
+      style={{
+        background: "var(--warning-soft)",
+        border: "1px solid var(--warning)",
+      }}
+    >
+      <p className="text-sm font-medium" style={{ color: "var(--text)" }}>
+        Was this you?
+      </p>
+      <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
+        {reason ??
+          "This night's breathing and heart data do not look like your usual."}{" "}
+        Until you say, it will not be used to tune your bed.
+      </p>
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          disabled={confirm.isPending}
+          onClick={() => confirm.mutate({ night, wasMe: true })}
+          className="btn btn-secondary"
+        >
+          That was me
+        </button>
+        <button
+          type="button"
+          disabled={confirm.isPending}
+          onClick={() => confirm.mutate({ night, wasMe: false })}
+          className="btn btn-secondary"
+        >
+          Someone else
+        </button>
+      </div>
+      {confirm.isError && (
+        <p className="mt-2 text-xs" style={{ color: "var(--danger)" }}>
+          {confirm.error.message}
+        </p>
+      )}
+    </div>
   );
 };
 

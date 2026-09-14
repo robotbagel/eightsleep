@@ -16,9 +16,12 @@ import {
   getActiveLiveOffset,
   runLiveTuningPass,
 } from "~/server/ai/liveTuner";
-import { appConfig, temperatureEvents } from "~/server/db/schema";
+import { appConfig, temperatureEvents, userAiSettings } from "~/server/db/schema";
 import { detectManualOverride, matchGhostSchedule } from "~/server/ai/override";
 import { nightKeyFor } from "~/server/ai/time";
+import { isAway, presenceDecision } from "~/server/ai/presence";
+import { isHumanHeartRate } from "~/server/ai/rules";
+import { fetchCurrentSessionWindow } from "~/server/ai/sleepData";
 import { sql } from "drizzle-orm";
 import { rawToCelsius } from "~/lib/temperature";
 
@@ -170,6 +173,35 @@ interface TestMode {
   currentTime: Date;
 }
 
+/**
+ * Did we already switch this side off tonight because the bed was empty?
+ * Read from the event trail rather than kept in memory, because each cron
+ * tick is a fresh serverless invocation with no memory of the last one.
+ * A later "somebody is here after all" re-arm writes an ordinary scheduled
+ * event, so the newest row is what decides.
+ */
+async function emptyBedShutoffLogged(
+  email: string,
+  night: string,
+): Promise<boolean> {
+  try {
+    const newest = await db.query.temperatureEvents.findFirst({
+      where: and(
+        eq(temperatureEvents.email, email),
+        eq(temperatureEvents.night, night),
+      ),
+      orderBy: (t, { desc: d }) => [d(t.id)],
+    });
+    return newest?.stage === "empty-bed" || newest?.stage === "away";
+  } catch (error) {
+    console.error(
+      `Could not read the empty-bed state for ${email}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+    return false;
+  }
+}
+
 export async function adjustTemperature(
   testMode?: TestMode,
   trace?: string[],
@@ -273,6 +305,87 @@ export async function adjustTemperature(
         }
 
         note(`stage=${currentSleepStage} isHeating=${String(heatingStatus.isHeating)} target=${heatingStatus.targetHeatingLevel} for ${profile.users.email}`);
+
+        // ---- Is anybody actually in this bed? -----------------------------
+        // Until 2026-09-14 this question was never asked, and the schedule
+        // ran in full through two nights (11-13 Sep) when nobody was home.
+        // A planned absence is taken at its word; an unplanned empty bed is
+        // inferred from the same evidence the live tuner trusts, and is
+        // always reversible on the next tick.
+        const aiSettings = await db.query.userAiSettings.findFirst({
+          where: eq(userAiSettings.email, profile.users.email),
+        });
+        const nightKey = nightKeyFor(
+          now,
+          userTemperatureProfile.timezoneTZ,
+          userTemperatureProfile.wakeupTime.slice(0, 5),
+        );
+        const away = isAway(aiSettings?.awayUntil, nightKey);
+
+        let somebodyInBed = false;
+        // Only worth a network call when the answer could change what we do.
+        const presenceMatters =
+          !testMode?.enabled &&
+          (away || currentSleepStage !== "outside sleep cycle");
+        if (presenceMatters) {
+          try {
+            const window = await fetchCurrentSessionWindow(
+              token,
+              profile.users.eightUserId,
+              userTemperatureProfile.timezoneTZ,
+            );
+            somebodyInBed =
+              window != null && isHumanHeartRate(window.nightAvgHeartRate);
+          } catch (error) {
+            // Unreadable presence must never be read as "empty": the bed
+            // staying on is the safe failure, a cold bed is not.
+            somebodyInBed = true;
+            note(
+              `presence unreadable for ${profile.users.email}, assuming occupied: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
+
+        const shutOffAlready = await emptyBedShutoffLogged(
+          profile.users.email,
+          nightKey,
+        );
+        const presence = presenceDecision({
+          away,
+          shutoffEnabled: aiSettings?.emptyBedShutoff ?? true,
+          stage: currentSleepStage,
+          minutesSinceBedtime:
+            (userNow.getTime() - adjustedCycle.bedTime.getTime()) / 60_000,
+          somebodyInBed,
+          heating: heatingStatus.isHeating,
+          shutOffForEmptyBed: shutOffAlready,
+        });
+
+        if (presence.kind === "away" || presence.kind === "shut-off-empty") {
+          if (testMode?.enabled) {
+            note(`[TEST MODE] would stop heating: ${presence.reason}`);
+          } else {
+            await retryApiCall(() =>
+              turnOffSide(token, profile.users.eightUserId),
+            );
+            await logTemperatureEvent(
+              profile.users.email,
+              userTemperatureProfile.timezoneTZ,
+              userTemperatureProfile.wakeupTime.slice(0, 5),
+              now,
+              presence.kind === "away" ? "away" : "empty-bed",
+              null,
+              "off",
+              presence.reason,
+            );
+            note(`${presence.kind} for ${profile.users.email}: ${presence.reason}`);
+          }
+          continue; // nothing else to do for this user on this tick
+        }
+        if (away) continue; // already off, and staying off
+        if (presence.kind === "re-arm") {
+          note(`re-arming schedule for ${profile.users.email}: ${presence.reason}`);
+        }
 
         // Did a person move the dial? Checked EVERY tick inside the sleep
         // cycle, not only near stage boundaries — a hand adjustment at 01:30

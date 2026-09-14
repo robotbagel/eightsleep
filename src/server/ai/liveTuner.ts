@@ -21,7 +21,7 @@ import {
 import { and, desc, eq } from "drizzle-orm";
 import { setHeatingLevel } from "~/server/eight/eight";
 import { fetchCurrentSessionWindow } from "./sleepData";
-import { computeLiveNudge } from "./rules";
+import { computeLiveNudge, isHumanHeartRate } from "./rules";
 import { getFreshToken } from "./advisor";
 import { currentStageFor, nightKeyFor } from "./time";
 import {
@@ -140,10 +140,7 @@ export async function runLiveTuningPass(): Promise<void> {
       // mattress (a pet on the blanket is enough to show "in use"), so only
       // act when the vitals look like a sleeping adult. Without a credible
       // heart rate we never touch the temperature.
-      const humanHeartRate =
-        window.nightAvgHeartRate != null &&
-        window.nightAvgHeartRate >= 30 &&
-        window.nightAvgHeartRate <= 110;
+      const humanHeartRate = isHumanHeartRate(window.nightAvgHeartRate);
       if (!humanHeartRate) {
         console.log(
           `Live tuning skipped for ${email}: implausible/absent heart rate (${window.nightAvgHeartRate}) — not a sleeping person.`,

@@ -210,6 +210,8 @@ export async function GET(request: NextRequest): Promise<Response> {
               // actually sees in the app; reporting °C to someone whose app
               // shows -10..+10 sliders makes every number unrecognisable.
               displayUnit: settings.displayUnit,
+              awayUntil: settings.awayUntil ?? null,
+              emptyBedShutoff: settings.emptyBedShutoff ?? true,
               maxDailyShiftC: settings.maxDailyShift / 10,
               sleepGoal: settings.sleepGoal,
               updatedAt: settings.updatedAt,
@@ -252,6 +254,9 @@ export async function GET(request: NextRequest): Promise<Response> {
           // The Watch's reading of the same night, when imported.
           watchScore: n.secondOpinion?.score ?? null,
           disagreements: n.secondOpinion?.disagreements ?? [],
+          // Whose night the vitals say it was, and whether a person settled it.
+          notMe: n.notMe ?? null,
+          identityConfirmed: n.identityConfirmed ?? null,
         })),
         // The decision trail, so oscillation (moving a stage down then back
         // up on successive days) is visible instead of having to be inferred

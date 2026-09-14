@@ -187,6 +187,11 @@ export async function POST(request: NextRequest): Promise<Response> {
   if (action === "migrate") {
     const statements = [
       sql`ALTER TABLE "8slp_nightMetrics" ADD COLUMN IF NOT EXISTS "latencyTenthHours" integer`,
+      sql`ALTER TABLE "8slp_nightMetrics" ADD COLUMN IF NOT EXISTS "notMe" boolean`,
+      sql`ALTER TABLE "8slp_nightMetrics" ADD COLUMN IF NOT EXISTS "identityConfirmed" boolean`,
+      sql`ALTER TABLE "8slp_nightMetrics" ADD COLUMN IF NOT EXISTS "identityReason" varchar(400)`,
+      sql`ALTER TABLE "8slp_userAiSettings" ADD COLUMN IF NOT EXISTS "awayUntil" varchar(10)`,
+      sql`ALTER TABLE "8slp_userAiSettings" ADD COLUMN IF NOT EXISTS "emptyBedShutoff" boolean NOT NULL DEFAULT true`,
     ];
     const applied: string[] = [];
     for (const statement of statements) {
