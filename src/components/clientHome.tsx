@@ -7,6 +7,7 @@ import { TemperatureProfileForm } from "~/components/temperatureProfileForm";
 import { LogoutButton } from "~/components/logout";
 import { ThemeToggle } from "~/components/themeToggle";
 import { AiAdvisorCard, AiSettingsCard, ShareLinks } from "~/components/aiPanel";
+import { RightNow } from "~/components/rightNow";
 import { NightSummaryCard } from "~/components/nightSummaryCard";
 import { AutopilotStrip } from "~/components/autopilotStrip";
 import { ComfortPrompt } from "~/components/comfortPrompt";
@@ -141,6 +142,13 @@ const SignedIn: React.FC = () => {
       {/* Level 1: how did I sleep, and what is being done about it. Nothing
           else competes with these two above the fold. */}
       <div className="space-y-4">
+        {/* Level 0: the only thing that matters WHILE you are in the bed.
+            Above the night summary on purpose — at 03:00 nobody wants last
+            night's score, they want half a degree. It collapses to one line
+            of text when the bed is off, so it costs the daytime page almost
+            nothing. */}
+        <RightNow displayUnit={displayUnit} index={0} />
+
         <div
           className="min-w-0"
           style={{ touchAction: "pan-y" }}

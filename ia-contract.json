@@ -4,10 +4,18 @@
   "problem": "Six stacked cards all answered 'how did I sleep' in a different form (score card, hypnogram, three-night outlook, 7/14/30 compare, and an AI card holding a settings table, a 7-night table, two charts, a ledger, reasoning, an outcome strip, two buttons and a live-nudge list). The reader could not tell at a glance how they slept or what the system was doing about it.",
   "consulted": [
     "NotebookLM: UI/UX Hierarchy & Feedback (5783cb01-7889-4cfa-84ab-b0842ffc9db5)",
-    "motion-canon CANON.md §10 (progressive disclosure, labelled nav, three-exit modals)"
+    "motion-canon CANON.md \u00a710 (progressive disclosure, labelled nav, three-exit modals)"
   ],
-
   "glanceHierarchy": [
+    {
+      "level": 0,
+      "question": "I am in the bed right now and it is wrong",
+      "answer": "A live control above everything else: one reading, a big minus and a big plus, half a degree per press, held for the rest of the night. The press IS the comfort report \u2014 direction says which way it is wrong and the schedule already knows which stage is running, so nobody has to pick a word at 03:00. Collapses to a single line of text when the bed is off, so it does not compete during the day.",
+      "budget": "1 number, 2 controls, 1 sentence",
+      "component": "rightNow.tsx",
+      "added": "2026-09-14",
+      "why": "Adjusting the bed in the night previously meant opening the folded schedule panel, identifying which of four stages was running, and editing it half asleep \u2014 or answering the morning prompt with words that describe the problem instead of fixing it. The guest share page already had a live control; the owner's own app did not."
+    },
     {
       "level": 1,
       "question": "How did I sleep?",
@@ -18,7 +26,7 @@
     {
       "level": 1,
       "question": "What is being done about it?",
-      "answer": "A single-line status strip directly beneath the hero, stating tonight's change in words ('the REM stage runs cooler, 28.8 → 27.8. Live on the pod'), or that nothing changed and why. Tapping it expands the full autopilot detail.",
+      "answer": "A single-line status strip directly beneath the hero, stating tonight's change in words ('the REM stage runs cooler, 28.8 \u2192 27.8. Live on the pod'), or that nothing changed and why. Tapping it expands the full autopilot detail.",
       "budget": "1 icon, 1 label, 1 sentence, 1 affordance",
       "component": "autopilotStrip.tsx"
     },
@@ -42,14 +50,12 @@
       "component": "temperatureProfileForm.tsx, AiSettingsCard"
     }
   ],
-
   "densityBudget": {
     "aboveFold": "hero card + autopilot strip only",
     "visibleCardsWhenIdle": 3,
     "previously": 6,
     "rule": "No card may hold more than one job. The AI card held ten and is now a level-3 panel behind a level-1 line."
   },
-
   "semanticContract": {
     "colour": {
       "var(--success)": "quality >= 80, a change that helped, converged",
@@ -69,22 +75,43 @@
       "sliders": "settings"
     }
   },
-
   "disclosureLedger": [
-    { "content": "hypnogram, bed/room temperature, event rail", "was": "always-on card #2", "now": "Trends → Night tab" },
-    { "content": "two nights ago / last night / tonight forecast", "was": "always-on card #3", "now": "Trends → Recent tab" },
-    { "content": "7/14/30-day metric grid and weekday breakdown", "was": "always-on card #4", "now": "Trends → Compare tab" },
-    { "content": "plan curve, stage comparison, reasoning, evidence, ledger, settings history, live nudges", "was": "always-on card #5, all at once", "now": "expanded from the autopilot strip" },
-    { "content": "seven-night settings table", "was": "inside card #5", "now": "nested disclosure inside the autopilot panel" },
-    { "content": "schedule form, autopilot settings", "was": "collapsed", "now": "unchanged — already correct" }
+    {
+      "content": "hypnogram, bed/room temperature, event rail",
+      "was": "always-on card #2",
+      "now": "Trends \u2192 Night tab"
+    },
+    {
+      "content": "two nights ago / last night / tonight forecast",
+      "was": "always-on card #3",
+      "now": "Trends \u2192 Recent tab"
+    },
+    {
+      "content": "7/14/30-day metric grid and weekday breakdown",
+      "was": "always-on card #4",
+      "now": "Trends \u2192 Compare tab"
+    },
+    {
+      "content": "plan curve, stage comparison, reasoning, evidence, ledger, settings history, live nudges",
+      "was": "always-on card #5, all at once",
+      "now": "expanded from the autopilot strip"
+    },
+    {
+      "content": "seven-night settings table",
+      "was": "inside card #5",
+      "now": "nested disclosure inside the autopilot panel"
+    },
+    {
+      "content": "schedule form, autopilot settings",
+      "was": "collapsed",
+      "now": "unchanged \u2014 already correct"
+    }
   ],
-
   "motion": {
     "tabSwitch": "--motion-fast with --ease-out-snap, no layout jump: the panel is keyed so content cross-fades",
-    "stripExpand": "grid-template-rows 0fr→1fr at --motion-base, matching the existing disclosures",
+    "stripExpand": "grid-template-rows 0fr\u21921fr at --motion-base, matching the existing disclosures",
     "reducedMotion": "inherits the global gate in globals.css"
   },
-
   "verification": [
     "Screenshot at 1280 and at 390 in both themes",
     "DOM sweep for page-level horizontal overflow at 320/360/390/402/430",

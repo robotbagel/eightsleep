@@ -105,6 +105,72 @@ const STAGE_TO_WHEN: Record<string, string> = {
 };
 
 /**
+ * Record a setpoint a PERSON chose, wherever they chose it from: the Eight
+ * app (detected by comparison above) or our own live control. One function,
+ * because these must produce identical consequences — the pod follows it for
+ * the rest of the night, the tuner stops trying to correct it, and the
+ * morning knows what it meant. Two copies of this rule would drift.
+ */
+export async function recordManualSetpoint(input: {
+  email: string;
+  night: string;
+  now: Date;
+  stage: string;
+  level: number;
+  deltaTenthsC: number;
+  newOffsetTenthsC: number;
+  direction: "warmer" | "cooler";
+  /** Where the person pressed it, for the trail. */
+  via: "the Eight app" | "this app";
+}): Promise<void> {
+  await db.insert(temperatureEvents).values({
+    email: input.email,
+    night: input.night,
+    at: input.now,
+    stage: input.stage,
+    level: input.level,
+    source: "manual",
+    note: `You set the bed ${Math.abs(input.deltaTenthsC) / 10}°C ${input.direction} yourself, from ${input.via}. Held for the rest of the night.`,
+  });
+
+  // Carry it forward: every later stage keeps its shape but sits where they
+  // put it, and the ten-minute schedule stops undoing them.
+  await db.insert(aiLiveAdjustments).values({
+    email: input.email,
+    night: input.night,
+    stage: input.stage,
+    offsetDelta: input.deltaTenthsC,
+    newOffset: input.newOffsetTenthsC,
+    appliedLevel: input.level,
+    reason: `Manual override during the ${input.stage} stage — ${Math.abs(input.deltaTenthsC) / 10}°C ${input.direction}. Following it rather than correcting it.`,
+  });
+
+  // And tell the morning. The comfort prompt keys feedback by the WAKE date;
+  // the night key is the date the night STARTED, so wake date = night + 1.
+  // Deriving it from the clock instead put an override made before midnight
+  // (23:00) under YESTERDAY's wake date — a report about the wrong night.
+  const feedbackNight = shiftDate(input.night, 1);
+  const existing = await db.query.sleepFeedback.findFirst({
+    where: and(
+      eq(sleepFeedback.email, input.email),
+      eq(sleepFeedback.night, feedbackNight),
+    ),
+  });
+  // Somebody answering the prompt outranks something inferred from the dial,
+  // so an existing report for tonight is never overwritten.
+  if (!existing) {
+    await db.insert(sleepFeedback).values({
+      email: input.email,
+      night: feedbackNight,
+      felt: input.direction === "warmer" ? "too_cold" : "too_hot",
+      whenFelt: STAGE_TO_WHEN[input.stage] ?? "not_sure",
+      note: "Recorded from a hand adjustment made during the night.",
+    });
+  }
+
+}
+
+/**
  * Compare what the pod is actually set to against the last level THIS app
  * wrote. Anything else moved it.
  *
@@ -163,50 +229,17 @@ export async function detectManualOverride(input: {
     Math.sign(offsetC) * Math.round(Math.abs(offsetC) * 10);
   const direction: "warmer" | "cooler" = deltaTenthsC > 0 ? "warmer" : "cooler";
 
-  await db.insert(temperatureEvents).values({
+  await recordManualSetpoint({
     email: input.email,
     night,
-    at: input.now,
+    now: input.now,
     stage: input.stage,
     level: input.observedLevel,
-    source: "manual",
-    note: `You set the bed ${Math.abs(deltaTenthsC) / 10}°C ${direction} yourself. Held for the rest of the night.`,
+    deltaTenthsC,
+    newOffsetTenthsC,
+    direction,
+    via: "the Eight app",
   });
-
-  // Carry it forward: every later stage keeps its shape but sits where they
-  // put it, and the ten-minute schedule stops undoing them.
-  await db.insert(aiLiveAdjustments).values({
-    email: input.email,
-    night,
-    stage: input.stage,
-    offsetDelta: deltaTenthsC,
-    newOffset: newOffsetTenthsC,
-    appliedLevel: input.observedLevel,
-    reason: `Manual override during the ${input.stage} stage — ${Math.abs(deltaTenthsC) / 10}°C ${direction}. Following it rather than correcting it.`,
-  });
-
-  // And tell the morning. The comfort prompt keys feedback by the WAKE date;
-  // the night key is the date the night STARTED, so wake date = night + 1.
-  // Deriving it from the clock instead put an override made before midnight
-  // (23:00) under YESTERDAY's wake date — a report about the wrong night.
-  const feedbackNight = shiftDate(night, 1);
-  const existing = await db.query.sleepFeedback.findFirst({
-    where: and(
-      eq(sleepFeedback.email, input.email),
-      eq(sleepFeedback.night, feedbackNight),
-    ),
-  });
-  // Somebody answering the prompt outranks something inferred from the dial,
-  // so an existing report for tonight is never overwritten.
-  if (!existing) {
-    await db.insert(sleepFeedback).values({
-      email: input.email,
-      night: feedbackNight,
-      felt: direction === "warmer" ? "too_cold" : "too_hot",
-      whenFelt: STAGE_TO_WHEN[input.stage] ?? "not_sure",
-      note: "Recorded from a hand adjustment made during the night.",
-    });
-  }
 
   return { deltaTenthsC, newOffsetTenthsC, direction };
 }

@@ -65,6 +65,12 @@ import {
   revokeShareLink,
   SHARE_ROLES,
 } from "~/server/ai/shareLinks";
+import { recordManualSetpoint } from "~/server/ai/override";
+import { currentStageFor } from "~/server/ai/time";
+import { getCurrentHeatingStatus } from "~/server/eight/user";
+import { celsiusToRaw, MAX_BED_TEMP_C, MIN_BED_TEMP_C } from "~/lib/temperature";
+import { setHeatingLevel } from "~/server/eight/eight";
+import { nightKeyFor } from "~/server/ai/time";
 
 class DatabaseError extends Error {
   constructor(message: string) {
@@ -508,6 +514,130 @@ export const userRouter = createTRPCRouter({
    * the owner must copy it there and then, and a leaked database is not a
    * leaked bed.
    */
+  /**
+   * What the bed is doing right now, and whether a live adjustment makes
+   * sense. Cheap enough to poll while the page is open.
+   */
+  getLiveTemperature: publicProcedure.query(async ({ ctx }) => {
+    const decoded = await checkAuthCookie(ctx.headers);
+    const [user, profile] = await Promise.all([
+      db.query.users.findFirst({ where: eq(users.email, decoded.email) }),
+      db.query.userTemperatureProfile.findFirst({
+        where: eq(userTemperatureProfile.email, decoded.email),
+      }),
+    ]);
+    if (!user || !profile) return null;
+
+    const stage = currentStageFor(
+      new Date(),
+      profile.timezoneTZ,
+      profile.bedTime.slice(0, 5),
+      profile.wakeupTime.slice(0, 5),
+    );
+    let currentC: number | null = null;
+    let isHeating = false;
+    try {
+      const status = await getCurrentHeatingStatus(await getFreshToken(user));
+      isHeating = status.isHeating;
+      if (status.targetHeatingLevel != null) {
+        currentC = rawToCelsius(status.targetHeatingLevel);
+      }
+    } catch (error) {
+      console.error(
+        "Live temperature: could not read the bed:",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    return {
+      currentC,
+      isHeating,
+      stage,
+      bedTime: profile.bedTime.slice(0, 5),
+      minC: MIN_BED_TEMP_C,
+      maxC: MAX_BED_TEMP_C,
+    };
+  }),
+
+  /**
+   * "Too warm" and "too cold", expressed as the thing you actually want:
+   * half a degree either way, right now, while you are lying in it.
+   *
+   * The press IS the report. Asking someone at 03:00 to pick a word and then
+   * pick which part of the night they mean is asking them to do the
+   * system's job — the schedule already knows which stage is running, and
+   * the direction of the press already says which way it is wrong. So this
+   * goes through exactly the same recorder as a hand adjustment made in the
+   * Eight app: the pod follows it for the rest of the night, the live tuner
+   * stops trying to correct it, and the morning gets a comfort report
+   * derived from the direction and the stage without anyone typing a word.
+   */
+  nudgeTemperature: publicProcedure
+    .input(z.object({ deltaC: z.number().min(-3).max(3) }))
+    .mutation(async ({ input, ctx }) => {
+      const decoded = await checkAuthCookie(ctx.headers);
+      const [user, profile] = await Promise.all([
+        db.query.users.findFirst({ where: eq(users.email, decoded.email) }),
+        db.query.userTemperatureProfile.findFirst({
+          where: eq(userTemperatureProfile.email, decoded.email),
+        }),
+      ]);
+      if (!user || !profile) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "No bed is set up yet." });
+      }
+
+      const token = await getFreshToken(user);
+      const status = await getCurrentHeatingStatus(token);
+      const observed = status.targetHeatingLevel;
+      if (observed == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "The bed is not reporting a temperature right now.",
+        });
+      }
+
+      const now = new Date();
+      const wakeupTime = profile.wakeupTime.slice(0, 5);
+      const stage =
+        currentStageFor(now, profile.timezoneTZ, profile.bedTime.slice(0, 5), wakeupTime) ??
+        "initial";
+      const stageBaseLevel =
+        stage === "deep"
+          ? (profile.deepSleepLevel ?? profile.midStageSleepLevel)
+          : stage === "mid"
+            ? profile.midStageSleepLevel
+            : stage === "final"
+              ? profile.finalSleepLevel
+              : profile.initialSleepLevel;
+
+      const fromC = rawToCelsius(observed);
+      const toC = Math.min(
+        MAX_BED_TEMP_C,
+        Math.max(MIN_BED_TEMP_C, Math.round((fromC + input.deltaC) * 2) / 2),
+      );
+      const level = celsiusToRaw(toC);
+      if (level === observed) return { currentC: fromC, changed: false };
+
+      // The pod first: a recorded change that never reached the bed would be
+      // a lie the rest of the night reasons from.
+      await setHeatingLevel(token, user.eightUserId, level);
+
+      const deltaTenthsC = Math.round((toC - fromC) * 10);
+      const offsetC = toC - rawToCelsius(stageBaseLevel);
+      await recordManualSetpoint({
+        email: decoded.email,
+        night: nightKeyFor(now, profile.timezoneTZ, wakeupTime),
+        now,
+        stage,
+        level,
+        deltaTenthsC,
+        newOffsetTenthsC: Math.sign(offsetC) * Math.round(Math.abs(offsetC) * 10),
+        direction: deltaTenthsC > 0 ? "warmer" : "cooler",
+        via: "this app",
+      });
+
+      return { currentC: toC, changed: true, stage };
+    }),
+
   createShareLink: publicProcedure
     .input(
       z.object({
