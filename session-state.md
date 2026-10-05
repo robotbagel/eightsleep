@@ -37,28 +37,21 @@ Local builds need Node 22 (`/usr/local/bin/node`). `SKIP_ENV_VALIDATION=1 npx ne
 7. **Share links**, guest and household. Opaque secret, SHA-256 stored, revocable. A guest sets all four stages as an overlay that never writes the owner's row, and reads back their own nights only.
 8. **Live plus/minus** on both the owner's app and the guest page. The press is the comfort report: direction plus current stage, no words asked.
 
+## 2026-10-05 session: holiday audit + iOS 27-style overview
+Replayed 15 Sep - 4 Oct from production (event trail, raw pod sessions, monitor.log). Findings and fixes (commit db9c069):
+- Nathan's 2-week silence was **away mode he set** ("AWAY until 2026-10-04" in monitor.log), not a pod outage. The previous handoff's open item 2 was wrong.
+- Empty-bed shutoff **flapped**: every stage boundary switched the empty side back on. Fixed (`stay-off`); re-arm now heats immediately; after 2 empty nights the bed waits for someone instead of pre-heating.
+- **Stale evidence moved both profiles 7 times while nobody was home**: hold window was the newest 4 recs (a daily no-change row each morning), so the last real change scrolled out and its spent comfort reports voted again every 5th day. Fixed + `evidenceGate` (away / change not slept on / nothing new = hold) + reports >7 days or about guest nights never vote.
+- Away date now means **home again on** (that night runs).
+- Identity used the fetched batch as the baseline, which was guests and cats: Laurence's mother-in-law entered the ledger as 3 of Laurence's nights. Now judged against stored own nights. Sessions <3 h asleep or breathing >=20/min are not nights (all cat sessions measured 20.4-25.3/min; humans 13.1-17.1). One row per wake date.
+- Guest links have `startsOn`; every night of the stay is the guest's. Live tuner used the owner's stage temps and "you reported running hot" on the guest: fixed. Guest hand adjustments no longer filed as owner feedback.
+- Failed 10-min ticks go to `aiRunLog` phase `schedule`, reported as `aiStatus.scheduleFailures` and flagged by the monitor.
+
+UI (commit c214a16): summary chips, verdict headline + reading against your own usual (`src/lib/insights.ts`, tested), helped/held-back rows, one tip, vitals on personal ranges (`vitalsCard.tsx`). Score bands now Apple's 81/61.
+
+**Deploys:** the Vercel dashboard build command ran `drizzle-kit push`, which hangs on an interactive prompt (no TTY) whenever the schema changes; two deploys died at the 45-min timeout. `vercel.json` now sets `"buildCommand": "next build"` (commit 95f36db), builds take ~2 min instead of 15-20. **Schema changes are applied ONLY by `POST /api/aiDebug?action=migrate`** after deploy; add every new column to its list. (4-model ChatHub review recommended moving to committed `drizzle-kit generate` migrations; that needs Neon credentials, which this Mac does not have.)
+
+**Post-deploy, done 2026-10-05 ~09:40 UTC:** migrate (applied 13), identity corrections (Nathan 09-15 = him; 09-16..18 = guest on both sides), rescore both (cat/nap rows purged: 3 Nathan, 9 Laurence). Stored history now: guest nights flagged, no cat nights. Identity now flags breathing >= 6 MADs on its own (commit c748813). Traced cron tick clean, monitor clean.
+
 ## Open items
-**1. Naps are stored and displayed as nights.** Confirmed in the raw pod data: a 36-minute lie-down on 09-26 and a 2h12m afternoon nap on 09-14 are both stored as nights, scoring 15 and 25. `sessionsToMetrics` keeps anything with `sleepDuration > 0`.
-- Not harmful to the loop: `thermalScore` returns null under 2 hours, so these are already excluded from the ledger.
-- It is harmful to what you read: they appear in history and they drag the "compared with usual" averages that `buildVerdict` computes.
-- Suggested fix: a minimum-night threshold in `sessionsToMetrics`, kept separate from the existing thermal cutoff so a nap is not shown as a night at all. Needs one decision from Nathan: what is the shortest thing that counts as a night, and should naps be visible somewhere rather than dropped.
-
-**2. The scheduler leaves no trace when the pod is unreachable.** Nathan has zero temperature events for the nights of 27 Sep through 3 Oct, while the daily AI pass ran and auto-applied every one of those days. Events resume 4 Oct and the night of 4-5 Oct is normal.
-- Most likely the pod was off or offline during travel, so `getCurrentHeatingStatus` threw, the per-user catch skipped the rest, and nothing was written. The empty-bed shutoff correctly does nothing when the side is already off.
-- The gap is invisible to monitoring: the cron heartbeat still updates and the daily pass still reports ok, so the status endpoint and the email both say healthy.
-- This is the same class as the 2026-08-24 incident, where the fix was to make the failure observable. Suggested fix: log a `pod-unreachable` row in `aiRunLog` or `temperatureEvents` when the status read throws, and have `check-ai-status.py` report a night with no scheduled events.
-- Worth confirming the cause from Vercel logs for that window before building anything.
-
-## Current state, 2026-10-05
-| | Nathan | Laurence |
-|---|---|---|
-| Last night | 85 score, 85 quality | 99 score, 93 quality |
-| Away set | none | none |
-| Empty-bed shutoff | on | on |
-| Auto-apply | on | on |
-| Nights flagged "not you" | none | none |
-
-Both accounts' daily passes ran ok on 03, 04 and 05 Oct. No share links of mine are left active; any that exist are Nathan's own.
-
-## Next action
-Decide the two open items above. Neither is urgent and neither is breaking the loop today.
+- Both profiles drifted while away (Nathan mid 26.3 -> 24.8, deep 26.5 -> 26; Laurence deep 28.6 -> 30.2), all from stale evidence. Restoring the pre-holiday profiles is Nathan's call.
