@@ -1,7 +1,8 @@
 {
-    "functions": {
-      "app/api/**/*": {
-        "maxDuration": 60 
-      }
+  "buildCommand": "next build",
+  "functions": {
+    "app/api/**/*": {
+      "maxDuration": 60
     }
   }
+}
