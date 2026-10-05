@@ -229,6 +229,22 @@ export function nonNightKeys(sessions: PodSession[], timezone: string): string[]
   return [...other].filter((key) => !real.has(key));
 }
 
+/**
+ * The wake dates a batch of sessions covers, oldest to newest. The newest is
+ * left out: today's session may still be in progress.
+ */
+export function sessionSpan(
+  sessions: PodSession[],
+  timezone: string,
+): { from: string; to: string } | null {
+  const keys = sessions
+    .map((s) => wakeKey(s, timezone))
+    .filter((k): k is string => k != null)
+    .sort();
+  if (keys.length < 2) return null;
+  return { from: keys[0]!, to: keys[keys.length - 2]! };
+}
+
 /** Converts a batch of raw pod sessions into one metric row per night. */
 export function sessionsToMetrics(
   sessions: PodSession[],
@@ -330,6 +346,9 @@ async function judgeIdentity(email: string, metrics: NightMetric[]): Promise<voi
       (row) =>
         row.notMe !== true &&
         !judging.has(row.night) &&
+        // A row with no breathing rate (stored before vitals were kept)
+        // would count toward the baseline while contributing nothing to it.
+        row.respiratoryTenth != null &&
         (row.asleep ?? 0) >= MIN_NIGHT_ASLEEP_HOURS * 10 &&
         (row.respiratoryTenth == null ||
           row.respiratoryTenth < NON_HUMAN_BREATHING_RATE * 10),
@@ -511,7 +530,10 @@ export async function syncNightMetrics(
   const sessions = await fetchPodSessions(token, userId, pages);
   const metrics = sessionsToMetrics(sessions, timezone);
   await persistNightMetrics(email, metrics);
-  await purgeNonNights(email, nonNightKeys(sessions, timezone));
+  await purgeNonNights(email, nonNightKeys(sessions, timezone), {
+    span: sessionSpan(sessions, timezone),
+    keep: new Set(metrics.map((m) => m.night)),
+  });
   return metrics;
 }
 
@@ -520,20 +542,63 @@ export async function syncNightMetrics(
  * nights at all. Never touches an Apple Health row or a date with a real
  * night. Never throws.
  */
-export async function purgeNonNights(email: string, nights: string[]): Promise<number> {
-  if (nights.length === 0) return 0;
+export async function purgeNonNights(
+  email: string,
+  nights: string[],
+  /**
+   * Also remove pod rows inside the span the batch covers that no session in
+   * it produces. A row stored while a session was still in progress can carry
+   * a provisional wake date the finished session no longer has (a cat's
+   * 09-23 "night" ended on 09-24 once complete), and nothing else ever
+   * revisits it.
+   */
+  orphans?: { span: { from: string; to: string } | null; keep: Set<string> },
+): Promise<number> {
   try {
-    const removed = await db
-      .delete(nightMetrics)
-      .where(
-        and(
-          eq(nightMetrics.email, email),
-          eq(nightMetrics.source, "pod"),
-          inArray(nightMetrics.night, nights),
-        ),
-      )
-      .returning({ night: nightMetrics.night });
-    return removed.length;
+    let removed = 0;
+    if (nights.length > 0) {
+      const rows = await db
+        .delete(nightMetrics)
+        .where(
+          and(
+            eq(nightMetrics.email, email),
+            eq(nightMetrics.source, "pod"),
+            inArray(nightMetrics.night, nights),
+          ),
+        )
+        .returning({ night: nightMetrics.night });
+      removed += rows.length;
+    }
+    if (orphans?.span) {
+      const stored = await db
+        .select({ night: nightMetrics.night })
+        .from(nightMetrics)
+        .where(
+          and(
+            eq(nightMetrics.email, email),
+            eq(nightMetrics.source, "pod"),
+            gte(nightMetrics.night, orphans.span.from),
+            lte(nightMetrics.night, orphans.span.to),
+          ),
+        );
+      const stale = stored
+        .map((row) => row.night)
+        .filter((night) => !orphans.keep.has(night));
+      if (stale.length > 0) {
+        const rows = await db
+          .delete(nightMetrics)
+          .where(
+            and(
+              eq(nightMetrics.email, email),
+              eq(nightMetrics.source, "pod"),
+              inArray(nightMetrics.night, stale),
+            ),
+          )
+          .returning({ night: nightMetrics.night });
+        removed += rows.length;
+      }
+    }
+    return removed;
   } catch (error) {
     console.error(
       `Could not remove non-night rows for ${email}:`,

@@ -111,3 +111,19 @@ const blank = identityCheck(
 assert.equal(blank.someoneElse, false);
 assert.equal(blank.deviations.length, 0);
 console.log("ok  a night with no vitals is never accused");
+
+// --- breathing far out of character is decisive on its own ---------------
+// 2026-09-17, Laurence's side: her mother-in-law breathed 16.6/min against
+// Laurence's 13.8 (9.6 MADs) with a heart rate that looked ordinary, and the
+// "breathing plus one cardiac metric" rule let the night through.
+{
+  const LAURENCE = [13.4, 13.7, 13.4, 13.7, 13.7, 13.5, 13.8, 13.5, 14.0, 13.6].map(
+    (rr, i) => ({ restingHeartRate: 57 + (i % 3), hrv: 30 + (i % 4), respiratoryRate: rr }),
+  );
+  const own = robustBaseline(LAURENCE);
+  const guestNight = identityCheck({ restingHeartRate: 59, hrv: 33, respiratoryRate: 16.6 }, own);
+  assert.ok(guestNight.someoneElse, guestNight.reason);
+  const slightlyFast = identityCheck({ restingHeartRate: 58, hrv: 32, respiratoryRate: 14.6 }, own);
+  assert.ok(!slightlyFast.someoneElse, "a modest breathing change alone still needs the heart to agree");
+  console.log("ok  breathing far out of character settles it without the heart");
+}

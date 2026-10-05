@@ -14,6 +14,7 @@ import {
   nonNightKeys,
   persistNightMetrics,
   purgeNonNights,
+  sessionSpan,
   sessionsToMetrics,
 } from "~/server/ai/history";
 import { rescoreHealthNights } from "~/server/ai/health";
@@ -302,7 +303,10 @@ export async function POST(request: NextRequest): Promise<Response> {
     const metrics = sessionsToMetrics(sessions, timezone);
     const persisted = await persistNightMetrics(email, metrics, { rescore: true });
     // Rows stored under the old "any sleep is a night" rule go too.
-    const purged = await purgeNonNights(email, nonNightKeys(sessions, timezone));
+    const purged = await purgeNonNights(email, nonNightKeys(sessions, timezone), {
+      span: sessionSpan(sessions, timezone),
+      keep: new Set(metrics.map((m) => m.night)),
+    });
     if (!persisted.ok) {
       return Response.json(
         { email, error: "nothing stored", reason: persisted.error },

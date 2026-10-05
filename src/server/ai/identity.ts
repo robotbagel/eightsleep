@@ -74,6 +74,14 @@ export const FLOOR = {
  */
 export const DEVIATION_THRESHOLD = 2.5;
 
+/**
+ * Breathing this far out is decisive on its own. Measured 2026-10-05: a
+ * guest's night sat 9.6 MADs out on breathing with an ordinary-looking heart
+ * (2.2 / 1.1 MADs) and was missed, while the owners' own nights never pass
+ * 2.1. Six leaves room both ways.
+ */
+export const DECISIVE_BREATHING = 6;
+
 /** Own-nights needed before the baseline is trustworthy enough to judge. */
 export const MIN_BASELINE_NIGHTS = 5;
 
@@ -164,7 +172,10 @@ export function identityCheck(
         : "Vital signs are in character for you.",
     };
   }
-  if (!cardiacOut) {
+  const decisive = deviations.some(
+    (d) => d.metric === "breathing rate" && d.mads >= DECISIVE_BREATHING,
+  );
+  if (!cardiacOut && !decisive) {
     return {
       someoneElse: false,
       deviations,
