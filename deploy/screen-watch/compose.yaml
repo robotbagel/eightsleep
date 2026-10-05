@@ -1,0 +1,21 @@
+# Bedroom screen watcher for the sleep app. Runs on Supernova:
+#   cd /volume2/docker/stacks/screen-watch && docker compose up -d --build
+# Host networking because Cast discovery is mDNS. The secret is the app's
+# CRON_SECRET, read from the same file the 10-minute scheduler uses.
+services:
+  screen-watch:
+    build: .
+    container_name: screen-watch
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      CAST_NAME: "Bedroom TV"
+      EVENT_URL: "https://8sleep-jade.vercel.app/api/screenEvent"
+      SECRET_FILE: /run/secrets/cron-secret
+    volumes:
+      - /home/nathan/.config/8sleep/cron-secret:/run/secrets/cron-secret:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"

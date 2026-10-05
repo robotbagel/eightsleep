@@ -425,6 +425,7 @@ export async function getHealthContext(
           ? row.respiratoryRateTenths / 10
           : null,
       sleepLatencyMinutes: null,
+      screenInBedMinutes: null,
     }));
 
   const recentSessions: SessionDetail[] = rows.slice(0, 3).map((row) => {
@@ -438,6 +439,7 @@ export async function getHealthContext(
       score: row.score,
       stageHours,
       sleepLatencyMinutes: null,
+      screenInBedMinutes: null,
       tossesAndTurns: { firstThird: null, middleThird: null, finalThird: null },
       avgBedTempC: { firstThird: null, middleThird: null, finalThird: null },
       avgRoomTempC: null,

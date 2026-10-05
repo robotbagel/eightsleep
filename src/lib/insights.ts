@@ -17,6 +17,8 @@ export interface InsightNight {
   tosses: number | null;
   wakeCount: number | null;
   sleepLatencyHours: number | null;
+  /** Bedroom screen on in bed before sleep; latency then counts from lights out. */
+  screenInBedHours?: number | null;
   restingHeartRate: number | null;
   hrv: number | null;
   respiratoryRate: number | null;
@@ -197,15 +199,22 @@ export function buildInsight(night: InsightNight, history: InsightNight[]): Insi
   // for anyone, so absolute bounds here, compared with the usual in words.
   if (night.sleepLatencyHours != null) {
     const minutes = Math.round(night.sleepLatencyHours * 60);
-    const ref = usual((n) => n.sleepLatencyHours);
+    const watched = night.screenInBedHours != null;
+    // Nights measured from lights out are only comparable with each other:
+    // before the screen was tracked, "latency" included the TV time.
+    const comparable = own.filter((n) => (n.screenInBedHours != null) === watched);
+    const ref =
+      comparable.length >= 3 ? median(pick(comparable, (n) => n.sleepLatencyHours)) : null;
     const refMin = ref == null ? null : Math.round(ref * 60);
     add({
       key: "latency",
-      label: "Falling asleep",
+      label: watched ? "Falling asleep after the TV" : "Falling asleep",
       value: `${minutes} min`,
       comparison:
         refMin == null
-          ? "no usual yet"
+          ? watched
+            ? "counted from when the screen went off"
+            : "no usual yet"
           : Math.abs(minutes - refMin) < 10
             ? "about your usual"
             : `${Math.abs(minutes - refMin)} min ${minutes > refMin ? "slower" : "quicker"} than usual`,
@@ -335,7 +344,9 @@ export function buildInsight(night: InsightNight, history: InsightNight[]): Insi
       lead.key === "restless"
         ? `You turned over ${lead.comparison.replace(" than usual", "")} than usual`
         : lead.key === "latency"
-          ? `It took you ${lead.value} to fall asleep, ${lead.comparison}`
+          ? night.screenInBedHours != null
+            ? `You fell asleep ${lead.value} after the screen went off`
+            : `It took you ${lead.value} to fall asleep, ${lead.comparison}`
           : lead.key === "wakeups"
             ? `You woke ${lead.comparison.replace(" than usual", "")} times than usual`
             : `You got ${lead.comparison.replace(" than usual", "")} ${NOUN[lead.key]} than usual`;

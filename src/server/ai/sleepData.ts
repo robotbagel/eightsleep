@@ -15,6 +15,7 @@
 // NOTE: accounts without an Eight Sleep subscription (sleepTracking never
 // enabled, no "tracking" feature) get an empty `days` array — the endpoint
 // works, the cloud just doesn't process sessions for them.
+import { attachScreenTime, type ScreenNight } from "./screen";
 import { z } from "zod";
 import { fetchWithAuth } from "../eight/eight";
 import { APP_API_URL, CLIENT_API_URL } from "../eight/constants";
@@ -104,7 +105,10 @@ const PodSessionsSchema = z
   })
   .catchall(z.unknown());
 
-export type PodSession = z.infer<typeof PodSessionSchema>;
+export type PodSession = z.infer<typeof PodSessionSchema> & {
+  /** Screen time in bed, attached at fetch time (screen.ts). */
+  screen?: ScreenNight | null;
+};
 
 /**
  * Hours awake AFTER falling asleep and BEFORE the final wake (WASO). This is
@@ -141,6 +145,14 @@ export function awakeAfterOnsetHours(session: PodSession): number | null {
  * exists.
  */
 export function sleepLatencyHours(session: PodSession): number | null {
+  // Watching TV in bed is not trying to sleep. When the bedroom screen was on,
+  // latency counts from the moment it went off (see screen.ts).
+  if (session.screen) return session.screen.latencyHours;
+  return podLatencyHours(session);
+}
+
+/** The pod's own figure: everything between getting into bed and sleep. */
+export function podLatencyHours(session: PodSession): number | null {
   const before = session.stageSummary?.awakeBeforeSleepDuration;
   if (before != null) return before / 3600;
   const stages = session.stages ?? [];
@@ -222,12 +234,16 @@ export async function fetchPodSessions(
   // The same session can appear on two pages if a night rolls over between
   // requests; keep one row per id (falling back to the timestamp).
   const seen = new Set<string>();
-  return all.filter((session) => {
+  const unique: PodSession[] = all.filter((session) => {
     const key = session.id ?? session.ts ?? JSON.stringify(session.sleepEnd);
     if (typeof key !== "string" || seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+  // Every session the app reads comes through here, so attaching the screen
+  // time once makes every consumer measure latency from lights out.
+  await attachScreenTime(unique);
+  return unique;
 }
 
 const timeseriesPoint = z.tuple([z.string(), z.number()]);
@@ -304,8 +320,10 @@ export interface NightTrend {
    *  and a third bedtime consistency, neither of which a bed can change. */
   thermalScore: number | null;
   sleepDurationHours: number | null;
-  /** Minutes in bed before falling asleep. */
+  /** Minutes before falling asleep, counted from when the screen went off. */
   sleepLatencyMinutes: number | null;
+  /** Minutes the bedroom screen was on in bed before sleep; null = no TV. */
+  screenInBedMinutes: number | null;
   hrv: number | null;
   restingHeartRate: number | null;
   respiratoryRate: number | null;
@@ -321,8 +339,10 @@ export interface SessionDetail {
   date: string;
   score: number | null;
   stageHours: Record<string, number>;
-  /** Minutes in bed before falling asleep. */
+  /** Minutes before falling asleep, counted from when the screen went off. */
   sleepLatencyMinutes: number | null;
+  /** Minutes the bedroom screen was on in bed before sleep; null = no TV. */
+  screenInBedMinutes: number | null;
   tossesAndTurns: ThirdsBreakdown;
   avgBedTempC: ThirdsBreakdown;
   avgRoomTempC: number | null;
@@ -460,6 +480,8 @@ function buildSessionDetail(
       session && sleepLatencyHours(session) != null
         ? Math.round(sleepLatencyHours(session)! * 60)
         : null,
+    // The /trends fallback carries no screen time; only pod sessions do.
+    screenInBedMinutes: null,
     tossesAndTurns: byThirds(session?.timeseries?.tnt, "sum"),
     avgBedTempC: byThirds(session?.timeseries?.tempBedC, "mean"),
     avgRoomTempC: average(roomTemps),
@@ -529,6 +551,7 @@ export function buildContextFromPodSessions(
       }),
       sleepDurationHours: round1(asleepHours),
       sleepLatencyMinutes: latencyMinutesOf(session),
+      screenInBedMinutes: session.screen?.inBedMinutes ?? null,
       hrv: average(hrvSeries.map(([, v]) => v)),
       restingHeartRate:
         heartRates.length > 0 ? round1(Math.min(...heartRates)) : null,
@@ -561,6 +584,7 @@ export function buildContextFromPodSessions(
       score: night?.score ?? null,
       stageHours,
       sleepLatencyMinutes: latencyMinutesOf(session),
+      screenInBedMinutes: session.screen?.inBedMinutes ?? null,
       tossesAndTurns: byThirds(session.timeseries?.tnt, "sum"),
       avgBedTempC: byThirds(session.timeseries?.tempBedC, "mean"),
       avgRoomTempC: average(
@@ -619,6 +643,7 @@ export async function collectSleepContext(
       restingHeartRate: day.sleepRoutineScore?.heartRate?.current ?? null,
       respiratoryRate: day.sleepQualityScore?.respiratoryRate?.current ?? null,
       sleepLatencyMinutes: null,
+      screenInBedMinutes: null,
     });
   }
 

@@ -20,7 +20,7 @@ import { desc, eq, like } from "drizzle-orm";
 import { isAiConfigured, GEMINI_MODEL } from "~/server/ai/gemini";
 import { readNightMetrics, shiftDate } from "~/server/ai/history";
 import { rawToCelsius } from "~/lib/temperature";
-import { appConfig, healthNights } from "~/server/db/schema";
+import { appConfig, healthNights, screenEvents } from "~/server/db/schema";
 import { desc as descOrder } from "drizzle-orm";
 
 export const runtime = "nodejs";
@@ -258,6 +258,10 @@ export async function GET(request: NextRequest): Promise<Response> {
             n.sleepLatencyHours == null
               ? null
               : Math.round(n.sleepLatencyHours * 60),
+          podLatencyMin:
+            n.podLatencyHours == null ? null : Math.round(n.podLatencyHours * 60),
+          screenMin:
+            n.screenInBedHours == null ? null : Math.round(n.screenInBedHours * 60),
           // The Watch's reading of the same night, when imported.
           watchScore: n.secondOpinion?.score ?? null,
           disagreements: n.secondOpinion?.disagreements ?? [],
@@ -373,6 +377,37 @@ export async function GET(request: NextRequest): Promise<Response> {
       cronLastRunAt = null;
     }
 
+    // The bedroom screen watcher (deploy/screen-watch): alive, and what it saw.
+    let screenWatcher: {
+      lastSeenAt: string | null;
+      staleMinutes: number | null;
+      state: string | null;
+      recent: { at: string; state: string; app: string | null }[];
+    } | null = null;
+    try {
+      const rows = await db
+        .select()
+        .from(appConfig)
+        .where(like(appConfig.key, "screen:%"));
+      const lastSeenAt = rows.find((r) => r.key === "screen:lastSeenAt")?.value ?? null;
+      const recent = await db
+        .select()
+        .from(screenEvents)
+        .orderBy(desc(screenEvents.at))
+        .limit(8);
+      screenWatcher = {
+        lastSeenAt,
+        staleMinutes:
+          lastSeenAt == null
+            ? null
+            : Math.round((Date.now() - new Date(lastSeenAt).getTime()) / 60000),
+        state: rows.find((r) => r.key === "screen:state")?.value ?? null,
+        recent: recent.map((e) => ({ at: e.at.toISOString(), state: e.state, app: e.app })),
+      };
+    } catch {
+      screenWatcher = null;
+    }
+
     return Response.json({
       aiConfigured: isAiConfigured(),
       model: GEMINI_MODEL,
@@ -385,6 +420,7 @@ export async function GET(request: NextRequest): Promise<Response> {
         cronLastRunAt == null
           ? null
           : Math.round((Date.now() - new Date(cronLastRunAt).getTime()) / 60000),
+      screenWatcher,
       users: report,
     });
   } catch (error) {

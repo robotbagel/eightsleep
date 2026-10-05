@@ -102,3 +102,17 @@ const lowAndRestless = buildInsight(
 );
 assert.equal(lowAndRestless.headline, "A Restless Night", "a Low night leads with what went wrong");
 console.log("ok  the headline never contradicts the score beside it");
+
+// --- TV in bed: latency is from lights out, compared like with like -------
+{
+  const watched = buildInsight(
+    usual("2026-10-06", { sleepLatencyHours: 0.15, screenInBedHours: 0.72 }),
+    history, // older nights: latency still included TV time, no screen data
+  );
+  const latency = watched.contributors.find((c) => c.key === "latency")!;
+  assert.equal(latency.label, "Falling asleep after the TV");
+  assert.equal(latency.comparison, "counted from when the screen went off",
+    "not compared with nights whose latency still included the TV");
+  assert.equal(latency.effect, "helped");
+  console.log("ok  TV nights are measured from lights out and not compared with TV-inflated ones");
+}

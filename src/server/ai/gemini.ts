@@ -183,6 +183,7 @@ function buildPrompt(input: AdvisorInput): string {
       : "",
     "",
     "Recent sleep data (nights from daily trends; recentSessions carry per-third-of-night detail — toss-and-turn counts, average bed temperature in °C, heart rate):",
+    "sleepLatencyMinutes counts from when the bedroom projector went off whenever screenInBedMinutes is set; screenInBedMinutes is TV watched in bed before trying to sleep. That is a habit, not difficulty falling asleep, and is not a reason to change any temperature.",
     JSON.stringify(sleepContext),
     "",
     input.lockedStages.length > 0

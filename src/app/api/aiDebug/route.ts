@@ -204,6 +204,16 @@ export async function POST(request: NextRequest): Promise<Response> {
       sql`ALTER TABLE "8slp_userAiSettings" ADD COLUMN IF NOT EXISTS "awayUntil" varchar(10)`,
       sql`ALTER TABLE "8slp_userAiSettings" ADD COLUMN IF NOT EXISTS "emptyBedShutoff" boolean NOT NULL DEFAULT true`,
       sql`ALTER TABLE "8slp_shareLinks" ADD COLUMN IF NOT EXISTS "startsOn" varchar(10)`,
+      sql`CREATE TABLE IF NOT EXISTS "8slp_screenEvents" (
+        "id" serial PRIMARY KEY,
+        "at" timestamp NOT NULL,
+        "state" varchar(8) NOT NULL,
+        "app" varchar(80),
+        "device" varchar(80)
+      )`,
+      sql`CREATE INDEX IF NOT EXISTS "screenEvents_at_idx" ON "8slp_screenEvents" ("at")`,
+      sql`ALTER TABLE "8slp_nightMetrics" ADD COLUMN IF NOT EXISTS "screenTenthHours" integer`,
+      sql`ALTER TABLE "8slp_nightMetrics" ADD COLUMN IF NOT EXISTS "podLatencyTenthHours" integer`,
       sql`CREATE TABLE IF NOT EXISTS "8slp_shareLinks" (
         "id" serial PRIMARY KEY,
         "email" varchar(255) NOT NULL REFERENCES "8slp_users"("email"),

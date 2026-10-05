@@ -166,6 +166,24 @@ export const sleepFeedback = createTable(
 // failed pass is invisible: the app simply keeps showing yesterday's plan and
 // nothing says why. The monitor reads it to tell "the cron never ran" apart
 // from "the cron ran and Gemini refused".
+// The bedroom projector's screen going on and off, posted by the watcher on
+// the NAS (deploy/screen-watch). One screen, two sides: household-wide, no
+// email. Used to measure sleep-onset latency from lights out (screen.ts).
+export const screenEvents = createTable(
+  "screenEvents",
+  {
+    id: serial("id").primaryKey(),
+    at: timestamp("at").notNull(),
+    state: varchar("state", { length: 8 }).notNull(),
+    /** What was showing, as the device reports it (e.g. "Netflix"). */
+    app: varchar("app", { length: 80 }),
+    device: varchar("device", { length: 80 }),
+  },
+  (table) => ({
+    atIdx: index("screenEvents_at_idx").on(table.at),
+  }),
+);
+
 export const aiRunLog = createTable(
   "aiRunLog",
   {
@@ -294,6 +312,10 @@ export const nightMetrics = createTable(
     awakeTenthHours: integer("awakeTenthHours"),
     /** Time in bed before falling asleep (sleep-onset latency). */
     latencyTenthHours: integer("latencyTenthHours"),
+    /** Bedroom screen on in bed before sleep (screen.ts); null = no TV. */
+    screenTenthHours: integer("screenTenthHours"),
+    /** The pod's own latency, before lights-out correction. */
+    podLatencyTenthHours: integer("podLatencyTenthHours"),
     /**
      * Whose night this was. null = not judged (too few own nights, or no
      * vitals), false = confirmed the owner's, true = the vitals say somebody

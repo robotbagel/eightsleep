@@ -153,6 +153,20 @@ export const NightSummaryCard: React.FC<{
               </span>
             </dd>
           </div>
+          {metrics.screenInBedHours != null && (
+            <div>
+              <dt className="text-xs" style={{ color: "var(--text-muted)" }}>
+                TV in bed first
+              </dt>
+              <dd
+                className="tabular text-sm font-semibold"
+                style={{ color: "var(--text-headline)" }}
+                title="The bedroom projector was on. Time to fall asleep is counted from when it went off, not from getting into bed."
+              >
+                {Math.round(metrics.screenInBedHours * 60)} min
+              </dd>
+            </div>
+          )}
         </dl>
         <ScoreRing score={score} size={112} label="quality" />
       </div>

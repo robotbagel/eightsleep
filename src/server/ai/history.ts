@@ -14,6 +14,7 @@ import { type Token } from "../eight/types";
 import {
   awakeAfterOnsetHours,
   fetchPodSessions,
+  podLatencyHours,
   sleepLatencyHours,
   wakeEventCount,
   type PodSession,
@@ -46,8 +47,12 @@ export interface NightMetric {
   remHours: number | null;
   lightHours: number | null;
   awakeHours: number | null;
-  /** Hours in bed before falling asleep (sleep-onset latency). */
+  /** Hours to fall asleep, counted from when the bedroom screen went off. */
   sleepLatencyHours: number | null;
+  /** The pod's own latency: everything between getting in and sleep. */
+  podLatencyHours?: number | null;
+  /** Hours the bedroom screen was on in bed before sleep; null = no TV. */
+  screenInBedHours?: number | null;
   tosses: number | null;
   wakeCount: number | null;
   restingHeartRate: number | null;
@@ -152,6 +157,9 @@ export function metricsFromSession(
     lightHours: (summary.lightDuration ?? 0) / 3600,
     awakeHours,
     sleepLatencyHours: latencyHours,
+    podLatencyHours: podLatencyHours(session),
+    screenInBedHours:
+      session.screen != null ? session.screen.inBedMinutes / 60 : null,
     tosses: (timeseries.tnt ?? []).length,
     wakeCount,
     restingHeartRate: heartRates.length > 0 ? Math.min(...heartRates) : null,
@@ -482,6 +490,8 @@ export async function persistNightMetrics(
         lightTenthHours: tenth(m.lightHours),
         awakeTenthHours: tenth(m.awakeHours),
         latencyTenthHours: tenth(m.sleepLatencyHours),
+        screenTenthHours: tenth(m.screenInBedHours),
+        podLatencyTenthHours: tenth(m.podLatencyHours),
         // A person's own answer always wins over the inference, so a night
         // already confirmed keeps its verdict when it is re-synced.
         notMe: confirmed.get(m.night) ?? m.notMe ?? null,
@@ -620,6 +630,8 @@ function rowToMetric(row: typeof nightMetrics.$inferSelect): NightMetric {
     lightHours: fromTenth(row.lightTenthHours),
     awakeHours: fromTenth(row.awakeTenthHours),
     sleepLatencyHours: fromTenth(row.latencyTenthHours),
+    podLatencyHours: fromTenth(row.podLatencyTenthHours),
+    screenInBedHours: fromTenth(row.screenTenthHours),
     tosses: row.tosses,
     wakeCount: row.wakeCount,
     restingHeartRate: row.restingHeartRate,
