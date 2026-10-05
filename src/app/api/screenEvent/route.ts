@@ -21,7 +21,13 @@ export async function POST(request: NextRequest): Promise<Response> {
   if (request.headers.get("authorization") !== `Bearer ${process.env.CRON_SECRET}`) {
     return new Response("Unauthorized", { status: 401 });
   }
-  let body: { state?: unknown; at?: unknown; app?: unknown; device?: unknown };
+  let body: {
+    state?: unknown;
+    at?: unknown;
+    app?: unknown;
+    device?: unknown;
+    heartbeat?: unknown;
+  };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -49,6 +55,12 @@ export async function POST(request: NextRequest): Promise<Response> {
       sql`insert into ${appConfig} ("key", "value") values (${key}, ${value})
           on conflict ("key") do update set "value" = excluded."value"`,
     );
+  }
+
+  // A heartbeat says the watcher is alive and what it currently sees; only
+  // a change is history.
+  if (body.heartbeat === true) {
+    return Response.json({ stored: false, reason: "heartbeat", state });
   }
 
   const newest = await db
