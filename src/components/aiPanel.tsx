@@ -1347,12 +1347,13 @@ export const AiSettingsCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
 
   const mark = () => setDirty(true);
   const today = new Date().toLocaleDateString("en-CA");
-  const awayActive = awayUntil !== "" && awayUntil >= today;
+  // The stored date is the day you are HOME again; that night the bed runs.
+  const awayActive = awayUntil !== "" && awayUntil > today;
   const summary = [
     aiEnabled ? "Autopilot on" : "Autopilot off",
     autoApply ? "auto-applies" : "asks first",
     liveTuningEnabled ? "live tuning on" : "live tuning off",
-    ...(awayActive ? [`away until ${awayUntil}`] : []),
+    ...(awayActive ? [`away, home ${awayUntil}`] : []),
   ].join(" · ");
 
   return (
@@ -1507,10 +1508,11 @@ export const AiSettingsCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
             className="block text-sm font-medium"
             style={{ color: "var(--text)" }}
           >
-            Away until
+            Away? Home again on
           </label>
           <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-            The bed stays off through this date. Leave it empty when you are home.
+            The bed stays off until then and runs as normal from that evening.
+            The autopilot changes nothing while you are away.
           </p>
           <div className="mt-2 flex items-center gap-2">
             <input
@@ -1539,7 +1541,7 @@ export const AiSettingsCard: React.FC<{ index?: number }> = ({ index = 0 }) => {
           </div>
           {awayActive && (
             <p className="mt-2 text-xs" style={{ color: "var(--warning)" }}>
-              The bed will not heat until {awayUntil} has passed.
+              The bed is off until the evening of {awayUntil}.
             </p>
           )}
         </div>

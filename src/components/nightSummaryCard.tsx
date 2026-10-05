@@ -1,13 +1,14 @@
 "use client";
 import React from "react";
 import { apiR, type RouterOutputs } from "~/trpc/react";
-import { Card, Skeleton, Tile } from "./ui/card";
+import { Card, Skeleton } from "./ui/card";
 import { NightNav } from "./nightNav";
 import { ScoreRing } from "./charts/scoreRing";
 import { StageBar } from "./charts/stageBar";
-import { Sparkline } from "./charts/sparkline";
-import { formatHours, TONE_VAR, type Point } from "./charts/chartUtils";
-import { buildVerdict } from "~/lib/verdict";
+import { formatHours, scoreTone, TONE_VAR } from "./charts/chartUtils";
+import LordIcon from "./ui/lordIcon";
+import { useNightInsight } from "./useNightInsight";
+import { type Contributor } from "~/lib/insights";
 
 function clockOf(minutes: number | null | undefined): string {
   if (minutes == null) return "—";
@@ -20,43 +21,24 @@ export const NightSummaryCard: React.FC<{
   nav: React.ComponentProps<typeof NightNav>;
   index?: number;
 }> = ({ night, nav, index = 0 }) => {
-  const query = apiR.user.getNightTimeline.useQuery(
-    night ? { night } : undefined,
-    { retry: 1, refetchOnWindowFocus: false },
-  );
-  // Two weeks of context for the tile sparklines. Same key as the compare
-  // card's default range, so it costs one request between them.
-  const history = apiR.user.getSleepHistory.useQuery(
-    { days: 14 },
-    { retry: 1, refetchOnWindowFocus: false },
-  );
-
-  const metrics = query.data?.metrics ?? null;
+  const { timeline: query, metrics, insight } = useNightInsight(night);
   const stageHours = query.data?.session?.stageHours ?? {};
-
-  const seriesOf = (
-    key: "restingHeartRate" | "hrv" | "respiratoryRate",
-  ): Point[] =>
-    (history.data?.nights ?? [])
-      .filter((n) => n[key] != null)
-      .map((n) => [new Date(`${n.night}T12:00:00Z`).getTime(), n[key]!] as Point);
 
   if (query.isLoading) {
     return (
       <Card index={index}>
         <NightNav {...nav} />
-        <div className="mt-5 flex items-center gap-5">
-          <Skeleton className="h-[132px] w-[132px] rounded-full" />
-          <div className="flex-1 space-y-2">
-            <Skeleton className="h-7 w-32" />
-            <Skeleton className="h-3 w-full" />
-            <Skeleton className="h-3 w-3/4" />
-          </div>
+        <div className="mt-5 space-y-2">
+          <Skeleton className="h-7 w-56" />
+          <Skeleton className="h-3 w-full" />
+          <Skeleton className="h-3 w-3/4" />
         </div>
-        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {[0, 1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-[76px]" />
-          ))}
+        <div className="mt-5 flex items-center justify-between gap-4">
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-4 w-24" />
+            <Skeleton className="h-4 w-32" />
+          </div>
+          <Skeleton className="h-[112px] w-[112px] rounded-full" />
         </div>
       </Card>
     );
@@ -80,7 +62,7 @@ export const NightSummaryCard: React.FC<{
     );
   }
 
-  if (!metrics) {
+  if (!metrics || !insight) {
     return (
       <Card index={index}>
         <NightNav {...nav} />
@@ -114,164 +96,179 @@ export const NightSummaryCard: React.FC<{
     );
   }
 
-  // "Compared with usual" needs a reference; the same 14 nights the tile
-  // sparklines already use, so there is no extra request.
-  const recent = (history.data?.nights ?? []).filter(
-    (n) => n.night !== metrics.night,
-  );
-  const mean = (key: "asleepHours" | "deepHours" | "tosses") => {
-    const values = recent
-      .map((n) => n[key])
-      .filter((v): v is number => typeof v === "number");
-    return values.length === 0
-      ? null
-      : values.reduce((a, b) => a + b, 0) / values.length;
-  };
-  const verdict = buildVerdict({
-    asleepHours: metrics.asleepHours,
-    deepHours: metrics.deepHours,
-    remHours: metrics.remHours,
-    tosses: metrics.tosses,
-    wakeCount: metrics.wakeCount,
-    thermalScore: metrics.thermalScore,
-    average: {
-      asleepHours: mean("asleepHours"),
-      deepHours: mean("deepHours"),
-      tosses: mean("tosses"),
-    },
-  });
+  const score = metrics.thermalScore ?? metrics.score ?? null;
+  const helped = insight.contributors.filter((c) => c.effect === "helped");
+  const heldBack = insight.contributors.filter((c) => c.effect === "held-back");
+  const typical = insight.contributors.filter((c) => c.effect === "typical");
 
   return (
+    <div id="night-card" className="scroll-mt-20">
     <Card index={index}>
       <NightNav {...nav} />
 
-      {/* The answer, before any chart. Score, one headline, one sentence. */}
-      <div className="mt-5 flex flex-col items-center gap-5 sm:flex-row sm:items-start">
-        <ScoreRing score={metrics.thermalScore ?? metrics.score} label="quality" />
-        <div className="w-full min-w-0 flex-1">
-          <h3
-            className="text-2xl font-semibold leading-tight tracking-[-0.02em]"
-            style={{ color: TONE_VAR[verdict.tone] }}
-          >
-            {verdict.headline}
-          </h3>
-          <p
-            className="mt-1.5 text-sm leading-relaxed"
-            style={{ color: "var(--text)" }}
-          >
-            {verdict.detail}
-          </p>
-          <p
-            className="tabular mt-2 text-xs"
-            style={{ color: "var(--text-faint)" }}
-          >
-            {clockOf(metrics.bedtimeMinutes)} → {clockOf(metrics.wakeMinutes)}
-            {metrics.sleepLatencyHours != null && (
-              <span title="Time in bed before falling asleep. Sleep onset is a heat-loss problem: the bed's first stage sets how fast your core can cool.">
-                {" · fell asleep in "}
-                {Math.round(metrics.sleepLatencyHours * 60)}m
-              </span>
-            )}
-            {metrics.score != null && (
+      {/* The verdict, then what changed against your usual and why it
+          matters. Tone lives in the ring and the rating word, so a headline
+          naming a problem is never painted green. */}
+      <h3
+        id="night-headline"
+        className="mt-5 text-2xl font-semibold leading-[1.15] tracking-[-0.02em]"
+        style={{ color: "var(--text-headline)" }}
+      >
+        {insight.headline}
+      </h3>
+      <p
+        className="mt-2 text-[15px] leading-relaxed"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {insight.summary}
+      </p>
+
+      <div className="mt-5 flex items-center justify-between gap-4">
+        <dl className="min-w-0 space-y-3">
+          <div>
+            <dt className="text-xs" style={{ color: "var(--text-muted)" }}>
+              Sleep quality
+            </dt>
+            <dd
+              className="text-lg font-semibold"
+              style={{ color: TONE_VAR[scoreTone(score)] }}
+            >
+              {insight.rating ?? "Not scored"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs" style={{ color: "var(--text-muted)" }}>
+              Asleep
+            </dt>
+            <dd
+              className="tabular text-lg font-semibold"
+              style={{ color: "var(--text-headline)" }}
+            >
+              {metrics.asleepHours != null ? formatHours(metrics.asleepHours) : "—"}
               <span
-                title="Apple-style overall score: half duration, a third bedtime consistency. Useful context, but not what the autopilot tunes."
+                className="ml-2 text-xs font-normal"
+                style={{ color: "var(--text-faint)" }}
               >
-                {" · overall "}
-                {metrics.score}/100
+                {clockOf(metrics.bedtimeMinutes)} → {clockOf(metrics.wakeMinutes)}
               </span>
-            )}
-          </p>
-          {metrics.notMe && !metrics.identityConfirmed && (
-            <WhoseNightRow
-              night={metrics.night}
-              reason={metrics.identityReason ?? null}
-            />
+            </dd>
+          </div>
+        </dl>
+        <ScoreRing score={score} size={112} label="quality" />
+      </div>
+
+      {Object.keys(stageHours).length > 0 && (
+        <div className="mt-5">
+          <StageBar stageHours={stageHours} compact />
+        </div>
+      )}
+
+      {metrics.notMe && !metrics.identityConfirmed && (
+        <WhoseNightRow
+          night={metrics.night}
+          reason={metrics.identityReason ?? null}
+        />
+      )}
+      {metrics.notMe && metrics.identityConfirmed && (
+        <p className="mt-3 text-xs" style={{ color: "var(--text-faint)" }}>
+          Someone else slept here. This night is kept, but it does not steer
+          your temperatures.
+        </p>
+      )}
+      {metrics.secondOpinion && <SecondOpinionRow opinion={metrics.secondOpinion} />}
+
+      {(helped.length > 0 || heldBack.length > 0) && (
+        <div
+          className="mt-5 space-y-4 border-t pt-4"
+          style={{ borderColor: "var(--border)" }}
+        >
+          {heldBack.length > 0 && (
+            <DriverGroup title="What held it back" items={heldBack} />
           )}
-          {metrics.notMe && metrics.identityConfirmed && (
-            <p className="mt-2 text-xs" style={{ color: "var(--text-faint)" }}>
-              Someone else slept here. This night is kept, but it does not
-              steer your temperatures.
+          {helped.length > 0 && <DriverGroup title="What helped" items={helped} />}
+          {typical.length > 0 && (
+            <p className="text-xs" style={{ color: "var(--text-faint)" }}>
+              Close to your usual: {typical.map((c) => c.label.toLowerCase()).join(", ")}.
             </p>
           )}
-          {metrics.secondOpinion && (
-            <SecondOpinionRow opinion={metrics.secondOpinion} />
-          )}
-          {Object.keys(stageHours).length > 0 && (
-            <div className="mt-4">
-              <StageBar stageHours={stageHours} compact />
-            </div>
-          )}
         </div>
-      </div>
+      )}
 
-      <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <Tile
-          icon="heart"
-          label="Resting HR"
-          color="var(--danger)"
-          value={
-            metrics.restingHeartRate != null ? (
-              <>
-                {Math.round(metrics.restingHeartRate)}
-                <Unit>bpm</Unit>
-              </>
-            ) : (
-              "—"
-            )
-          }
+      {insight.tip && (
+        <div
+          id="night-tip"
+          className="mt-4 flex gap-3 rounded-xl p-3"
+          style={{ background: "var(--accent-soft)" }}
         >
-          <Sparkline series={seriesOf("restingHeartRate")} color="var(--danger)" />
-        </Tile>
-
-        <Tile
-          icon="chart"
-          label="HRV"
-          color="var(--accent)"
-          value={
-            metrics.hrv != null ? (
-              <>
-                {Math.round(metrics.hrv)}
-                <Unit>ms</Unit>
-              </>
-            ) : (
-              "—"
-            )
-          }
-        >
-          <Sparkline series={seriesOf("hrv")} color="var(--accent)" />
-        </Tile>
-
-        <Tile
-          icon="lungs"
-          label="Breathing"
-          color="var(--cool)"
-          value={
-            metrics.respiratoryRate != null ? (
-              <>
-                {metrics.respiratoryRate.toFixed(1)}
-                <Unit>/min</Unit>
-              </>
-            ) : (
-              "—"
-            )
-          }
-        >
-          <Sparkline series={seriesOf("respiratoryRate")} color="var(--cool)" />
-        </Tile>
-
-        <Tile
-          icon="bed"
-          label="Tosses"
-          color="var(--stage-awake)"
-          value={metrics.tosses ?? "—"}
-          sub={
-            metrics.wakeCount != null
-              ? `${metrics.wakeCount} brief wake-up${metrics.wakeCount === 1 ? "" : "s"}`
-              : undefined
-          }
-        />
-      </div>
+          <LordIcon
+            name="bulb"
+            size={22}
+            trigger="hover"
+            target="#night-tip"
+            color="var(--accent)"
+          />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold" style={{ color: "var(--text-headline)" }}>
+              Something to try
+            </p>
+            <p className="mt-0.5 text-sm leading-snug" style={{ color: "var(--text)" }}>
+              {insight.tip}
+            </p>
+          </div>
+        </div>
+      )}
     </Card>
+    </div>
+  );
+};
+
+/**
+ * One side of "why the night went the way it did": each driver with a badge
+ * (icon AND word, never colour alone), its value, and the comparison against
+ * the sleeper's usual in words.
+ */
+const DriverGroup: React.FC<{ title: string; items: Contributor[] }> = ({
+  title,
+  items,
+}) => {
+  const good = items[0]?.effect === "helped";
+  return (
+    <div>
+      <p className="text-sm font-semibold" style={{ color: "var(--text-headline)" }}>
+        {title}
+      </p>
+      <ul className="mt-2 space-y-2">
+        {items.map((item) => (
+          <li
+            key={item.key}
+            id={`driver-${item.key}`}
+            className="flex items-center gap-3"
+          >
+            <LordIcon
+              name={good ? "check" : "alert"}
+              size={20}
+              trigger="hover"
+              target={`#driver-${item.key}`}
+              color={good ? "var(--success)" : "var(--warning)"}
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm" style={{ color: "var(--text)" }}>
+                {item.label}
+              </span>
+              <span className="block text-xs" style={{ color: "var(--text-muted)" }}>
+                {item.comparison}
+              </span>
+            </span>
+            <span
+              className="tabular shrink-0 text-sm font-semibold"
+              style={{ color: "var(--text-headline)" }}
+            >
+              {item.value}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 };
 
@@ -379,9 +376,3 @@ const SecondOpinionRow: React.FC<{
     </div>
   );
 };
-
-const Unit: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <span className="ml-1 text-xs font-normal" style={{ color: "var(--text-faint)" }}>
-    {children}
-  </span>
-);

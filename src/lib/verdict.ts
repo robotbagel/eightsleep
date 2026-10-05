@@ -66,9 +66,9 @@ export function buildVerdict(input: VerdictInput): Verdict {
   const tone: Verdict["tone"] =
     quality == null
       ? "none"
-      : quality >= 80
+      : quality >= 81
         ? "good"
-        : quality >= 65
+        : quality >= 61
           ? "warn"
           : "bad";
 

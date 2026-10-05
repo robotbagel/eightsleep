@@ -840,12 +840,14 @@ export const userRouter = createTRPCRouter({
               ["light", summary.lightDuration],
             ] as [string, number | null | undefined][]) {
               if (seconds != null) {
-                stageHours[k] = Math.round((seconds / 3600) * 10) / 10;
+                // Hundredths: the stage bar prints minutes, and tenths (six-minute
+                // steps) made it disagree with the same night's metrics.
+                stageHours[k] = Math.round((seconds / 3600) * 100) / 100;
               }
             }
             // Awake = interruptions of sleep, not the whole time in bed.
             const waso = awakeAfterOnsetHours(chosen);
-            if (waso != null) stageHours.awake = Math.round(waso * 10) / 10;
+            if (waso != null) stageHours.awake = Math.round(waso * 100) / 100;
             sessionInfo = {
               night: nightOf(chosen),
               sessionStart: chosen.ts ?? chosen.sleepStart ?? null,

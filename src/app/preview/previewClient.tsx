@@ -7,6 +7,8 @@ import { LogoutButton } from "~/components/logout";
 import { ThemeToggle } from "~/components/themeToggle";
 import { AiAdvisorCard, AiSettingsCard } from "~/components/aiPanel";
 import { NightSummaryCard } from "~/components/nightSummaryCard";
+import { InsightChips } from "~/components/insightChips";
+import { VitalsCard } from "~/components/vitalsCard";
 import { AutopilotStrip } from "~/components/autopilotStrip";
 import { ComfortPrompt } from "~/components/comfortPrompt";
 import { TrendsCard } from "~/components/trendsCard";
@@ -83,10 +85,10 @@ export default function PreviewClient() {
         heartRate: fixture.heartRate, hrv: fixture.hrv, respiratoryRate: [],
         shortAwakes: fixture.shortAwakes, stages: fixture.stages,
         stageHours: {
-          deep: Math.round((fixture.stageSummary.deepDuration / 3600) * 10) / 10,
-          rem: Math.round((fixture.stageSummary.remDuration / 3600) * 10) / 10,
-          light: Math.round((fixture.stageSummary.lightDuration / 3600) * 10) / 10,
-          awake: Math.round((fixture.stageSummary.awakeDuration / 3600) * 10) / 10,
+          deep: Math.round((fixture.stageSummary.deepDuration / 3600) * 100) / 100,
+          rem: Math.round((fixture.stageSummary.remDuration / 3600) * 100) / 100,
+          light: Math.round((fixture.stageSummary.lightDuration / 3600) * 100) / 100,
+          awake: Math.round((fixture.stageSummary.awakeDuration / 3600) * 100) / 100,
         },
       },
     } as never);
@@ -214,6 +216,8 @@ export default function PreviewClient() {
 
       <div className="mx-auto max-w-3xl px-4 pt-5">
         <div className="space-y-4">
+          <InsightChips night={selectedNight} />
+
           <div className="min-w-0" style={{ touchAction: "pan-y" }} {...swipe.bind}>
             <div
               className="min-w-0"
@@ -238,6 +242,8 @@ export default function PreviewClient() {
               {autopilotOpen && <AiAdvisorCard displayUnit="celsius" index={0} />}
             </div>
           </div>
+
+          <VitalsCard night={selectedNight} index={2} />
 
           <TrendsCard displayUnit="celsius" night={selectedNight} index={2} />
 

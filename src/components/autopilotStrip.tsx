@@ -86,7 +86,7 @@ export const AutopilotStrip: React.FC<{
       type="button"
       onClick={onOpen}
       aria-expanded={expanded}
-      className="card enter flex w-full items-center gap-3 p-4 text-left transition-[transform,border-color] duration-fast ease-snap hover:-translate-y-px hover:border-[var(--border-strong)] active:scale-[0.995]"
+      className="card enter flex w-full scroll-mt-20 items-center gap-3 p-4 text-left transition-[transform,border-color] duration-fast ease-snap hover:-translate-y-px hover:border-[var(--border-strong)] active:scale-[0.995]"
       style={{ "--i": 1 } as React.CSSProperties}
     >
       <span
@@ -103,7 +103,7 @@ export const AutopilotStrip: React.FC<{
       </span>
 
       <span className="min-w-0 flex-1">
-        <span className="card-title block">Autopilot</span>
+        <span className="card-title block">Tonight</span>
         <span
           className="mt-0.5 block text-sm leading-snug"
           style={{ color: "var(--text)" }}

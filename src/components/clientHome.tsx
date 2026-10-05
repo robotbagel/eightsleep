@@ -9,6 +9,8 @@ import { ThemeToggle } from "~/components/themeToggle";
 import { AiAdvisorCard, AiSettingsCard, ShareLinks } from "~/components/aiPanel";
 import { RightNow } from "~/components/rightNow";
 import { NightSummaryCard } from "~/components/nightSummaryCard";
+import { InsightChips } from "~/components/insightChips";
+import { VitalsCard } from "~/components/vitalsCard";
 import { AutopilotStrip } from "~/components/autopilotStrip";
 import { ComfortPrompt } from "~/components/comfortPrompt";
 import { TrendsCard } from "~/components/trendsCard";
@@ -147,6 +149,9 @@ const SignedIn: React.FC = () => {
             night's score, they want half a degree. It collapses to one line
             of text when the bed is off, so it costs the daytime page almost
             nothing. */}
+        {/* The morning in three words, each a jump to its card. */}
+        <InsightChips night={selectedNight} />
+
         <RightNow displayUnit={displayUnit} index={0} />
 
         <div
@@ -193,6 +198,8 @@ const SignedIn: React.FC = () => {
             )}
           </div>
         </div>
+
+        <VitalsCard night={selectedNight} index={2} />
 
         {/* Level 2: the same night and the same history, one view at a time. */}
         <TrendsCard

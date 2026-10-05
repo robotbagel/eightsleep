@@ -109,9 +109,12 @@ export function scoreTone(score: number | null | undefined):
   | "warn"
   | "bad"
   | "none" {
+  // Apple's Sleep Score bands (watchOS 26.2): High from 81, OK from 61. The
+  // rating word on the night card uses the same bands, so a ring and the word
+  // under it can never disagree about the same number.
   if (score == null) return "none";
-  if (score >= 80) return "good";
-  if (score >= 60) return "warn";
+  if (score >= 81) return "good";
+  if (score >= 61) return "warn";
   return "bad";
 }
 
