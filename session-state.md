@@ -53,5 +53,12 @@ UI (commit c214a16): summary chips, verdict headline + reading against your own 
 
 **Post-deploy, done 2026-10-05 ~09:40 UTC:** migrate (applied 13), identity corrections (Nathan 09-15 = him; 09-16..18 = guest on both sides), rescore both (cat/nap rows purged: 3 Nathan, 9 Laurence). Stored history now: guest nights flagged, no cat nights. Identity now flags breathing >= 6 MADs on its own (commit c748813). Traced cron tick clean, monitor clean.
 
+## Bedroom TV (2026-10-05, commit c9e1f64)
+They watch ~45 min on the bedroom projector before sleeping; the pod counted it as time to fall asleep. The projector's smart part is a **Chromecast with Google TV, friendly name "Bedroom TV", 192.168.50.213**; its Cast status `is_stand_by` follows the projector over HDMI-CEC.
+- Watcher: Docker container `screen-watch` on Supernova, `/volume2/docker/stacks/screen-watch` (source in `deploy/screen-watch/`, copy over with `cat | ssh`, then `docker compose up -d --build`). Posts settled changes (20 s) to `/api/screenEvent`; unreachable for 90 s = off; heartbeat every 5 min.
+- `screen.ts` + `attachScreenTime` in `fetchPodSessions`: latency counts from lights out everywhere. nightMetrics keeps `podLatencyTenthHours` and `screenTenthHours`.
+- `aiStatus.screenWatcher`, monitor flags >30 min silent and prints last night's TV minutes.
+- **Not yet observed with the projector ON.** First real night is 5->6 Oct; check `aiStatus.screenWatcher.recent` and the monitor line. If CEC does not report the projector going off, the "on" will last until the dongle's own sleep timer and nights will read "fell asleep watching".
+
 ## Open items
 - Both profiles drifted while away (Nathan mid 26.3 -> 24.8, deep 26.5 -> 26; Laurence deep 28.6 -> 30.2), all from stale evidence. Restoring the pre-holiday profiles is Nathan's call.
