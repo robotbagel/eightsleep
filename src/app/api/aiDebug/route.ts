@@ -4,7 +4,12 @@
 // mismatches can be diagnosed without guessing.
 import type { NextRequest } from "next/server";
 import { db } from "~/server/db";
-import { nightMetrics, users, userTemperatureProfile } from "~/server/db/schema";
+import {
+  nightMetrics,
+  userAiSettings,
+  users,
+  userTemperatureProfile,
+} from "~/server/db/schema";
 import { eq, inArray, sql } from "drizzle-orm";
 import { getFreshToken, reassessToday } from "~/server/ai/advisor";
 import { sleepFeedback } from "~/server/db/schema";
@@ -348,7 +353,10 @@ export async function POST(request: NextRequest): Promise<Response> {
   const email = request.nextUrl.searchParams.get("email");
   if (
     !email ||
-    (action !== "reassess" && action !== "comfort" && action !== "identity")
+    (action !== "reassess" &&
+      action !== "comfort" &&
+      action !== "identity" &&
+      action !== "healthtoken")
   ) {
     return Response.json({ error: "Unknown action" }, { status: 400 });
   }
@@ -391,6 +399,27 @@ export async function POST(request: NextRequest): Promise<Response> {
       confidence: rec.confidence,
       reasoning: rec.reasoning,
     });
+  }
+
+  // The Apple Health import token for one account, created if missing, so the
+  // companion iPhone app (ios/SleepSync) can be built already connected.
+  // POST /api/aiDebug?action=healthtoken&email=…
+  if (action === "healthtoken") {
+    const existing = await db.query.userAiSettings.findFirst({
+      where: eq(userAiSettings.email, email),
+    });
+    let token = existing?.healthImportToken ?? null;
+    if (!token) {
+      token = crypto.randomUUID().replace(/-/g, "");
+      await db
+        .insert(userAiSettings)
+        .values({ email, healthImportToken: token })
+        .onConflictDoUpdate({
+          target: userAiSettings.email,
+          set: { healthImportToken: token, updatedAt: new Date() },
+        });
+    }
+    return Response.json({ email, token });
   }
 
   // Record whose nights these were, for a stay the owner relays afterwards

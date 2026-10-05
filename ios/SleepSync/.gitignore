@@ -1,0 +1,5 @@
+# The import token is a credential and this repo is public.
+Secrets.xcconfig
+SleepSync.xcodeproj/
+build/
+*.xcarchive

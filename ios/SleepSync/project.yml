@@ -1,0 +1,36 @@
+name: SleepSync
+options:
+  bundleIdPrefix: now.geshido
+  deploymentTarget:
+    iOS: "17.0"
+configFiles:
+  Debug: Secrets.xcconfig
+  Release: Secrets.xcconfig
+targets:
+  SleepSync:
+    type: application
+    platform: iOS
+    sources: [SleepSync]
+    entitlements:
+      path: SleepSync/SleepSync.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.access: []
+        com.apple.developer.healthkit.background-delivery: true
+    info:
+      path: SleepSync/Info.plist
+      properties:
+        CFBundleDisplayName: Sleep Sync
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSHealthShareUsageDescription: "Sleep Sync sends last night's Apple Watch sleep stages, heart rate, HRV and breathing rate to your own sleep app, so it can compare them with the bed's reading."
+        SleepToken: $(SLEEP_TOKEN)
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: now.geshido.sleepsync
+        DEVELOPMENT_TEAM: WCV67Q95XA
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
