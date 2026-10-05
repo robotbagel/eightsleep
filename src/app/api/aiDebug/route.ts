@@ -4,13 +4,18 @@
 // mismatches can be diagnosed without guessing.
 import type { NextRequest } from "next/server";
 import { db } from "~/server/db";
-import { users, userTemperatureProfile } from "~/server/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { nightMetrics, users, userTemperatureProfile } from "~/server/db/schema";
+import { eq, inArray, sql } from "drizzle-orm";
 import { getFreshToken, reassessToday } from "~/server/ai/advisor";
 import { sleepFeedback } from "~/server/db/schema";
 import { and } from "drizzle-orm";
 import { collectSleepContext, fetchPodSessions } from "~/server/ai/sleepData";
-import { persistNightMetrics, sessionsToMetrics } from "~/server/ai/history";
+import {
+  nonNightKeys,
+  persistNightMetrics,
+  purgeNonNights,
+  sessionsToMetrics,
+} from "~/server/ai/history";
 import { rescoreHealthNights } from "~/server/ai/health";
 import {
   createShareLink,
@@ -197,6 +202,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       sql`ALTER TABLE "8slp_nightMetrics" ADD COLUMN IF NOT EXISTS "identityReason" varchar(400)`,
       sql`ALTER TABLE "8slp_userAiSettings" ADD COLUMN IF NOT EXISTS "awayUntil" varchar(10)`,
       sql`ALTER TABLE "8slp_userAiSettings" ADD COLUMN IF NOT EXISTS "emptyBedShutoff" boolean NOT NULL DEFAULT true`,
+      sql`ALTER TABLE "8slp_shareLinks" ADD COLUMN IF NOT EXISTS "startsOn" varchar(10)`,
       sql`CREATE TABLE IF NOT EXISTS "8slp_shareLinks" (
         "id" serial PRIMARY KEY,
         "email" varchar(255) NOT NULL REFERENCES "8slp_users"("email"),
@@ -263,6 +269,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       role,
       label: request.nextUrl.searchParams.get("label"),
       days: daysParam ? Number(daysParam) : null,
+      startsOn: request.nextUrl.searchParams.get("startsOn"),
     });
     const origin = request.nextUrl.origin;
     return Response.json({
@@ -294,6 +301,8 @@ export async function POST(request: NextRequest): Promise<Response> {
     const sessions = await fetchPodSessions(token, user.eightUserId, pages);
     const metrics = sessionsToMetrics(sessions, timezone);
     const persisted = await persistNightMetrics(email, metrics, { rescore: true });
+    // Rows stored under the old "any sleep is a night" rule go too.
+    const purged = await purgeNonNights(email, nonNightKeys(sessions, timezone));
     if (!persisted.ok) {
       return Response.json(
         { email, error: "nothing stored", reason: persisted.error },
@@ -306,6 +315,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({
       email,
       healthRescored,
+      purged,
       rescored: metrics.map((m) => ({
         night: m.night,
         score: m.score,
@@ -315,12 +325,17 @@ export async function POST(request: NextRequest): Promise<Response> {
         awakeAfterOnsetH:
           m.awakeHours == null ? null : Math.round(m.awakeHours * 100) / 100,
         wakeCount: m.wakeCount,
+        notMe: m.notMe ?? null,
+        identityReason: m.identityReason ?? null,
       })),
     });
   }
 
   const email = request.nextUrl.searchParams.get("email");
-  if (!email || (action !== "reassess" && action !== "comfort")) {
+  if (
+    !email ||
+    (action !== "reassess" && action !== "comfort" && action !== "identity")
+  ) {
     return Response.json({ error: "Unknown action" }, { status: 400 });
   }
 
@@ -362,6 +377,31 @@ export async function POST(request: NextRequest): Promise<Response> {
       confidence: rec.confidence,
       reasoning: rec.reasoning,
     });
+  }
+
+  // Record whose nights these were, for a stay the owner relays afterwards
+  // (the app's own "was this you?" answer, entered by an operator). A fact,
+  // so it survives every re-sync and rescore.
+  // POST /api/aiDebug?action=identity&email=…&nights=YYYY-MM-DD,…&wasMe=0|1
+  if (action === "identity") {
+    const nights = (request.nextUrl.searchParams.get("nights") ?? "")
+      .split(",")
+      .map((n) => n.trim())
+      .filter((n) => /^\d{4}-\d{2}-\d{2}$/.test(n));
+    const wasMe = request.nextUrl.searchParams.get("wasMe") === "1";
+    if (nights.length === 0) {
+      return Response.json({ error: "nights=YYYY-MM-DD[,…] required" }, { status: 400 });
+    }
+    const updated = await db
+      .update(nightMetrics)
+      .set({
+        notMe: !wasMe,
+        identityConfirmed: true,
+        identityReason: wasMe ? null : "Somebody else slept here, as the owner reported.",
+      })
+      .where(and(eq(nightMetrics.email, email), inArray(nightMetrics.night, nights)))
+      .returning({ night: nightMetrics.night });
+    return Response.json({ email, wasMe, updated: updated.map((r) => r.night) });
   }
 
   try {

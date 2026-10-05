@@ -24,6 +24,7 @@ import { fetchCurrentSessionWindow } from "./sleepData";
 import { computeLiveNudge, isHumanHeartRate } from "./rules";
 import { getFreshToken } from "./advisor";
 import { currentStageFor, nightKeyFor } from "./time";
+import { activeGuestProfile } from "./shareLinks";
 import {
   celsiusToRaw,
   MAX_BED_TEMP_C,
@@ -73,7 +74,15 @@ export async function runLiveTuningPass(): Promise<void> {
   for (const row of rows) {
     const email = row.userAiSettings.email;
     try {
-      const profile = row.userTemperatureProfiles;
+      const ownerProfile = row.userTemperatureProfiles;
+      // A guest's stay schedule replaces the owner's for the night, exactly
+      // as in the scheduler. Without this the tuner nudged from the OWNER's
+      // stage temperatures, writing over the guest's chosen ones.
+      const guestOverlay = await activeGuestProfile(
+        email,
+        nightKeyFor(now, ownerProfile.timezoneTZ, ownerProfile.wakeupTime.slice(0, 5)),
+      ).catch(() => null);
+      const profile = guestOverlay ? { ...ownerProfile, ...guestOverlay } : ownerProfile;
       const bedTime = profile.bedTime.slice(0, 5);
       const wakeupTime = profile.wakeupTime.slice(0, 5);
       const stage = currentStageFor(
@@ -100,32 +109,36 @@ export async function runLiveTuningPass(): Promise<void> {
           timeZone: row.userTemperatureProfiles.timezoneTZ,
         });
       let comfortBias: "cooler" | "warmer" | null = null;
-      try {
-        const recent = (
-          await db
-            .select()
-            .from(sleepFeedback)
-            .where(eq(sleepFeedback.email, email))
-            .orderBy(desc(sleepFeedback.night))
-            .limit(2)
-        ).filter((r) => r.night >= cutoffNight && r.night <= todayLocal);
-        const votes = recent
-          .map((r) =>
-            r.felt === "too_hot"
-              ? "cooler"
-              : r.felt === "too_cold"
-                ? "warmer"
-                : null,
-          )
-          .filter((v): v is "cooler" | "warmer" => v != null);
-        if (votes.length > 0 && votes.every((v) => v === votes[0])) {
-          comfortBias = votes[0]!;
+      // The owner's reports describe the owner. 15-17 Sep 2026 the tuner
+      // cooled a guest six times "because you reported the bed running hot".
+      if (!guestOverlay) {
+        try {
+          const recent = (
+            await db
+              .select()
+              .from(sleepFeedback)
+              .where(eq(sleepFeedback.email, email))
+              .orderBy(desc(sleepFeedback.night))
+              .limit(2)
+          ).filter((r) => r.night >= cutoffNight && r.night <= todayLocal);
+          const votes = recent
+            .map((r) =>
+              r.felt === "too_hot"
+                ? "cooler"
+                : r.felt === "too_cold"
+                  ? "warmer"
+                  : null,
+            )
+            .filter((v): v is "cooler" | "warmer" => v != null);
+          if (votes.length > 0 && votes.every((v) => v === votes[0])) {
+            comfortBias = votes[0]!;
+          }
+        } catch (error) {
+          console.error(
+            `Could not read comfort bias for ${email}:`,
+            error instanceof Error ? error.message : String(error),
+          );
         }
-      } catch (error) {
-        console.error(
-          `Could not read comfort bias for ${email}:`,
-          error instanceof Error ? error.message : String(error),
-        );
       }
 
       const token = await getFreshToken(row.users);

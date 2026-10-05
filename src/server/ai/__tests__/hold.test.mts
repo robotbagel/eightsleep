@@ -76,3 +76,24 @@ console.log("ok  an old, well-measured change is no longer locked");
 const todays = holdFromRecommendations([midChange("2026-09-13", 20, 16)], [], "2026-09-13");
 assert.equal(todays.heldNights, 99, "the assessment being written now cannot lock itself");
 console.log("ok  today's own recommendation does not lock today's decision");
+
+// --- a measured change still spends the reports it acted on ---------------
+// 2026-09-22..10-03: once a change had been held and measured (or simply
+// scrolled out of view), lastChangeNight went back to null and the comfort
+// report that caused it voted again. It must stay at the newest change.
+const measured = holdFromRecommendations(
+  [midChange("2026-09-01", 20, 16)],
+  ["2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"],
+  "2026-09-13",
+);
+assert.equal(measured.locked.length, 0, "the lock is released");
+assert.equal(measured.lastChangeNight, "2026-09-02", "but the change is still the newest one");
+console.log("ok  a released change still marks which reports are spent");
+
+const newestWins = holdFromRecommendations(
+  [midChange("2026-09-20", 16, 12), midChange("2026-09-01", 20, 16)],
+  [],
+  "2026-09-25",
+);
+assert.equal(newestWins.lastChangeNight, "2026-09-21");
+console.log("ok  the newest change decides, in whatever order rows arrive");

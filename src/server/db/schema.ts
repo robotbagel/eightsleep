@@ -221,6 +221,14 @@ export const shareLinks = createTable(
     label: varchar("label", { length: 60 }),
     /** Null for a household link, which does not expire on its own. */
     expiresAt: timestamp("expiresAt"),
+    /**
+     * Night key (the date the night STARTS) of a guest's first night. The
+     * overlay and the "these nights are not the owner's" record both start
+     * here, not at the moment the link was made: on 14 Sep 2026 a link made
+     * the afternoon before the owner left claimed the owner's own last night
+     * at home. Null on links made before this existed.
+     */
+    startsOn: varchar("startsOn", { length: 10 }),
     revokedAt: timestamp("revokedAt"),
     lastUsedAt: timestamp("lastUsedAt"),
     createdAt: timestamp("created_at").defaultNow().notNull(),

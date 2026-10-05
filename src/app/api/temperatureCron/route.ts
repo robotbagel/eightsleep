@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { db } from "~/server/db";
 import { userTemperatureProfile, users } from "~/server/db/schema";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { obtainFreshAccessToken } from "~/server/eight/auth";
 import { type Token } from "~/server/eight/types";
 import { setHeatingLevel, turnOnSide, turnOffSide } from "~/server/eight/eight";
@@ -16,9 +16,15 @@ import {
   getActiveLiveOffset,
   runLiveTuningPass,
 } from "~/server/ai/liveTuner";
-import { appConfig, temperatureEvents, userAiSettings } from "~/server/db/schema";
+import {
+  aiRunLog,
+  appConfig,
+  temperatureEvents,
+  userAiSettings,
+} from "~/server/db/schema";
 import { detectManualOverride, matchGhostSchedule } from "~/server/ai/override";
 import { nightKeyFor } from "~/server/ai/time";
+import { shiftDate } from "~/server/ai/history";
 import { isAway, presenceDecision } from "~/server/ai/presence";
 import { activeGuestProfile } from "~/server/ai/shareLinks";
 import { isHumanHeartRate } from "~/server/ai/rules";
@@ -203,6 +209,82 @@ async function emptyBedShutoffLogged(
   }
 }
 
+/**
+ * How many nights in a row, ending with last night, nobody turned up: the
+ * side was switched off for emptiness and nothing put it back. The wake-up
+ * "off" row comes after every night and says nothing about who slept, so it
+ * is skipped when reading a night's last word.
+ */
+async function emptyNightsInARow(email: string, tonight: string): Promise<number> {
+  try {
+    const keys = [1, 2, 3].map((back) => shiftDate(tonight, -back));
+    const rows = await db
+      .select({
+        night: temperatureEvents.night,
+        stage: temperatureEvents.stage,
+        id: temperatureEvents.id,
+      })
+      .from(temperatureEvents)
+      .where(and(eq(temperatureEvents.email, email), inArray(temperatureEvents.night, keys)))
+      .orderBy(desc(temperatureEvents.id));
+    let streak = 0;
+    for (const key of keys) {
+      const last = rows.find((row) => row.night === key && row.stage !== "wake");
+      if (last?.stage !== "empty-bed") break;
+      streak += 1;
+    }
+    return streak;
+  } catch (error) {
+    console.error(
+      `Could not read recent empty nights for ${email}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+    return 0; // unreadable history must never stop a bed from pre-heating
+  }
+}
+
+/**
+ * A tick that failed for one person leaves a row behind, once per night per
+ * distinct failure. Before this a failure went to the server log only, which
+ * is kept for an hour, so a side could go silent for days with nothing
+ * anywhere saying why. Written to the run log rather than the event trail on
+ * purpose: half a dozen readers treat the newest event of a night as the
+ * bed's state, and a failure is not a state of the bed.
+ */
+async function logTickFailure(
+  email: string,
+  timezone: string,
+  wakeupTime: string,
+  now: Date,
+  message: string,
+): Promise<void> {
+  try {
+    const night = nightKeyFor(now, timezone, wakeupTime);
+    const detail = message.slice(0, 500);
+    const already = await db.query.aiRunLog.findFirst({
+      where: and(
+        eq(aiRunLog.email, email),
+        eq(aiRunLog.forDate, night),
+        eq(aiRunLog.phase, "schedule"),
+        eq(aiRunLog.detail, detail),
+      ),
+    });
+    if (already) return;
+    await db.insert(aiRunLog).values({
+      email,
+      forDate: night,
+      phase: "schedule",
+      ok: false,
+      detail,
+    });
+  } catch (error) {
+    console.error(
+      `Could not record the tick failure for ${email}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
 export async function adjustTemperature(
   testMode?: TestMode,
   trace?: string[],
@@ -249,7 +331,14 @@ export async function adjustTemperature(
         // guests — and the owner's stored row is never written to, so when
         // the visit's link lapses the owner's profile is simply used again.
         const ownerProfile = profile.userTemperatureProfiles;
-        const guestOverlay = await activeGuestProfile(profile.users.email).catch(
+        const guestOverlay = await activeGuestProfile(
+          profile.users.email,
+          nightKeyFor(
+            testMode?.enabled ? testMode.currentTime : new Date(),
+            ownerProfile.timezoneTZ,
+            ownerProfile.wakeupTime.slice(0, 5),
+          ),
+        ).catch(
           (error) => {
             note(
               `guest profile unreadable for ${profile.users.email}, using the owner's: ${error instanceof Error ? error.message : String(error)}`,
@@ -370,6 +459,14 @@ export async function adjustTemperature(
           profile.users.email,
           nightKey,
         );
+        // Only asked when it could matter: before tonight's shutoff exists.
+        const emptyNights =
+          !shutOffAlready &&
+          !away &&
+          !guestOverlay &&
+          currentSleepStage !== "outside sleep cycle"
+            ? await emptyNightsInARow(profile.users.email, nightKey)
+            : 0;
         const presence = presenceDecision({
           away,
           shutoffEnabled: aiSettings?.emptyBedShutoff ?? true,
@@ -379,6 +476,7 @@ export async function adjustTemperature(
           somebodyInBed,
           heating: heatingStatus.isHeating,
           shutOffForEmptyBed: shutOffAlready,
+          emptyNightsInARow: emptyNights,
         });
 
         if (presence.kind === "away" || presence.kind === "shut-off-empty") {
@@ -403,8 +501,52 @@ export async function adjustTemperature(
           continue; // nothing else to do for this user on this tick
         }
         if (away) continue; // already off, and staying off
+        if (presence.kind === "stay-off") {
+          note(`empty bed, staying off for ${profile.users.email}`);
+          continue;
+        }
         if (presence.kind === "re-arm") {
-          note(`re-arming schedule for ${profile.users.email}: ${presence.reason}`);
+          // Put the night back NOW, at the stage that is running, rather than
+          // waiting for the next stage boundary: the mid stage is several
+          // hours long, and a late arrival used to lie in a cold bed until it
+          // ended.
+          const stageLevel =
+            currentSleepStage === "deep"
+              ? deepLevel
+              : currentSleepStage === "mid"
+                ? userTemperatureProfile.midStageSleepLevel
+                : currentSleepStage === "final"
+                  ? userTemperatureProfile.finalSleepLevel
+                  : userTemperatureProfile.initialSleepLevel;
+          const offset = testMode?.enabled
+            ? 0
+            : await getActiveLiveOffset(
+                profile.users.email,
+                userTemperatureProfile.timezoneTZ,
+                userTemperatureProfile.wakeupTime.slice(0, 5),
+                now,
+              ).catch(() => 0);
+          const level = applyOffsetToLevel(stageLevel, offset);
+          if (testMode?.enabled) {
+            note(`[TEST MODE] would re-arm at level ${level}`);
+          } else {
+            await retryApiCall(() => turnOnSide(token, profile.users.eightUserId));
+            await retryApiCall(() =>
+              setHeatingLevel(token, profile.users.eightUserId, level),
+            );
+            await logTemperatureEvent(
+              profile.users.email,
+              userTemperatureProfile.timezoneTZ,
+              userTemperatureProfile.wakeupTime.slice(0, 5),
+              now,
+              currentSleepStage,
+              level,
+              "scheduled",
+              presence.reason,
+            );
+          }
+          note(`re-armed schedule for ${profile.users.email} at level ${level}: ${presence.reason}`);
+          continue;
         }
 
         // Did a person move the dial? Checked EVERY tick inside the sleep
@@ -564,8 +706,9 @@ export async function adjustTemperature(
               stage: currentSleepStage,
               observedLevel: observedSetpoint,
               currentOffsetTenthsC: liveOffset,
-                    stageBaseLevel: stageTargetLevel,
-                  });
+              stageBaseLevel: stageTargetLevel,
+              fileFeedback: !guestOverlay,
+            });
             if (override) {
               liveOffset = override.newOffsetTenthsC;
               console.log(
@@ -692,8 +835,18 @@ export async function adjustTemperature(
 
         console.log(`Successfully completed temperature adjustment check for user ${profile.users.email}`);
       } catch (error) {
-        console.error(`Error adjusting temperature for user ${profile.users.email}:`, error instanceof Error ? error.message : String(error));
-        trace?.push(`ERROR for ${profile.users.email}: ${error instanceof Error ? error.message : String(error)}`);
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Error adjusting temperature for user ${profile.users.email}:`, message);
+        trace?.push(`ERROR for ${profile.users.email}: ${message}`);
+        if (!testMode?.enabled) {
+          await logTickFailure(
+            profile.users.email,
+            profile.userTemperatureProfiles.timezoneTZ,
+            profile.userTemperatureProfiles.wakeupTime.slice(0, 5),
+            new Date(),
+            message,
+          );
+        }
       }
     }
   } catch (error) {

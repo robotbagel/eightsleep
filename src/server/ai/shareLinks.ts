@@ -109,13 +109,87 @@ export interface IssuedLink {
   expiresAt: Date | null;
 }
 
+/**
+ * When a guest stay that starts on night `startsOn` and lasts `nights` ends:
+ * midday after the last night, so the link still works on the last morning.
+ */
+export function stayExpiry(startsOn: string, nights: number, now: Date): Date {
+  const end = new Date(`${startsOn}T12:00:00Z`);
+  end.setUTCDate(end.getUTCDate() + nights);
+  // Never already lapsed at the moment it is issued.
+  return end.getTime() > now.getTime() ? end : new Date(now.getTime() + nights * 86_400_000);
+}
+
+/**
+ * The wake dates a guest link's stay covers: the morning after each night
+ * from `startsOn` to the last night before it lapsed or was withdrawn. Pure.
+ */
+export function stayWakeDates(link: {
+  startsOn: string | null;
+  expiresAt: Date | null;
+  revokedAt: Date | null;
+}): string[] {
+  if (!link.startsOn || !link.expiresAt) return [];
+  const endAt =
+    link.revokedAt && link.revokedAt < link.expiresAt ? link.revokedAt : link.expiresAt;
+  // The last night that had STARTED before the stay ended. Night keys are the
+  // date a night starts, and a night is under way by late afternoon (UTC), so
+  // stepping back 16 h maps a 12:00 expiry on D to the night of D-1, and a
+  // link withdrawn at 15:00 on D (before that night began) to D-1 as well.
+  const lastNight = new Date(endAt.getTime() - 16 * 3_600_000)
+    .toISOString()
+    .slice(0, 10);
+  const out: string[] = [];
+  const cursor = new Date(`${link.startsOn}T12:00:00Z`);
+  for (let guard = 0; guard < GUEST_LINK_MAX_DAYS + 1; guard++) {
+    const night = cursor.toISOString().slice(0, 10);
+    if (night > lastNight) break;
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+    out.push(cursor.toISOString().slice(0, 10)); // the morning after
+  }
+  return out;
+}
+
+/**
+ * Wake date -> why, for every night a guest link's stay covered on this side.
+ * A recorded fact rather than an inference: the owner said a guest would be
+ * sleeping here from that night, so those nights never teach the owner's loop.
+ */
+export async function guestStayNights(email: string): Promise<Map<string, string>> {
+  const rows = await db
+    .select({
+      label: shareLinks.label,
+      role: shareLinks.role,
+      startsOn: shareLinks.startsOn,
+      expiresAt: shareLinks.expiresAt,
+      revokedAt: shareLinks.revokedAt,
+    })
+    .from(shareLinks)
+    .where(eq(shareLinks.email, email));
+  const out = new Map<string, string>();
+  for (const row of rows) {
+    if (row.role !== "guest") continue;
+    for (const wake of stayWakeDates(row)) {
+      out.set(
+        wake,
+        `${row.label ? `${row.label}'s` : "A guest's"} stay: this night was theirs, not yours.`,
+      );
+    }
+  }
+  return out;
+}
+
 export async function createShareLink(input: {
   email: string;
   role: ShareRole;
   label: string | null;
   days: number | null;
+  /** Night key of the guest's first night; defaults to tonight. */
+  startsOn?: string | null;
+  now?: Date;
 }): Promise<IssuedLink> {
   const token = mintSecret();
+  const now = input.now ?? new Date();
   // A household link is for someone who lives there; it does not lapse. A
   // guest link always does, because the commonest way one of these leaks is
   // simply outliving the visit everyone has forgotten about.
@@ -123,8 +197,14 @@ export async function createShareLink(input: {
     input.role === "household"
       ? null
       : Math.min(input.days ?? GUEST_LINK_DEFAULT_DAYS, GUEST_LINK_MAX_DAYS);
+  const startsOn =
+    input.role === "guest"
+      ? /^\d{4}-\d{2}-\d{2}$/.test(input.startsOn ?? "")
+        ? input.startsOn!
+        : now.toISOString().slice(0, 10)
+      : null;
   const expiresAt =
-    days == null ? null : new Date(Date.now() + days * 86_400_000);
+    days == null || startsOn == null ? null : stayExpiry(startsOn, days, now);
 
   const [row] = await db
     .insert(shareLinks)
@@ -134,6 +214,7 @@ export async function createShareLink(input: {
       role: input.role,
       label: input.label,
       expiresAt,
+      startsOn,
     })
     .returning({ id: shareLinks.id });
 
@@ -149,6 +230,8 @@ export interface ShareSession {
   expiresAt: Date | null;
   /** When the link was issued — the earliest night it may ever read. */
   createdAt: Date;
+  /** Night key of a guest's first night, when the link records one. */
+  startsOn: string | null;
 }
 
 /**
@@ -189,6 +272,7 @@ export async function resolveShareLink(
     capabilities: CAPABILITIES[role],
     expiresAt: row.expiresAt,
     createdAt: row.createdAt,
+    startsOn: row.startsOn ?? null,
   };
 }
 
@@ -209,6 +293,7 @@ export interface ListedLink {
   expiresAt: Date | null;
   lastUsedAt: Date | null;
   createdAt: Date;
+  startsOn: string | null;
   active: boolean;
 }
 
@@ -225,6 +310,7 @@ export async function listShareLinks(email: string): Promise<ListedLink[]> {
       expiresAt: row.expiresAt,
       lastUsedAt: row.lastUsedAt,
       createdAt: row.createdAt,
+      startsOn: row.startsOn ?? null,
       active: row.expiresAt == null || row.expiresAt.getTime() > now,
     }))
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
@@ -261,10 +347,13 @@ export interface StageLevels {
  */
 export async function activeGuestProfile(
   email: string,
+  /** Tonight's night key. The overlay does not apply before the stay starts. */
+  nightKey?: string,
 ): Promise<StageLevels | null> {
   const now = new Date();
   const rows = await db
     .select({
+      startsOn: shareLinks.startsOn,
       bedTime: guestProfiles.bedTime,
       wakeupTime: guestProfiles.wakeupTime,
       initialSleepLevel: guestProfiles.initialSleepLevel,
@@ -287,6 +376,7 @@ export async function activeGuestProfile(
 
   const row = rows[0];
   if (!row) return null;
+  if (nightKey && row.startsOn && nightKey < row.startsOn) return null;
   return {
     bedTime: row.bedTime,
     wakeupTime: row.wakeupTime,

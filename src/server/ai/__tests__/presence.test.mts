@@ -1,5 +1,10 @@
 import assert from "node:assert";
-import { EMPTY_BED_GRACE_MIN, isAway, presenceDecision } from "../presence";
+import {
+  EMPTY_BED_GRACE_MIN,
+  EMPTY_NIGHTS_BEFORE_WAITING,
+  isAway,
+  presenceDecision,
+} from "../presence";
 
 const base = {
   away: false,
@@ -36,12 +41,59 @@ assert.ok(rearm.reason.includes("after all"));
 console.log("ok  arriving after the shutoff puts the schedule back");
 
 // --- and is not fought over once already off -----------------------------
+// 18 Sep - 3 Oct 2026: "none" here let the stage boundaries switch an empty
+// bed back on, and the next tick switched it off again, all night.
+for (const stage of ["initial", "deep", "mid", "final", "pre-heating"]) {
+  assert.equal(
+    presenceDecision({ ...base, stage, shutOffForEmptyBed: true, heating: false }).kind,
+    "stay-off",
+    `an already-off empty bed stays off through the ${stage} boundary`,
+  );
+}
 assert.equal(
-  presenceDecision({ ...base, shutOffForEmptyBed: true, heating: false }).kind,
-  "none",
-  "an already-off empty bed generates no further commands",
+  presenceDecision({ ...base, shutOffForEmptyBed: true, heating: true }).kind,
+  "stay-off",
+  "somebody switching it on by hand is not fought either",
 );
-console.log("ok  the shutoff fires once, not on every tick");
+console.log("ok  once off for emptiness, no stage boundary switches it back on");
+
+// --- nobody for two nights: stop pre-heating, wait for a person ----------
+const waiting = presenceDecision({
+  ...base,
+  stage: "pre-heating",
+  minutesSinceBedtime: -60,
+  heating: false,
+  emptyNightsInARow: EMPTY_NIGHTS_BEFORE_WAITING,
+});
+assert.equal(waiting.kind, "shut-off-empty");
+assert.ok(waiting.kind === "shut-off-empty" && waiting.reason.includes("not pre-heating"));
+assert.equal(
+  presenceDecision({
+    ...base,
+    stage: "pre-heating",
+    minutesSinceBedtime: -60,
+    emptyNightsInARow: EMPTY_NIGHTS_BEFORE_WAITING - 1,
+  }).kind,
+  "none",
+  "one empty night is not a pattern: still pre-heat",
+);
+assert.equal(
+  presenceDecision({
+    ...base,
+    stage: "pre-heating",
+    minutesSinceBedtime: -30,
+    somebodyInBed: true,
+    emptyNightsInARow: 5,
+  }).kind,
+  "none",
+  "somebody already in it: run the night",
+);
+assert.equal(
+  presenceDecision({ ...base, shutoffEnabled: false, emptyNightsInARow: 5 }).kind,
+  "none",
+  "opting out of the shutoff opts out of waiting too",
+);
+console.log("ok  after two empty nights the bed waits instead of pre-heating");
 
 // --- outside the cycle this is none of our business ----------------------
 assert.equal(
@@ -60,10 +112,10 @@ assert.equal(awayOn.kind, "away", "away applies at any hour, even if the pod thi
 assert.equal(presenceDecision({ ...base, away: true, heating: false }).kind, "none", "nothing to do when already off");
 console.log("ok  a planned absence overrides the clock and the sensors");
 
-// --- the away window is inclusive of its last night ----------------------
-assert.equal(isAway("2026-09-20", "2026-09-14"), true);
-assert.equal(isAway("2026-09-20", "2026-09-20"), true, "the last night is still away");
-assert.equal(isAway("2026-09-20", "2026-09-21"), false, "and the bed is back the night after");
+// --- the date entered is the day you are home again ----------------------
+assert.equal(isAway("2026-10-04", "2026-09-21"), true);
+assert.equal(isAway("2026-10-04", "2026-10-03"), true, "the night before you get back is still away");
+assert.equal(isAway("2026-10-04", "2026-10-04"), false, "the night you get home, the bed runs");
 assert.equal(isAway(null, "2026-09-14"), false);
 assert.equal(isAway(undefined, "2026-09-14"), false);
-console.log("ok  the away window covers its final night and then releases");
+console.log("ok  the bed is back on the night you said you would be home");

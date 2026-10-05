@@ -135,12 +135,19 @@ export async function GET(request: NextRequest): Promise<Response> {
         profile?.timezoneTZ ?? "UTC",
       );
 
-      const runs = await db
+      const allRuns = await db
         .select()
         .from(aiRunLog)
         .where(eq(aiRunLog.email, email))
         .orderBy(desc(aiRunLog.id))
-        .limit(8);
+        .limit(40);
+      // The 10-minute schedule's own failures share the run log but are a
+      // different question from "did the morning pass run", so they are
+      // reported apart and never crowd the daily-pass rows out.
+      const runs = allRuns.filter((run) => run.phase !== "schedule").slice(0, 8);
+      const scheduleFailures = allRuns
+        .filter((run) => run.phase === "schedule")
+        .slice(0, 10);
       const liveAdjustments = await db
         .select()
         .from(aiLiveAdjustments)
@@ -280,6 +287,11 @@ export async function GET(request: NextRequest): Promise<Response> {
         })),
         // Why a day is missing: whether the pass was attempted at all, and
         // what it said if it failed.
+        scheduleFailures: scheduleFailures.map((run) => ({
+          night: run.forDate,
+          at: run.at,
+          detail: run.detail,
+        })),
         dailyPassRuns: runs.map((run) => ({
           forDate: run.forDate,
           at: run.at,

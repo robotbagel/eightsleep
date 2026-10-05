@@ -234,8 +234,11 @@ export const shareRouter = createTRPCRouter({
       : all.filter(
           (night) =>
             night.notMe === true &&
-            // Only nights from this stay, never an earlier visitor's.
-            new Date(`${night.night}T12:00:00Z`) >= startOfDay(share.createdAt),
+            // Only nights from this stay, never an earlier visitor's. A wake
+            // date is the morning after its night, hence strictly after.
+            (share.startsOn
+              ? night.night > share.startsOn
+              : new Date(`${night.night}T12:00:00Z`) >= startOfDay(share.createdAt)),
         );
 
     return {
@@ -309,12 +312,18 @@ export const shareRouter = createTRPCRouter({
       // A guest driving the bed is the plainest possible statement that this
       // night is not the owner's. Recorded as a fact, not an inference, so
       // the loop never has to guess at it afterwards.
-      if (!share.capabilities.nightsAreTheOwners) {
-        const night = nightKeyFor(
-          new Date(),
-          profile.timezoneTZ,
-          profile.wakeupTime.slice(0, 5),
-        );
+      const pressNight = nightKeyFor(
+        new Date(),
+        profile.timezoneTZ,
+        profile.wakeupTime.slice(0, 5),
+      );
+      // Before the stay starts (a guest trying the link out the afternoon
+      // before), the night ahead is still the owner's.
+      if (
+        !share.capabilities.nightsAreTheOwners &&
+        (!share.startsOn || pressNight >= share.startsOn)
+      ) {
+        const night = pressNight;
         // The wake date is the night key plus one: the night beginning
         // tonight is the one woken from tomorrow.
         const wake = new Date(`${night}T12:00:00Z`);

@@ -6,6 +6,8 @@ import {
   GUEST_LINK_MAX_DAYS,
   hashToken,
   SHARE_ROLES,
+  stayExpiry,
+  stayWakeDates,
 } from "../shareLinks";
 
 // --- a guest can warm the bed and nothing else ----------------------------
@@ -91,3 +93,37 @@ assert.ok(
 );
 assert.ok(GUEST_LINK_MAX_DAYS <= 31, "a guest link must not be effectively permanent");
 console.log("ok  guest links expire, and cannot be issued open-ended");
+
+// --- a stay covers the nights from its first night, not from issue -------
+// 14 Sep 2026: a link made the afternoon before the owner left claimed the
+// owner's own last night at home. The stay now starts at `startsOn`.
+{
+  const issued = new Date("2026-09-14T15:58:00Z");
+  const expiresAt = stayExpiry("2026-09-15", 3, issued);
+  assert.equal(expiresAt.toISOString(), "2026-09-18T12:00:00.000Z");
+  const wakes = stayWakeDates({ startsOn: "2026-09-15", expiresAt, revokedAt: null });
+  assert.deepEqual(wakes, ["2026-09-16", "2026-09-17", "2026-09-18"],
+    "nights of the 15th, 16th and 17th, woken from on the 16th-18th");
+  assert.ok(!wakes.includes("2026-09-15"), "the owner's night before the stay is not the guest's");
+
+  const withdrawnEarly = stayWakeDates({
+    startsOn: "2026-09-15",
+    expiresAt,
+    revokedAt: new Date("2026-09-17T08:00:00Z"),
+  });
+  assert.deepEqual(withdrawnEarly, ["2026-09-16", "2026-09-17"], "withdrawn the morning after the 2nd night");
+
+  const testedAndWithdrawn = stayWakeDates({
+    startsOn: "2026-10-05",
+    expiresAt: stayExpiry("2026-10-05", 2, new Date("2026-10-05T10:00:00Z")),
+    revokedAt: new Date("2026-10-05T15:00:00Z"),
+  });
+  assert.deepEqual(testedAndWithdrawn, [], "a link withdrawn before its first night covers nothing");
+
+  assert.deepEqual(
+    stayWakeDates({ startsOn: null, expiresAt, revokedAt: null }),
+    [],
+    "links from before stays existed are left to the old per-night marking",
+  );
+  console.log("ok  a guest stay covers exactly its own nights");
+}

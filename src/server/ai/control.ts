@@ -304,3 +304,58 @@ export function describeLedger(
     return `${shape}: thermal ${entry.meanThermal} over ${entry.nights.length} night${entry.nights.length === 1 ? "" : "s"} (${entry.nights.join(", ")})${tags.length ? ` — ${tags.join(", ")}` : ""}`;
   });
 }
+
+/**
+ * Is there anything new to learn from? Asked before any branch that could
+ * move the profile, because every branch reasons from recent nights and a
+ * bed nobody slept in produces none.
+ *
+ * Measured 18 Sep - 3 Oct 2026: both owners were away, and the morning pass
+ * still moved Nathan's profile four times and Laurence's three, each time
+ * re-reading the same week-old evidence as if it were new. Returns the reason
+ * to hold, or null when there is fresh evidence to act on.
+ */
+export function evidenceGate(input: {
+  /** Wake date of the newest night that was the owner's own and scoreable. */
+  newestOwnNight: string | null;
+  /** Wake date of the first night the newest change governed. */
+  lastChangeNight: string | null;
+  /** Today's wake date (the night that just ended). */
+  todayKey: string;
+  /** The date they are home again, if a planned absence covers tonight. */
+  awayBackOn: string | null;
+}): { reason: string; blocksReports: boolean } | null {
+  if (input.awayBackOn) {
+    return {
+      reason: `You are away until ${input.awayBackOn}, so nothing changes until you have slept here again. The profile you left is the one waiting for you.`,
+      blocksReports: true,
+    };
+  }
+  if (
+    input.lastChangeNight != null &&
+    (input.newestOwnNight == null || input.newestOwnNight < input.lastChangeNight)
+  ) {
+    return {
+      reason:
+        "No night of yours has been measured since the last change, so there is nothing yet to judge it by. It stays as it is until you have slept on it.",
+      blocksReports: false,
+    };
+  }
+  // The pass runs after wake-up, so last night is todayKey; one night of slack
+  // covers a session the pod has not finished writing yet.
+  const yesterday = (() => {
+    const d = new Date(`${input.todayKey}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - 1);
+    return d.toISOString().slice(0, 10);
+  })();
+  if (input.newestOwnNight == null || input.newestOwnNight < yesterday) {
+    return {
+      reason: input.newestOwnNight
+        ? `Your last night here was ${input.newestOwnNight}. Nothing newer has been measured, so nothing changes until you have slept here again.`
+        : "There is no night of yours on record yet, so nothing changes until there is.",
+      blocksReports: false,
+    };
+  }
+  return null;
+}
+

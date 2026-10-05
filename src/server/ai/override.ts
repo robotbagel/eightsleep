@@ -122,6 +122,13 @@ export async function recordManualSetpoint(input: {
   direction: "warmer" | "cooler";
   /** Where the person pressed it, for the trail. */
   via: "the Eight app" | "this app";
+  /**
+   * Does this adjustment say something about the OWNER's comfort? False
+   * while a guest's stay schedule is running: the hand on the dial is the
+   * guest's, and filing it as the owner's report taught the owner's loop a
+   * stranger's preference.
+   */
+  fileFeedback?: boolean;
 }): Promise<void> {
   await db.insert(temperatureEvents).values({
     email: input.email,
@@ -158,7 +165,7 @@ export async function recordManualSetpoint(input: {
   });
   // Somebody answering the prompt outranks something inferred from the dial,
   // so an existing report for tonight is never overwritten.
-  if (!existing) {
+  if (!existing && input.fileFeedback !== false) {
     await db.insert(sleepFeedback).values({
       email: input.email,
       night: feedbackNight,
@@ -192,6 +199,8 @@ export async function detectManualOverride(input: {
    *  incremental delta re-applied to the base lands wherever the ledger
    *  drifted, which is how a hand-set 25°C became a written 23.3°C. */
   stageBaseLevel: number;
+  /** False while a guest's stay is running; see recordManualSetpoint. */
+  fileFeedback?: boolean;
 }): Promise<OverrideResult | null> {
   const night = nightKeyFor(input.now, input.timezone, input.wakeupTime);
 
@@ -239,6 +248,7 @@ export async function detectManualOverride(input: {
     newOffsetTenthsC,
     direction,
     via: "the Eight app",
+    fileFeedback: input.fileFeedback,
   });
 
   return { deltaTenthsC, newOffsetTenthsC, direction };

@@ -9,7 +9,7 @@
 // once they are complete, so we store the summary the first time we see it.
 import { db } from "~/server/db";
 import { healthNights, nightMetrics } from "~/server/db/schema";
-import { and, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte } from "drizzle-orm";
 import { type Token } from "../eight/types";
 import {
   awakeAfterOnsetHours,
@@ -21,6 +21,7 @@ import {
 import { compareSources, type SecondOpinion } from "./secondOpinion";
 import {
   identityCheck,
+  MIN_BASELINE_NIGHTS,
   robustBaseline,
   type IdentityVerdict,
   type VitalsNight,
@@ -32,6 +33,7 @@ import {
   scoreNight,
   thermalScore,
 } from "./score";
+import { guestStayNights } from "./shareLinks";
 
 export interface NightMetric {
   night: string; // wake date, YYYY-MM-DD, the app's night key everywhere
@@ -169,14 +171,87 @@ export function metricsFromSession(
  * them into the cache (replacing any existing row for the same night, since a
  * night can still be re-scored while the reference bedtime moves).
  */
+/**
+ * The least sleep that counts as a night. Below it a session is a lie-down,
+ * a nap, or most often an animal: 18 Sep - 3 Oct 2026, with both owners away,
+ * the pod recorded a dozen sessions of 0.5-1.9 h and each was stored, scored
+ * (10-39) and shown as a night, dragging every "compared with usual" average.
+ */
+export const MIN_NIGHT_ASLEEP_HOURS = 3;
+
+/**
+ * A mean breathing rate at or above this is not a sleeping adult. Measured on
+ * this bed: every human night, guests included, averages 13.1-17.1 breaths a
+ * minute; every session recorded while only the cats were home averages
+ * 20.4-25.3. Adult resting rates top out around 20.
+ */
+export const NON_HUMAN_BREATHING_RATE = 20;
+
+function meanSeries(points: [string, number][] | null | undefined): number | null {
+  const values = (points ?? []).map(([, v]) => v).filter((v) => isFinite(v));
+  return mean(values);
+}
+
+/** Why a session is not a night, or null when it is one. */
+export function notANight(session: PodSession): string | null {
+  const asleep = (session.stageSummary?.sleepDuration ?? 0) / 3600;
+  if (!session.sleepEnd || asleep <= 0) return "no sleep recorded";
+  const breathing = meanSeries(
+    session.timeseries?.respiratoryRate ?? session.timeseries?.nemeanRespiratoryRate,
+  );
+  if (breathing != null && breathing >= NON_HUMAN_BREATHING_RATE) {
+    return `breathing ${breathing.toFixed(1)}/min is not a sleeping adult`;
+  }
+  if (asleep < MIN_NIGHT_ASLEEP_HOURS) {
+    return `${asleep.toFixed(1)} h asleep is a nap, not a night`;
+  }
+  return null;
+}
+
+function wakeKey(session: PodSession, timezone: string): string | null {
+  if (!session.sleepEnd) return null;
+  return new Date(session.sleepEnd).toLocaleDateString("en-CA", { timeZone: timezone });
+}
+
+/**
+ * Wake dates that the batch shows ONLY non-night sessions for. These rows
+ * were stored as nights under the old rule and are removed on sync. A date
+ * that also has a real night is not listed: the real one replaces it.
+ */
+export function nonNightKeys(sessions: PodSession[], timezone: string): string[] {
+  const real = new Set<string>();
+  const other = new Set<string>();
+  for (const session of sessions) {
+    const key = wakeKey(session, timezone);
+    if (!key) continue;
+    (notANight(session) == null ? real : other).add(key);
+  }
+  return [...other].filter((key) => !real.has(key));
+}
+
 /** Converts a batch of raw pod sessions into one metric row per night. */
 export function sessionsToMetrics(
   sessions: PodSession[],
   timezone: string,
 ): NightMetric[] {
-  const usable = sessions
-    .filter((s) => (s.stageSummary?.sleepDuration ?? 0) > 0 && s.sleepEnd)
-    .sort((a, b) => (a.sleepEnd! < b.sleepEnd! ? -1 : 1));
+  // One night per wake date: an afternoon session ending the same day as the
+  // night before used to be stored as a second row with the same key, and the
+  // two were then read back interleaved (2026-09-14).
+  const byNight = new Map<string, PodSession>();
+  for (const session of sessions) {
+    if (notANight(session) != null) continue;
+    const key = wakeKey(session, timezone)!;
+    const held = byNight.get(key);
+    if (
+      !held ||
+      (session.stageSummary?.sleepDuration ?? 0) > (held.stageSummary?.sleepDuration ?? 0)
+    ) {
+      byNight.set(key, session);
+    }
+  }
+  const usable = [...byNight.values()].sort((a, b) =>
+    a.sleepEnd! < b.sleepEnd! ? -1 : 1,
+  );
   if (usable.length === 0) return [];
 
   // Bedtime consistency is scored against the circular mean of the nights
@@ -222,6 +297,85 @@ export function sessionsToMetrics(
  * night (a night can be re-scored as the reference bedtime moves). Never
  * throws: a cache write must not take a page down with it.
  */
+/**
+ * Re-judge whose nights these are against the owner's OWN stored history.
+ *
+ * The batch-only judgement in sessionsToMetrics compared each night with the
+ * median of whatever ~10-20 sessions the fetch returned. While the owners were
+ * away (18 Sep - 3 Oct 2026) that batch was three guest nights and a run of
+ * cat sessions, so the "owner baseline" WAS the guest and the cats, and none
+ * of them were flagged: Laurence's mother-in-law (breathing 16.6-17.1/min
+ * against her 13.8) entered the ledger as three of Laurence's nights.
+ *
+ * Also applies guest-link stay windows: a night inside one is a recorded fact,
+ * not an inference.
+ */
+async function judgeIdentity(email: string, metrics: NightMetric[]): Promise<void> {
+  const judging = new Set(metrics.map((m) => m.night));
+  const stored = await db
+    .select({
+      night: nightMetrics.night,
+      notMe: nightMetrics.notMe,
+      asleep: nightMetrics.asleepTenthHours,
+      restingHeartRate: nightMetrics.restingHeartRate,
+      hrv: nightMetrics.hrv,
+      respiratoryTenth: nightMetrics.respiratoryTenth,
+    })
+    .from(nightMetrics)
+    .where(and(eq(nightMetrics.email, email), eq(nightMetrics.source, "pod")))
+    .orderBy(desc(nightMetrics.night))
+    .limit(60);
+  const own: VitalsNight[] = stored
+    .filter(
+      (row) =>
+        row.notMe !== true &&
+        !judging.has(row.night) &&
+        (row.asleep ?? 0) >= MIN_NIGHT_ASLEEP_HOURS * 10 &&
+        (row.respiratoryTenth == null ||
+          row.respiratoryTenth < NON_HUMAN_BREATHING_RATE * 10),
+    )
+    .slice(0, 21)
+    .map((row) => ({
+      restingHeartRate: row.restingHeartRate,
+      hrv: row.hrv,
+      respiratoryRate: fromTenth(row.respiratoryTenth),
+    }));
+  // Too little stored history to stand on its own: fall back to stored plus
+  // the batch, which is at least no worse than before.
+  const baseline = robustBaseline(
+    own.length >= MIN_BASELINE_NIGHTS
+      ? own
+      : [
+          ...own,
+          ...metrics.map((m) => ({
+            restingHeartRate: m.restingHeartRate,
+            hrv: m.hrv,
+            respiratoryRate: m.respiratoryRate,
+          })),
+        ],
+  );
+  const stays = await guestStayNights(email);
+  for (const metric of metrics) {
+    const stay = stays.get(metric.night);
+    if (stay) {
+      metric.notMe = true;
+      metric.identityConfirmed = true;
+      metric.identityReason = stay;
+      continue;
+    }
+    const verdict = identityCheck(
+      {
+        restingHeartRate: metric.restingHeartRate,
+        hrv: metric.hrv,
+        respiratoryRate: metric.respiratoryRate,
+      },
+      baseline,
+    );
+    metric.notMe = verdict.someoneElse;
+    metric.identityReason = verdict.someoneElse ? verdict.reason : null;
+  }
+}
+
 export async function persistNightMetrics(
   email: string,
   metrics: NightMetric[],
@@ -230,6 +384,15 @@ export async function persistNightMetrics(
   if (metrics.length === 0) return { ok: true };
   try {
     const nights = metrics.map((m) => m.night);
+    try {
+      await judgeIdentity(email, metrics);
+    } catch (error) {
+      // Keep the batch verdict rather than lose the write.
+      console.error(
+        `Identity re-check failed for ${email}:`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
 
     // A night's score is FROZEN once stored. The bedtime-consistency term is
     // measured against the circular mean of whatever window we happen to
@@ -303,7 +466,8 @@ export async function persistNightMetrics(
         // A person's own answer always wins over the inference, so a night
         // already confirmed keeps its verdict when it is re-synced.
         notMe: confirmed.get(m.night) ?? m.notMe ?? null,
-        identityConfirmed: confirmedFlag.has(m.night) ? true : null,
+        identityConfirmed:
+          confirmedFlag.has(m.night) || m.identityConfirmed ? true : null,
         identityReason: confirmed.has(m.night) ? null : (m.identityReason ?? null),
         tosses: m.tosses,
         wakeCount: m.wakeCount,
@@ -344,12 +508,39 @@ export async function syncNightMetrics(
   timezone: string,
   pages: number,
 ): Promise<NightMetric[]> {
-  const metrics = sessionsToMetrics(
-    await fetchPodSessions(token, userId, pages),
-    timezone,
-  );
+  const sessions = await fetchPodSessions(token, userId, pages);
+  const metrics = sessionsToMetrics(sessions, timezone);
   await persistNightMetrics(email, metrics);
+  await purgeNonNights(email, nonNightKeys(sessions, timezone));
   return metrics;
+}
+
+/**
+ * Remove stored pod rows for wake dates that, on the current rule, were not
+ * nights at all. Never touches an Apple Health row or a date with a real
+ * night. Never throws.
+ */
+export async function purgeNonNights(email: string, nights: string[]): Promise<number> {
+  if (nights.length === 0) return 0;
+  try {
+    const removed = await db
+      .delete(nightMetrics)
+      .where(
+        and(
+          eq(nightMetrics.email, email),
+          eq(nightMetrics.source, "pod"),
+          inArray(nightMetrics.night, nights),
+        ),
+      )
+      .returning({ night: nightMetrics.night });
+    return removed.length;
+  } catch (error) {
+    console.error(
+      `Could not remove non-night rows for ${email}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+    return 0;
+  }
 }
 
 function rowToMetric(row: typeof nightMetrics.$inferSelect): NightMetric {

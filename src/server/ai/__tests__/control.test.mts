@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import {
-  buildLedger, decide, livePressure, MIN_HOLD_NIGHTS,
+  buildLedger, decide, evidenceGate, livePressure, MIN_HOLD_NIGHTS,
   type ProfileLevels, type ScoredNight,
 } from "../control";
 
@@ -319,3 +319,49 @@ console.log("\nall control-law assertions passed");
   );
 }
 console.log("manual-override assertions passed");
+
+// --- nothing new to learn from: hold ------------------------------------
+// 18 Sep - 3 Oct 2026, both owners away: the morning pass moved the profiles
+// seven times between them on evidence that never grew.
+{
+  const away = evidenceGate({
+    newestOwnNight: "2026-09-18",
+    lastChangeNight: "2026-09-23",
+    todayKey: "2026-09-28",
+    awayBackOn: "2026-10-04",
+  });
+  assert.ok(away && away.blocksReports, "away: hold, and old reports do not vote");
+
+  const unmeasured = evidenceGate({
+    newestOwnNight: "2026-09-18",
+    lastChangeNight: "2026-09-23",
+    todayKey: "2026-09-28",
+    awayBackOn: null,
+  });
+  assert.ok(unmeasured && !unmeasured.blocksReports, "a change nobody slept on is not judged");
+
+  const stale = evidenceGate({
+    newestOwnNight: "2026-09-18",
+    lastChangeNight: "2026-09-10",
+    todayKey: "2026-09-28",
+    awayBackOn: null,
+  });
+  assert.ok(stale, "no night for ten days: nothing new to act on");
+
+  const fresh = evidenceGate({
+    newestOwnNight: "2026-10-05",
+    lastChangeNight: "2026-10-04",
+    todayKey: "2026-10-05",
+    awayBackOn: null,
+  });
+  assert.equal(fresh, null, "last night was yours and slept on the change: proceed");
+
+  const lateSession = evidenceGate({
+    newestOwnNight: "2026-10-04",
+    lastChangeNight: "2026-10-01",
+    todayKey: "2026-10-05",
+    awayBackOn: null,
+  });
+  assert.equal(lateSession, null, "one night of slack for a session still being written");
+  console.log("ok  no fresh night of your own, no change");
+}

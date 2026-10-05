@@ -32,6 +32,16 @@
 /** Minutes after bedtime before an absence is inferred from silence. */
 export const EMPTY_BED_GRACE_MIN = 60;
 
+/**
+ * Empty nights in a row after which the bed stops pre-heating and waits for
+ * somebody instead. Measured 18 Sep - 3 Oct 2026: with nobody home, each side
+ * still pre-heated for two hours every evening before the inferred shutoff
+ * could fire, because silence an hour past bedtime is the earliest an absence
+ * can be inferred. Two empty nights is a pattern; after that the first sign
+ * of a person (a session with a human heart rate) re-arms the schedule.
+ */
+export const EMPTY_NIGHTS_BEFORE_WAITING = 2;
+
 export interface PresenceInput {
   /** Is a planned-away window active for tonight? */
   away: boolean;
@@ -50,12 +60,26 @@ export interface PresenceInput {
   heating: boolean;
   /** Did we already switch the side off for emptiness tonight? */
   shutOffForEmptyBed: boolean;
+  /**
+   * How many nights in a row, ending last night, nobody turned up and the
+   * side was switched off for emptiness. Optional so older callers and tests
+   * keep the plain behaviour.
+   */
+  emptyNightsInARow?: number;
 }
 
 export type PresenceAction =
   | { kind: "away"; reason: string }
   | { kind: "shut-off-empty"; reason: string }
   | { kind: "re-arm"; reason: string }
+  /**
+   * Already switched off for emptiness and still nobody here: leave the side
+   * exactly as it is. Without this the scheduler fell through to its stage
+   * boundaries and switched an empty bed back ON at every one of them, which
+   * the next tick switched off again: 18 Sep - 3 Oct 2026 show the same
+   * on-off pair at every boundary, every night, on both sides.
+   */
+  | { kind: "stay-off" }
   | { kind: "none" };
 
 export function presenceDecision(input: PresenceInput): PresenceAction {
@@ -81,8 +105,21 @@ export function presenceDecision(input: PresenceInput): PresenceAction {
     };
   }
 
-  if (!input.shutoffEnabled || !inCycle || input.shutOffForEmptyBed) {
-    return { kind: "none" };
+  // Off for emptiness and nobody has arrived: hands off until somebody does.
+  // Not even a stage boundary may switch it back on.
+  if (input.shutOffForEmptyBed && inCycle) return { kind: "stay-off" };
+
+  if (!input.shutoffEnabled || !inCycle) return { kind: "none" };
+
+  // Nobody has slept here for a while: do not pre-heat on the off chance.
+  // Fires from the first tick of the cycle, heating or not, so it is logged
+  // once and every later tick of the night sees "stay-off".
+  const emptyNights = input.emptyNightsInARow ?? 0;
+  if (emptyNights >= EMPTY_NIGHTS_BEFORE_WAITING && !input.somebodyInBed) {
+    return {
+      kind: "shut-off-empty",
+      reason: `Nobody has slept here for ${emptyNights} nights, so the bed is not pre-heating. It starts the moment somebody gets in.`,
+    };
   }
 
   // Before bedtime the bed is SUPPOSED to be empty: pre-heating exists so it
@@ -99,11 +136,18 @@ export function presenceDecision(input: PresenceInput): PresenceAction {
   };
 }
 
-/** Is a planned-away window covering the night now being driven? */
+/**
+ * Is a planned-away window covering the night now being driven?
+ *
+ * `backOn` is the date the sleeper is HOME AGAIN, and that night the bed runs.
+ * It used to be an inclusive "away until": on 4 Oct 2026 Nathan came home on
+ * the date he had entered, found the bed still off for the night, and had to
+ * clear the setting by hand at 22:44. People name the day they get back.
+ */
 export function isAway(
-  awayUntil: string | null | undefined,
+  backOn: string | null | undefined,
   todayKey: string,
 ): boolean {
-  if (!awayUntil) return false;
-  return todayKey <= awayUntil;
+  if (!backOn) return false;
+  return todayKey < backOn;
 }

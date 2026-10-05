@@ -44,12 +44,15 @@ import {
   livePressure,
   MIN_HOLD_NIGHTS,
   STAGES,
+  evidenceGate,
+  type Decision,
   type LedgerEntry,
   type LivePressure,
   type ScoredNight,
   type Stage,
 } from "./control";
 import { minutesSinceTimeOfDay } from "./time";
+import { isAway } from "./presence";
 import {
   readNightMetrics,
   shiftDate,
@@ -172,6 +175,8 @@ interface ExperimentHistory {
   lockDirection: Partial<Record<Stage, "cooler" | "warmer">>;
   /** The wake date of the first night the held change actually ran on. */
   lastChangeNight: string | null;
+  /** Wake date of the newest night that was the owner's and scoreable. */
+  newestOwnNight: string | null;
 }
 
 /**
@@ -244,7 +249,11 @@ export function holdFromRecommendations(
   const lockDirection: Partial<Record<Stage, "cooler" | "warmer">> = {};
   let heldNights = 99;
   // A change made on D governs the night woken from on D+1, so that is the
-  // first night a report could be about.
+  // first night a report could be about. This is the NEWEST change of any
+  // age, not only one still under hold: it decides which comfort reports are
+  // spent, and a report does not become fresh again because the change it
+  // caused has finished being measured. (It used to, and the same "too hot"
+  // from 14 Sep cooled Nathan's middle stage on 22 Sep, 28 Sep and 3 Oct.)
   let lastChangeNight: string | null = null;
   for (const rec of recent) {
     if (rec.forDate >= todayKey) continue; // today's own row, if any
@@ -264,6 +273,10 @@ export function holdFromRecommendations(
     ]);
     const anyChange = changed.some(([, did]) => did);
     if (anyChange) {
+      const governedKey = shiftDate(rec.forDate, 1);
+      if (lastChangeNight == null || governedKey > lastChangeNight) {
+        lastChangeNight = governedKey;
+      }
       const since = nightsTesting(rec.forDate);
       heldNights = Math.min(heldNights, since);
       // Locked until real nights have judged it — never because a date slid
@@ -274,12 +287,6 @@ export function holdFromRecommendations(
           locked.add(stage);
           // Newest recommendation wins: the loop reads them newest-first.
           lockDirection[stage] ??= to < from ? "cooler" : "warmer";
-        }
-        const governed = new Date(`${rec.forDate}T12:00:00Z`);
-        governed.setUTCDate(governed.getUTCDate() + 1);
-        const key = governed.toISOString().slice(0, 10);
-        if (lastChangeNight == null || key > lastChangeNight) {
-          lastChangeNight = key;
         }
       }
     }
@@ -307,8 +314,22 @@ async function stagesLockedByRecentChanges(
       ),
     )
     .orderBy(desc(aiRecommendations.forDate))
-    .limit(MIN_HOLD_NIGHTS + 2);
-  return holdFromRecommendations(recent, measuredNights, todayKey);
+    .limit(90);
+  // Only recommendations that CHANGED something bear on a hold. The window
+  // used to be the newest MIN_HOLD_NIGHTS + 2 rows, but the daily pass writes
+  // a row every morning, so four no-change mornings pushed the last real
+  // change out of view: the lock vanished, its reports became unspent, and
+  // the same stale evidence moved the profile again every fifth day while
+  // nobody was home (18 Sep - 3 Oct 2026, both sides, three times each).
+  const changes = recent.filter(
+    (rec) =>
+      rec.previousInitialLevel !== rec.recommendedInitialLevel ||
+      (rec.previousDeepLevel ?? rec.previousMidLevel) !==
+        (rec.recommendedDeepLevel ?? rec.recommendedMidLevel) ||
+      rec.previousMidLevel !== rec.recommendedMidLevel ||
+      rec.previousFinalLevel !== rec.recommendedFinalLevel,
+  );
+  return holdFromRecommendations(changes.slice(0, 12), measuredNights, todayKey);
 }
 
 /**
@@ -430,6 +451,7 @@ async function buildExperimentHistory(
     pressure: [],
     lockDirection: {},
     lastChangeNight: null,
+    newestOwnNight: scoredNights.at(-1)?.date ?? null,
   };
   result.lockedStages = hold.locked;
   result.nightsOnCurrentProfile = hold.heldNights;
@@ -690,6 +712,9 @@ function inferStage(
  * warm — so a plain "it was too hot towards morning" is the highest-quality
  * evidence available and is treated as such: it can move a stage on its own.
  */
+/** A comfort report older than this no longer votes. */
+const COMFORT_REPORT_MAX_AGE_DAYS = 7;
+
 async function readComfort(
   email: string,
   todayKey: string,
@@ -733,8 +758,15 @@ async function readComfort(
     // night keyed D+1, so a report with night > D is the outcome of the
     // current profile; anything at or before D was already on the table
     // when that change was made.
+    // Somebody else's night is not the owner's comfort, and a report more
+    // than a week old describes a profile that has very likely moved since.
+    const foreign = await foreignNights(email);
+    const oldest = shiftDate(todayKey, -COMFORT_REPORT_MAX_AGE_DAYS);
     let rows = allRows.filter(
-      (row) => lastChangeNight == null || row.night > lastChangeNight,
+      (row) =>
+        (lastChangeNight == null || row.night > lastChangeNight) &&
+        row.night >= oldest &&
+        !foreign.has(row.night),
     );
     // Directions conflicting among the remaining reports resolve to the
     // NEWEST report, never to a majority of older ones.
@@ -792,7 +824,6 @@ async function readComfort(
         };
       }
     }
-    void todayKey;
     return { lines, consistent };
   } catch (error) {
     console.error(
@@ -929,7 +960,17 @@ export async function generateRecommendationForUser(
   // Sleep-onset latency belongs to the first stage only.
   const latencyAt = (stage: Stage) =>
     stage === "initial" ? (session?.sleepLatencyMinutes ?? null) : null;
-  const decision = decide({
+  // Nothing new to learn from (away, an empty bed, a change not yet slept
+  // on): hold, whatever the older evidence says.
+  const gate = evidenceGate({
+    newestOwnNight: history.newestOwnNight,
+    lastChangeNight: history.lastChangeNight,
+    todayKey,
+    awayBackOn: isAway(settings.awayUntil, todayKey) ? settings.awayUntil : null,
+  });
+  const decision: Decision = gate
+    ? { kind: "hold", reason: gate.reason }
+    : decide({
     current: currentLevels,
     ledger: history.ledger,
     pressure: history.pressure,
@@ -941,7 +982,7 @@ export async function generateRecommendationForUser(
   });
 
   let recommendation: AiRecommendation;
-  const reported = comfort.consistent;
+  const reported = gate?.blocksReports ? null : comfort.consistent;
   // A hold exists to let an experiment RUN. A report about a night the held
   // change actually ran on IS that experiment's result — "still too hot after
   // you cooled it" is the answer, not noise to wait through. The hold only

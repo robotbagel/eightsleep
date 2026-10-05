@@ -644,6 +644,11 @@ export const userRouter = createTRPCRouter({
         role: z.enum(SHARE_ROLES),
         label: z.string().max(60).nullable(),
         days: z.number().int().min(1).max(GUEST_LINK_MAX_DAYS).nullable(),
+        startsOn: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .nullable()
+          .optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -653,6 +658,7 @@ export const userRouter = createTRPCRouter({
         role: input.role,
         label: input.label,
         days: input.days,
+        startsOn: input.startsOn ?? null,
       });
       return issued;
     }),
