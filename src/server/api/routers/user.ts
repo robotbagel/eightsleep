@@ -800,6 +800,8 @@ export const userRouter = createTRPCRouter({
         /** Hypnogram: consecutive runs from sessionStart, seconds each. */
         stages: { stage: string; duration: number }[];
         stageHours: Record<string, number>;
+        /** What the bedroom phone heard (sound.ts), for the chart. */
+        sounds: { at: string; kind: string; aboveQuietDb: number | null }[];
       } | null = null;
       let metrics: NightMetric | null = null;
       let availableNights: string[] = [];
@@ -868,6 +870,11 @@ export const userRouter = createTRPCRouter({
                 duration: s.duration,
               })),
               stageHours,
+              sounds: (chosen.soundEvents ?? []).map((e) => ({
+                at: e.at.toISOString(),
+                kind: e.kind,
+                aboveQuietDb: e.aboveQuietDb,
+              })),
             };
             // ONE source of truth. This used to hand back the freshly
             // computed row, while every other view read the stored one — so

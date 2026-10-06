@@ -156,8 +156,10 @@ export async function soundEventsBetween(from: Date, to: Date): Promise<SoundEve
 }
 
 interface SessionForSound {
+  ts?: string | null;
   sleepStart?: string | null;
   sleepEnd?: string | null;
+  presenceEnd?: string | null;
   timeseries?: {
     shortAwakes?: [string, number][] | null;
     tnt?: [string, number][] | null;
@@ -180,15 +182,27 @@ export async function attachSounds<T extends SessionForSound>(sessions: T[]): Pr
     }))
     .filter((x) => !isNaN(x.start) && !isNaN(x.end));
   if (spans.length === 0) return;
+  // The chart shows everything heard while someone was in bed (TV time and
+  // the last lie-in included); the matching below uses the sleep window only.
+  const inBed = (s: T, fallback: number) => {
+    const t = s.ts ? Date.parse(s.ts) : NaN;
+    return isNaN(t) ? fallback : Math.min(t, fallback);
+  };
+  const outOfBed = (s: T, fallback: number) => {
+    const t = s.presenceEnd ? Date.parse(s.presenceEnd) : NaN;
+    return isNaN(t) ? fallback : Math.max(t, fallback);
+  };
   const events = await soundEventsBetween(
-    new Date(Math.min(...spans.map((x) => x.start)) - SOUND_LEAD_MS),
-    new Date(Math.max(...spans.map((x) => x.end))),
+    new Date(Math.min(...spans.map((x) => inBed(x.s, x.start - SOUND_LEAD_MS)))),
+    new Date(Math.max(...spans.map((x) => outOfBed(x.s, x.end)))),
   );
   if (events.length === 0) return;
   for (const { s, start, end } of spans) {
+    const from = inBed(s, start - SOUND_LEAD_MS);
+    const to = outOfBed(s, end);
     s.soundEvents = events.filter((e) => {
       const t = e.at.getTime();
-      return t >= start - SOUND_LEAD_MS && t <= end;
+      return t >= from && t <= to;
     });
     s.sound = soundNight(
       events,

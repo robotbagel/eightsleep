@@ -13,6 +13,56 @@ import {
   type Point,
   type StageKey,
 } from "./chartUtils";
+import LordIcon from "../ui/lordIcon";
+import { soundLabel } from "~/lib/soundLabels";
+
+/**
+ * Groups sounds whose icons would overlap: the cluster takes the most common
+ * kind for its icon and lists every sound in its label.
+ */
+function soundClusters(
+  sounds: NightSound[],
+  x: (t: number) => number,
+  minGapPx: number,
+): { at: number; kind: string; count: number; label: string }[] {
+  const sorted = [...sounds].sort((a, b) => a.at - b.at);
+  const groups: NightSound[][] = [];
+  for (const s of sorted) {
+    const last = groups[groups.length - 1];
+    if (last && x(s.at) - x(last[0]!.at) < minGapPx) last.push(s);
+    else groups.push([s]);
+  }
+  return groups.map((group) => {
+    const tally = new Map<string, number>();
+    for (const s of group) tally.set(s.kind, (tally.get(s.kind) ?? 0) + 1);
+    const kind = [...tally.entries()].sort((a, b) => b[1] - a[1])[0]![0];
+    return {
+      at: group[0]!.at,
+      kind,
+      count: group.length,
+      label: [...tally.entries()]
+        .map(([k, n]) => `${n > 1 ? `${n}× ` : ""}${soundLabel(k)}`)
+        .join(", "),
+    };
+  });
+}
+
+/** Something the bedroom phone heard (sound.ts). */
+export interface NightSound {
+  at: number;
+  kind: string;
+  aboveQuietDb: number | null;
+}
+
+/** One Grunkicon per family of sound, so a glance reads "cat" or "door". */
+export function soundIcon(kind: string): string {
+  if (kind.startsWith("cat")) return "cat";
+  if (kind.startsWith("dog")) return "dog";
+  if (kind.startsWith("door") || kind === "knock" || kind === "thump_thud") return "door";
+  if (kind === "snoring") return "snore";
+  if (["speech", "laughter", "cough", "baby_crying"].includes(kind)) return "chat";
+  return "speaker";
+}
 
 export interface NightEvent {
   at: number;
@@ -32,6 +82,8 @@ interface Props {
   room: Point[];
   tosses: number[];
   events: NightEvent[];
+  /** Sounds heard in the room; drawn as icons above the hypnogram. */
+  sounds?: NightSound[];
 }
 
 // Geometry. One viewBox, three stacked panels sharing the same time axis —
@@ -45,9 +97,13 @@ const X0 = GUTTER;
 
 /** Vertical geometry grows a little with the card so a wide desktop chart does
  *  not look like a letterbox, while a 375px phone stays compact. */
-function layoutFor(width: number) {
+function layoutFor(width: number, withSounds: boolean) {
   const k = Math.min(Math.max(width / 420, 1), 1.7);
-  const LANE_TOP = 8;
+  // A row of sound icons sits above the hypnogram when there is anything to
+  // show, so a meow lines up with the awake block under it.
+  const SOUND_TOP = 4;
+  const SOUND_H = withSounds ? Math.round(24 * k) : 0;
+  const LANE_TOP = SOUND_TOP + SOUND_H + (withSounds ? 6 : 4);
   const LANE_H = Math.round(22 * k);
   const BLOCK_H = Math.round(14 * k);
   const TEMP_TOP = LANE_TOP + LANE_H * 4 + Math.round(18 * k);
@@ -55,6 +111,8 @@ function layoutFor(width: number) {
   const RAIL_TOP = TEMP_TOP + TEMP_H + Math.round(14 * k);
   const RAIL_H = Math.round(16 * k);
   return {
+    SOUND_TOP,
+    SOUND_H,
     LANE_TOP,
     LANE_H,
     BLOCK_H,
@@ -86,6 +144,7 @@ export const NightChart: React.FC<Props> = ({
   room,
   tosses,
   events,
+  sounds = [],
 }) => {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
@@ -104,8 +163,18 @@ export const NightChart: React.FC<Props> = ({
   }, []);
 
   const X1 = W - 6;
-  const { LANE_TOP, LANE_H, BLOCK_H, TEMP_TOP, TEMP_H, RAIL_TOP, RAIL_H, H } =
-    layoutFor(W);
+  const {
+    SOUND_TOP,
+    SOUND_H,
+    LANE_TOP,
+    LANE_H,
+    BLOCK_H,
+    TEMP_TOP,
+    TEMP_H,
+    RAIL_TOP,
+    RAIL_H,
+    H,
+  } = layoutFor(W, sounds.length > 0);
 
   const model = useMemo(() => {
     // ---- time domain -----------------------------------------------------
@@ -117,6 +186,7 @@ export const NightChart: React.FC<Props> = ({
     for (const [t] of room) candidates.push(t);
     for (const t of tosses) candidates.push(t);
     for (const e of events) candidates.push(e.at);
+    for (const s of sounds) candidates.push(s.at);
     if (candidates.length < 2) return null;
     const t0 = Math.min(...candidates);
     const t1 = Math.max(...candidates);
@@ -175,6 +245,7 @@ export const NightChart: React.FC<Props> = ({
     room,
     tosses,
     events,
+    sounds,
     X1,
     TEMP_TOP,
     TEMP_H,
@@ -204,6 +275,9 @@ export const NightChart: React.FC<Props> = ({
       stage: run?.stage ?? null,
       bed: nearest(bed),
       room: nearest(room),
+      // Sounds within three minutes either side, so a hover over an awake
+      // block names whatever was heard just before it.
+      sounds: sounds.filter((s) => Math.abs(s.at - time) <= 3 * 60_000),
     };
   };
 
@@ -322,6 +396,22 @@ export const NightChart: React.FC<Props> = ({
           );
         })}
 
+        {/* Each sound drops a faint line through the hypnogram, so you can
+            see for yourself whether an awake block follows it. */}
+        {sounds.map((s, index) => (
+          <line
+            key={`sound-${index}`}
+            x1={x(s.at)}
+            x2={x(s.at)}
+            y1={SOUND_TOP + SOUND_H}
+            y2={LANE_TOP + LANE_H * 4}
+            stroke="var(--warning)"
+            strokeWidth="1"
+            strokeDasharray="2 3"
+            opacity="0.6"
+          />
+        ))}
+
         {/* ---- Panel 2: temperature (both series in °C, one axis) -------- */}
         {roomPath && (
           <path
@@ -414,6 +504,41 @@ export const NightChart: React.FC<Props> = ({
           </>
         )}
       </svg>
+
+        {/* Sound icons: HTML over the chart so they are real animated
+            Grunkicons at a fixed size. Sounds closer than an icon's width
+            share one icon with a count. */}
+        {soundClusters(sounds, x, 18).map((cluster) => (
+          <span
+            key={`sc-${cluster.at}`}
+            id={`sc-${cluster.at}`}
+            className="absolute flex -translate-x-1/2 items-center"
+            style={{
+              left: `${(x(cluster.at) / W) * 100}%`,
+              top: SOUND_TOP,
+              height: SOUND_H,
+            }}
+            title={cluster.label}
+            aria-label={cluster.label}
+            role="img"
+          >
+            <LordIcon
+              name={soundIcon(cluster.kind)}
+              size={Math.min(SOUND_H, 20)}
+              trigger="hover"
+              target={`#sc-${cluster.at}`}
+              color="var(--warning)"
+            />
+            {cluster.count > 1 && (
+              <span
+                className="tabular -ml-0.5 text-[10px] font-semibold"
+                style={{ color: "var(--warning)" }}
+              >
+                {cluster.count}
+              </span>
+            )}
+          </span>
+        ))}
       </div>
 
       <div className="relative mt-1 h-4">
@@ -466,6 +591,12 @@ export const NightChart: React.FC<Props> = ({
               Room {reading.room.toFixed(1)}°C
             </div>
           )}
+          {reading.sounds.map((s) => (
+            <div key={`ts-${s.at}-${s.kind}`} className="tabular" style={{ color: "var(--warning)" }}>
+              {clockIn(s.at, timezone)} {soundLabel(s.kind)}
+              {s.aboveQuietDb != null ? `, +${Math.round(s.aboveQuietDb)} dB` : ""}
+            </div>
+          ))}
         </div>
       )}
 
@@ -476,6 +607,9 @@ export const NightChart: React.FC<Props> = ({
         <LegendKey color="var(--stage-awake)" label="Toss & turn" tick />
         <LegendKey color="var(--accent)" label="Scheduled change" dot />
         <LegendKey color="var(--warm)" label="Live nudge" dot />
+        {sounds.length > 0 && (
+          <LegendKey color="var(--warning)" label="Sound heard" tick />
+        )}
       </div>
     </div>
   );

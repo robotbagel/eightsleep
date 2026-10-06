@@ -3,3 +3,4 @@ Secrets.xcconfig
 SleepSync.xcodeproj/
 build/
 *.xcarchive
+build-sim/

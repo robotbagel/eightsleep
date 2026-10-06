@@ -84,6 +84,14 @@ export default function PreviewClient() {
         tnt: fixture.tnt, tempBedC: fixture.tempBedC, tempRoomC: fixture.tempRoomC,
         heartRate: fixture.heartRate, hrv: fixture.hrv, respiratoryRate: [],
         shortAwakes: fixture.shortAwakes, stages: fixture.stages,
+        // Synthetic sounds for the chart's sound row: a meow right before a
+        // short wake, a thud, and two meows close together (one cluster).
+        sounds: [
+          { at: new Date(Date.parse(fixture.sleepStart) + 95 * 60_000).toISOString(), kind: "cat_meow", aboveQuietDb: 18 },
+          { at: new Date(Date.parse(fixture.sleepStart) + 96 * 60_000).toISOString(), kind: "cat_meow", aboveQuietDb: 21 },
+          { at: new Date(Date.parse(fixture.sleepStart) + 210 * 60_000).toISOString(), kind: "thump_thud", aboveQuietDb: 24 },
+          { at: new Date(Date.parse(fixture.sleepStart) + 330 * 60_000).toISOString(), kind: "snoring", aboveQuietDb: 9 },
+        ],
         stageHours: {
           deep: Math.round((fixture.stageSummary.deepDuration / 3600) * 100) / 100,
           rem: Math.round((fixture.stageSummary.remDuration / 3600) * 100) / 100,

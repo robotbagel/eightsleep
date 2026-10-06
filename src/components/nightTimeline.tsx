@@ -137,6 +137,11 @@ export const NightDetail: React.FC<{
         room={room}
         tosses={tosses}
         events={chartEvents}
+        sounds={(session?.sounds ?? []).map((s) => ({
+          at: Date.parse(s.at),
+          kind: s.kind,
+          aboveQuietDb: s.aboveQuietDb,
+        }))}
       />
 
       <button
