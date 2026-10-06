@@ -63,5 +63,12 @@ They watch ~45 min on the bedroom projector before sleeping; the pod counted it 
 ## Apple Watch sync (2026-10-05)
 Manual Shortcut imports were abandoned after one use (Nathan won't add a daily step). **`ios/SleepSync`**: SwiftUI companion app, bundle `now.geshido.sleepsync`, team WCV67Q95XA, HealthKit background delivery on sleepAnalysis. It posts each new Watch night (Watch-sourced samples only, nights >= 3 h, plus HR/HRV/breathing averages) to `/api/healthImport`; the first run backfills 45 days. The token is in gitignored `ios/SleepSync/Secrets.xcconfig` (`aiDebug?action=healthtoken`). Installed straight to Nathan's iPhone 15 Pro over Wi-Fi with `devicectl` (no TestFlight); **the development profile expires 2027-10-05**, so rebuild and reinstall before then: `xcodegen generate && xcodebuild ... -allowProvisioningUpdates -authenticationKey* build`, then `devicectl device install app`. Apple's own Sleep Score is NOT readable by any app; the "Apple Watch" score shown is our Apple-fitted rubric on the Watch's stages.
 
+## Night sounds + lost signal (2026-10-06)
+- Sleep Sync 1.0 (2) adds `NightListener` (SoundAnalysis `.version1` classifier + level meter vs the room's 10th-percentile quiet), uploads every 5 min to `/api/soundEvents` (health token), Live Activity while listening, App Intents Start/Stop for Shortcuts. iOS only allows starting recording in the foreground (Apple forum 815725), so Start opens the app.
+- `sound.ts` matches sounds to pod wake-ups/tosses with a chance baseline (`likelyCause`); live tuner ignores tosses within 2 min after a sound. `nightMetrics.soundJson`.
+- Lost signal: a session that opens 20+ min before the first vitals counts from the first reading (`signalGapHours`); 5-6 Oct Laurence read nothing 23:30-02:10 and the pod called it 2h55 awake. Night card explains; insights skip the duration verdict.
+- A harmless `setup_test` sound row exists at 2026-10-06 ~08:2x UTC (daytime, outside any sleep window).
+- First listening night not yet observed. Nathan sets two Shortcuts automations (Bedtime Begins -> Start Night Listening; Waking Up -> Stop).
+
 ## Open items
 - Both profiles drifted while away (Nathan mid 26.3 -> 24.8, deep 26.5 -> 26; Laurence deep 28.6 -> 30.2), all from stale evidence. Restoring the pre-holiday profiles is Nathan's call.
