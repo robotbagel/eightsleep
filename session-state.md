@@ -70,5 +70,8 @@ Manual Shortcut imports were abandoned after one use (Nathan won't add a daily s
 - A harmless `setup_test` sound row exists at 2026-10-06 ~08:2x UTC (daytime, outside any sleep window).
 - First listening night not yet observed. Nathan sets two Shortcuts automations (Bedtime Begins -> Start Night Listening; Waking Up -> Stop).
 
+## Bedroom camera listener (2026-10-06)
+Phone listening can't start without a foreground tap (iOS), Nathan dozes off, so the Eufy Indoor Cam E220 (T8410C, 192.168.50.226, MAC 90:bf:d9 "Smart Innovation") is used instead. NAS container `night-ears` (`/volume2/docker/stacks/night-ears`, src `deploy/night-ears`, host network because Docker has no free address pools) pulls its RTSP 21:00-10:00: YAMNet sounds + EfficientDet-Lite2 animal-on-motion → `/api/soundEvents` (kind `cat_moving` for sight). Camera link goes in `~/.config/8sleep/rtsp-url` (600) on the NAS, token in `sound-token`. **Waiting on Nathan to enable RTSP** in the Eufy app (Settings → Storage → NAS (RTSP)); the camera's RTSP server answered but had no stream. Once it works, his two phone shortcuts can go.
+
 ## Open items
 - Both profiles drifted while away (Nathan mid 26.3 -> 24.8, deep 26.5 -> 26; Laurence deep 28.6 -> 30.2), all from stale evidence. Restoring the pre-holiday profiles is Nathan's call.
