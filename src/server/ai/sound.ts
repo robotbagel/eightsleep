@@ -21,6 +21,7 @@ import { and, asc, gte, lte } from "drizzle-orm";
 import { db } from "~/server/db";
 import { soundEvents } from "~/server/db/schema";
 import { soundVerdict } from "~/lib/soundStats";
+import { screenEventsBetween } from "./screen";
 
 export interface SoundEvent {
   at: Date;
@@ -192,9 +193,21 @@ export async function attachSounds<T extends SessionForSound>(sessions: T[]): Pr
     const t = s.presenceEnd ? Date.parse(s.presenceEnd) : NaN;
     return isNaN(t) ? fallback : Math.max(t, fallback);
   };
-  const events = await soundEventsBetween(
-    new Date(Math.min(...spans.map((x) => inBed(x.s, x.start - SOUND_LEAD_MS)))),
-    new Date(Math.max(...spans.map((x) => outOfBed(x.s, x.end)))),
+  const from = new Date(Math.min(...spans.map((x) => inBed(x.s, x.start - SOUND_LEAD_MS))));
+  const to = new Date(Math.max(...spans.map((x) => outOfBed(x.s, x.end))));
+  // While the projector is on, the room is full of the show: its dialogue and
+  // music are not night sounds. Cat sounds and cat movement still count.
+  const screen = await screenEventsBetween(from, to);
+  const screenOn = (t: number): boolean => {
+    let on = false;
+    for (const e of screen) {
+      if (e.at.getTime() > t) break;
+      on = e.state === "on";
+    }
+    return on;
+  };
+  const events = (await soundEventsBetween(from, to)).filter(
+    (e) => e.kind.startsWith("cat") || !screenOn(e.at.getTime()),
   );
   if (events.length === 0) return;
   for (const { s, start, end } of spans) {
