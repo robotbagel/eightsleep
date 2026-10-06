@@ -1,5 +1,6 @@
 import Foundation
 import HealthKit
+import os
 
 /// Sends each new night of Apple Watch sleep to the sleep app's
 /// /api/healthImport, with no daily step from the sleeper.
@@ -76,15 +77,16 @@ final class HealthSync: ObservableObject {
 
     /// One sync at a time: a launch and a background delivery can arrive
     /// together, and two passes would post the same night twice.
-    private let gate = NSLock()
-    private var running = false
+    private let running = OSAllocatedUnfairLock(initialState: false)
 
     func sync(reason: String) async {
-        gate.lock()
-        if running { gate.unlock(); return }
-        running = true
-        gate.unlock()
-        defer { gate.lock(); running = false; gate.unlock() }
+        let acquired = running.withLock { busy -> Bool in
+            if busy { return false }
+            busy = true
+            return true
+        }
+        guard acquired else { return }
+        defer { running.withLock { $0 = false } }
 
         guard !token.isEmpty, token != "paste-the-token-here" else {
             await setStatus("No connection token in this build")
