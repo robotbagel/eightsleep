@@ -24,7 +24,7 @@ console.log("ok  a sound counts only in the two minutes before");
   assert.deepEqual(night.wakeUpsAfterSound.map((w) => w.kind), ["cat_meow", "thump_thud"]);
   assert.equal(night.tossesAfterSound, 2);
   assert.ok(night.chanceShare < 0.05, "three sounds cover a sliver of a six-hour night");
-  assert.equal(night.likelyCause, true);
+  assert.equal(night.likelyCause, true, "two of three wake-ups after rare sounds is not chance");
   console.log("ok  wake-ups that follow sounds far above chance are called out");
 }
 
@@ -53,3 +53,22 @@ assert.deepEqual(
   [T("01:00"), T("03:00")],
 );
 console.log("ok  wake-ups within ten minutes are one, and outside sleep they do not count");
+
+// --- one coincidence in a night is not enough; the same thing nightly is ----
+import { binomialTail, soundVerdict } from "../../../lib/soundStats";
+{
+  // Sounds cover 3% of the night; 1 of 3 wake-ups follows one.
+  assert.ok(Math.abs(binomialTail(1, 3, 0.03) - 0.0873) < 0.001);
+  const oneNight = soundVerdict([{ wakeUps: 3, afterSound: 1, chanceShare: 0.03 }]);
+  assert.equal(oneNight.likelyCause, false, "one meow before one of three wake-ups could be chance");
+  const aWeek = soundVerdict(
+    Array.from({ length: 5 }, () => ({ wakeUps: 3, afterSound: 1, chanceShare: 0.03 })),
+  );
+  assert.equal(aWeek.likelyCause, true, "the same coincidence five nights running is not chance");
+  assert.equal(aWeek.expected, 0.5);
+  const noisy = soundVerdict(
+    Array.from({ length: 5 }, () => ({ wakeUps: 3, afterSound: 1, chanceShare: 0.4 })),
+  );
+  assert.equal(noisy.likelyCause, false, "in a constantly noisy room, one in three is what chance gives");
+  console.log("ok  few wake-ups are judged by how unlikely they are, pooled across nights");
+}

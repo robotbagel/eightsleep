@@ -20,6 +20,7 @@
 import { and, asc, gte, lte } from "drizzle-orm";
 import { db } from "~/server/db";
 import { soundEvents } from "~/server/db/schema";
+import { soundVerdict } from "~/lib/soundStats";
 
 export interface SoundEvent {
   at: Date;
@@ -42,7 +43,9 @@ export interface SoundNight {
    * well above this.
    */
   chanceShare: number;
-  /** A sound plausibly woke them: more than one, and well above chance. */
+  /** How likely this many wake-ups follow a sound by chance alone. */
+  pValue?: number;
+  /** Too many wake-ups followed a sound to be coincidence (soundStats.ts). */
   likelyCause: boolean;
 }
 
@@ -97,7 +100,9 @@ export function soundNight(
     if (soundBefore(night, t) != null) covered += 1;
   }
   const chanceShare = minutes > 0 ? covered / minutes : 0;
-  const share = wakeUps.length > 0 ? wakeUpsAfterSound.length / wakeUps.length : 0;
+  const verdict = soundVerdict([
+    { wakeUps: wakeUps.length, afterSound: wakeUpsAfterSound.length, chanceShare },
+  ]);
 
   return {
     counts,
@@ -106,8 +111,8 @@ export function soundNight(
     tosses: tosses.length,
     tossesAfterSound,
     chanceShare: Math.round(chanceShare * 100) / 100,
-    likelyCause:
-      wakeUpsAfterSound.length >= 2 && share >= Math.max(0.25, chanceShare * 2),
+    pValue: Math.round(verdict.pValue * 1000) / 1000,
+    likelyCause: verdict.likelyCause,
   };
 }
 

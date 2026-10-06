@@ -10,6 +10,11 @@ import LordIcon from "./ui/lordIcon";
 import { useNightInsight } from "./useNightInsight";
 import { type Contributor } from "~/lib/insights";
 import { soundCountsText, soundLabel } from "~/lib/soundLabels";
+import { soundVerdict } from "~/lib/soundStats";
+
+type NightSound = NonNullable<
+  NonNullable<RouterOutputs["user"]["getNightTimeline"]["metrics"]>["sound"]
+>;
 
 function clockOf(minutes: number | null | undefined): string {
   if (minutes == null) return "—";
@@ -22,7 +27,7 @@ export const NightSummaryCard: React.FC<{
   nav: React.ComponentProps<typeof NightNav>;
   index?: number;
 }> = ({ night, nav, index = 0 }) => {
-  const { timeline: query, metrics, insight } = useNightInsight(night);
+  const { timeline: query, history, metrics, insight } = useNightInsight(night);
   const stageHours = query.data?.session?.stageHours ?? {};
 
   if (query.isLoading) {
@@ -201,7 +206,18 @@ export const NightSummaryCard: React.FC<{
         </p>
       )}
 
-      {metrics.sound && <SoundRow sound={metrics.sound} />}
+      {metrics.sound && (
+        <SoundRow
+          sound={metrics.sound}
+          history={[
+            ...(history.data?.nights ?? [])
+              .filter((n) => n.night !== metrics.night && n.notMe !== true)
+              .map((n) => n.sound)
+              .filter((n): n is NightSound => n != null),
+            metrics.sound,
+          ]}
+        />
+      )}
 
       {(helped.length > 0 || heldBack.length > 0) && (
         <div
@@ -255,24 +271,50 @@ export const NightSummaryCard: React.FC<{
  * waking.
  */
 const SoundRow: React.FC<{
-  sound: NonNullable<
-    NonNullable<RouterOutputs["user"]["getNightTimeline"]["metrics"]>["sound"]
-  >;
-}> = ({ sound }) => {
+  sound: NightSound;
+  /** Every night listened to in the last month, this one included. */
+  history: NightSound[];
+}> = ({ sound, history }) => {
   const total = Object.values(sound.counts).reduce((a, b) => a + b, 0);
   const kinds = [...new Set(sound.wakeUpsAfterSound.map((w) => soundLabel(w.kind)))];
+  const tally = (n: NightSound) => ({
+    wakeUps: n.wakeUps,
+    afterSound: n.wakeUpsAfterSound.length,
+    chanceShare: n.chanceShare,
+  });
+  const pooled = soundVerdict(history.map(tally));
+  const tonight = soundVerdict([tally(sound)]);
+  const flagged = pooled.likelyCause || tonight.likelyCause;
+
+  let verdict: string;
+  if (history.length >= 2) {
+    verdict = `Over the ${pooled.nights} nights listened, ${pooled.afterSound} of ${pooled.wakeUps} wake-ups followed a sound, where chance alone would give about ${pooled.expected.toFixed(1)}. ${
+      pooled.likelyCause
+        ? "That is more than coincidence: noise is waking you."
+        : pooled.afterSound > 0
+          ? "So far that is within what chance gives; more nights will tell."
+          : "Sounds do not seem to be waking you."
+    }`;
+  } else if (tonight.likelyCause) {
+    verdict = "That is more than chance would give, so the noise likely woke you.";
+  } else if (sound.wakeUpsAfterSound.length > 0) {
+    verdict = "One night is too few to tell this from chance; it is added up across nights.";
+  } else {
+    verdict = "";
+  }
+
   return (
     <div
       id="night-sound"
       className="mt-4 flex gap-3 rounded-xl p-3"
-      style={{ background: sound.likelyCause ? "var(--warning-soft)" : "var(--surface-sunken)" }}
+      style={{ background: flagged ? "var(--warning-soft)" : "var(--surface-sunken)" }}
     >
       <LordIcon
         name="microphone"
         size={22}
         trigger="hover"
         target="#night-sound"
-        color={sound.likelyCause ? "var(--warning)" : "var(--text-muted)"}
+        color={flagged ? "var(--warning)" : "var(--text-muted)"}
       />
       <div className="min-w-0">
         <p className="text-sm font-semibold" style={{ color: "var(--text-headline)" }}>
@@ -284,11 +326,8 @@ const SoundRow: React.FC<{
             ? "You did not wake up."
             : sound.wakeUpsAfterSound.length === 0
               ? `None of your ${sound.wakeUps} wake-ups followed a sound.`
-              : `${sound.wakeUpsAfterSound.length} of ${sound.wakeUps} wake-ups came within two minutes of a sound (${kinds.join(", ")})${
-                  sound.likelyCause
-                    ? ", far more often than chance, so the noise is likely what woke you."
-                    : ", about what chance alone would give."
-                }`}
+              : `${sound.wakeUpsAfterSound.length} of ${sound.wakeUps} wake-ups came within two minutes of a sound (${kinds.join(", ")}).`}{" "}
+          {verdict}
         </p>
       </div>
     </div>
