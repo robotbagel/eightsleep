@@ -19,6 +19,8 @@ export interface InsightNight {
   sleepLatencyHours: number | null;
   /** Bedroom screen on in bed before sleep; latency then counts from lights out. */
   screenInBedHours?: number | null;
+  /** Hours the bed could not read anyone; time asleep is then undercounted. */
+  signalGapHours?: number | null;
   restingHeartRate: number | null;
   hrv: number | null;
   respiratoryRate: number | null;
@@ -126,7 +128,9 @@ export function buildInsight(night: InsightNight, history: InsightNight[]): Insi
   };
 
   // Time asleep: half an hour either way is a night anyone would notice.
-  if (night.asleepHours != null) {
+  // Not judged when the bed lost the signal for a while: the sleep in that
+  // gap was never measured, so "short" would be the sensor, not the night.
+  if (night.asleepHours != null && !(night.signalGapHours && night.signalGapHours > 0)) {
     const ref = usual((n) => n.asleepHours);
     const diff = ref == null ? null : night.asleepHours - ref;
     add({

@@ -116,3 +116,14 @@ console.log("ok  the headline never contradicts the score beside it");
   assert.equal(latency.effect, "helped");
   console.log("ok  TV nights are measured from lights out and not compared with TV-inflated ones");
 }
+
+// --- lost signal: a short measured night is not called short ---------------
+{
+  const gap = buildInsight(
+    usual("2026-10-06", { asleepHours: 5.2, signalGapHours: 2.7, thermalScore: 92 }),
+    history,
+  );
+  assert.ok(!gap.contributors.some((c) => c.key === "asleep"), "time asleep is not judged");
+  assert.notEqual(gap.headline, "A Short Night");
+  console.log("ok  sleep the bed could not see is not called a short night");
+}
