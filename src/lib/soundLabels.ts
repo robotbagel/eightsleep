@@ -3,6 +3,7 @@ const LABELS: Record<string, string> = {
   cat_meow: "cat meowing",
   cat_purr: "cat purring",
   cat: "cat",
+  cat_moving: "cat moving (camera)",
   thump_thud: "thud",
   door: "door",
   door_slam: "door slam",

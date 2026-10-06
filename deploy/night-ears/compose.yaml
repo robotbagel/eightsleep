@@ -1,0 +1,29 @@
+# Bedroom camera as a night microphone and cat detector for the sleep app.
+# Runs on Supernova:  cd /volume2/docker/stacks/night-ears && docker compose up -d --build
+# The camera's RTSP link (with its password) lives in rtsp-url, chmod 600,
+# never in this file. Nothing is recorded: audio and frames are analysed in
+# memory and only "what, when, how loud" is sent.
+services:
+  night-ears:
+    build: .
+    container_name: night-ears
+    # Host networking: the NAS has no free Docker network ranges left, and
+    # the camera is on the LAN anyway.
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      RTSP_URL_FILE: /run/secrets/rtsp-url
+      EVENT_URL: "https://8sleep-jade.vercel.app/api/soundEvents"
+      TOKEN_FILE: /run/secrets/sound-token
+      NIGHT_START: "21"
+      NIGHT_END: "10"
+      TZ: Europe/Brussels
+      DEVICE_NAME: "Bedroom camera"
+    volumes:
+      - /home/nathan/.config/8sleep/rtsp-url:/run/secrets/rtsp-url:ro
+      - /home/nathan/.config/8sleep/sound-token:/run/secrets/sound-token:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
