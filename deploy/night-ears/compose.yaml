@@ -19,6 +19,8 @@ services:
       NIGHT_END: "10"
       TZ: Europe/Brussels
       DEVICE_NAME: "Bedroom camera"
+      # Eufy E220's hardware address: found again if moving it changes its IP.
+      CAMERA_MAC: "90:bf:d9:39:7c:cb"
     volumes:
       - /home/nathan/.config/8sleep/rtsp-url:/run/secrets/rtsp-url:ro
       - /home/nathan/.config/8sleep/sound-token:/run/secrets/sound-token:ro

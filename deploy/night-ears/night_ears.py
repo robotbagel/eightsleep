@@ -149,10 +149,52 @@ def is_night() -> bool:
     return hour >= NIGHT_START or hour < NIGHT_END
 
 
+CAMERA_MAC = os.environ.get("CAMERA_MAC", "").lower()
+_moved_to: str | None = None  # the camera's current address, if it changed
+
+
+def find_camera() -> str | None:
+    """The camera's address on the LAN, found by its hardware (MAC) address.
+    Moving the camera to another room can get it a new address from the
+    router; the link file still holds the old one. Touching port 554 on every
+    address fills the neighbour table, which then maps the MAC to its IP."""
+    if not CAMERA_MAC:
+        return None
+    import socket
+    from concurrent.futures import ThreadPoolExecutor
+
+    def touch(ip: str) -> None:
+        with socket.socket() as sock:
+            sock.settimeout(0.5)
+            sock.connect_ex((ip, 554))
+
+    with ThreadPoolExecutor(64) as pool:
+        list(pool.map(touch, [f"192.168.50.{i}" for i in range(2, 255)]))
+    try:
+        for line in open("/proc/net/arp").read().splitlines()[1:]:
+            parts = line.split()
+            if len(parts) >= 4 and parts[3].lower() == CAMERA_MAC:
+                return parts[0]
+    except OSError:
+        pass
+    return None
+
+
+def current_url() -> str:
+    """The link with the camera's present address swapped in, if it moved."""
+    url = rtsp_url()
+    if _moved_to and url.startswith("rtsp://") and "@" in url:
+        creds, rest = url.split("@", 1)
+        path = rest.split("/", 1)[1] if "/" in rest else ""
+        port = ":554"
+        url = f"{creds}@{_moved_to}{port}/{path}"
+    return url
+
+
 def open_stream() -> tuple[subprocess.Popen, int]:
     """ONE connection to the camera, split into sound (stdout) and picture
     (a second pipe): cameras often allow only a couple of RTSP clients."""
-    url = rtsp_url()
+    url = current_url()
     video_read, video_write = os.pipe()
     proc = subprocess.Popen(
         ["ffmpeg", "-loglevel", "error",
@@ -254,6 +296,7 @@ def watch(outbox: Outbox, video) -> None:
 
 
 def main() -> None:
+    global _moved_to
     outbox = Outbox()
 
     def sender() -> None:
@@ -282,8 +325,17 @@ def main() -> None:
         log.info("listening and watching")
         # A dropped stream ends the workers; dawn ends the night. Either way
         # the one ffmpeg is killed, which unblocks both readers.
+        started = time.time()
         while all(w.is_alive() for w in workers) and is_night():
             time.sleep(10)
+        # A stream that died within a minute usually means the camera is not
+        # where the link says: look for it by its MAC address.
+        if is_night() and time.time() - started < 60:
+            found = find_camera()
+            if found:
+                if found != _moved_to:
+                    log.info("camera found at %s", found)
+                _moved_to = found
         proc.kill()
         proc.wait()
         video.close()
