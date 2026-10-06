@@ -262,6 +262,16 @@ export async function GET(request: NextRequest): Promise<Response> {
             n.podLatencyHours == null ? null : Math.round(n.podLatencyHours * 60),
           screenMin:
             n.screenInBedHours == null ? null : Math.round(n.screenInBedHours * 60),
+          signalGapMin:
+            n.signalGapHours == null ? null : Math.round(n.signalGapHours * 60),
+          sounds: n.sound
+            ? {
+                counts: n.sound.counts,
+                wakeUps: n.sound.wakeUps,
+                wakeUpsAfterSound: n.sound.wakeUpsAfterSound.length,
+                likelyCause: n.sound.likelyCause,
+              }
+            : null,
           // The Watch's reading of the same night, when imported.
           watchScore: n.secondOpinion?.score ?? null,
           disagreements: n.secondOpinion?.disagreements ?? [],

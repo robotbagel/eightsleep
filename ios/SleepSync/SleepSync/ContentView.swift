@@ -4,6 +4,7 @@ import SwiftUI
 /// screen exists for the one-time Health permission and to show it is alive.
 struct ContentView: View {
     @ObservedObject var sync: HealthSync
+    @ObservedObject var listener = NightListener.shared
     @State private var busy = false
 
     var body: some View {
@@ -41,6 +42,30 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(busy)
+            }
+            Divider().padding(.vertical, 8)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Night sounds").font(.headline)
+                Text("Hears cats, thuds, doors, snoring and other noises at night, and checks them against the bed's wake-ups. Only the time and type of each sound is sent, never audio.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                if listener.isListening {
+                    Text("Listening · \(listener.heardTonight) heard so far")
+                        .font(.body.weight(.semibold))
+                }
+                if let error = listener.lastError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
+                Button {
+                    Task {
+                        if listener.isListening { await listener.stop() } else { await listener.start() }
+                    }
+                } label: {
+                    Text(listener.isListening ? "Stop listening" : "Start listening tonight")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
             }
             Spacer()
         }

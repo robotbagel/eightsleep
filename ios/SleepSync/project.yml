@@ -10,7 +10,10 @@ targets:
   SleepSync:
     type: application
     platform: iOS
-    sources: [SleepSync]
+    sources: [SleepSync, Shared]
+    dependencies:
+      - target: SleepSyncWidgets
+        embed: true
     entitlements:
       path: SleepSync/SleepSync.entitlements
       properties:
@@ -22,14 +25,36 @@ targets:
       properties:
         CFBundleDisplayName: Sleep Sync
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "1"
+        CFBundleVersion: "2"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSMicrophoneUsageDescription: "Sleep Sync listens at night to note which sounds happen when, such as a cat meowing or a door, so your sleep app can tell whether they woke you. No audio is kept or sent."
+        NSSupportsLiveActivities: true
+        UIBackgroundModes: [audio]
         NSHealthShareUsageDescription: "Sleep Sync sends last night's Apple Watch sleep stages, heart rate, HRV and breathing rate to your own sleep app, so it can compare them with the bed's reading."
         SleepToken: $(SLEEP_TOKEN)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: now.geshido.sleepsync
+        DEVELOPMENT_TEAM: WCV67Q95XA
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+  SleepSyncWidgets:
+    type: app-extension
+    platform: iOS
+    sources: [SleepSyncWidgets, Shared]
+    info:
+      path: SleepSyncWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Sleep Sync
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "2"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: now.geshido.sleepsync.widgets
         DEVELOPMENT_TEAM: WCV67Q95XA
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.0"

@@ -19,11 +19,19 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Sleep Sync sends last night's Apple Watch sleep stages, heart rate, HRV and breathing rate to your own sleep app, so it can compare them with the bed's reading.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Sleep Sync listens at night to note which sounds happen when, such as a cat meowing or a door, so your sleep app can tell whether they woke you. No audio is kept or sent.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>SleepToken</key>
 	<string>$(SLEEP_TOKEN)</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>
