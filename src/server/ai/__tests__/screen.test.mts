@@ -73,3 +73,25 @@ assert.equal(
   "without a session start, sleep start minus the pod's latency",
 );
 console.log("ok  getting into bed comes from the session, with a fallback");
+
+// --- a session that opened before the pod could read anyone -----------------
+// 5-6 Oct 2026, Laurence's side: someone registered at 23:30 local but no
+// heart rate until 02:10. In bed counts from the first vitals.
+assert.equal(
+  inBedAt({
+    ts: "2026-10-05T21:30:00Z",
+    sleepStart: "2026-10-06T00:25:00Z",
+    timeseries: { heartRate: [["2026-10-06T00:10:00Z", 63]], hrv: [] },
+  })?.toISOString(),
+  "2026-10-06T00:10:00.000Z",
+);
+assert.equal(
+  inBedAt({
+    ts: "2026-10-05T21:25:00Z",
+    sleepStart: "2026-10-05T21:41:30Z",
+    timeseries: { heartRate: [["2026-10-05T21:27:00Z", 60]] },
+  })?.toISOString(),
+  "2026-10-05T21:25:00.000Z",
+  "a few minutes before the first reading is normal and changes nothing",
+);
+console.log("ok  time the pod could not read anyone is not time in bed");

@@ -184,6 +184,26 @@ export const screenEvents = createTable(
   }),
 );
 
+// What Sleep Sync heard in the bedroom at night (ios/SleepSync): the kind of
+// sound, the classifier's confidence and how loud it was above the room's
+// quiet. Never audio. Household-wide like screenEvents. See sound.ts.
+export const soundEvents = createTable(
+  "soundEvents",
+  {
+    id: serial("id").primaryKey(),
+    at: timestamp("at").notNull(),
+    kind: varchar("kind", { length: 40 }).notNull(),
+    /** Classifier confidence, percent; null for a loudness-only event. */
+    confidence: integer("confidence"),
+    aboveQuietDb: integer("aboveQuietDb"),
+    durationS: integer("durationS"),
+    device: varchar("device", { length: 80 }),
+  },
+  (table) => ({
+    atIdx: index("soundEvents_at_idx").on(table.at),
+  }),
+);
+
 export const aiRunLog = createTable(
   "aiRunLog",
   {
@@ -316,6 +336,10 @@ export const nightMetrics = createTable(
     screenTenthHours: integer("screenTenthHours"),
     /** The pod's own latency, before lights-out correction. */
     podLatencyTenthHours: integer("podLatencyTenthHours"),
+    /** Sound summary for the night (sound.ts SoundNight), JSON; null = not listened. */
+    soundJson: text("soundJson"),
+    /** Hours at the start of the session with no readable vitals. */
+    signalGapTenthHours: integer("signalGapTenthHours"),
     /**
      * Whose night this was. null = not judged (too few own nights, or no
      * vitals), false = confirmed the owner's, true = the vitals say somebody

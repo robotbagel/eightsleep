@@ -16,6 +16,13 @@
 // enabled, no "tracking" feature) get an empty `days` array — the endpoint
 // works, the cloud just doesn't process sessions for them.
 import { attachScreenTime, type ScreenNight } from "./screen";
+import {
+  attachSounds,
+  soundBefore,
+  soundEventsBetween,
+  type SoundEvent,
+  type SoundNight,
+} from "./sound";
 import { z } from "zod";
 import { fetchWithAuth } from "../eight/eight";
 import { APP_API_URL, CLIENT_API_URL } from "../eight/constants";
@@ -108,6 +115,9 @@ const PodSessionsSchema = z
 export type PodSession = z.infer<typeof PodSessionSchema> & {
   /** Screen time in bed, attached at fetch time (screen.ts). */
   screen?: ScreenNight | null;
+  /** What the bedroom phone heard, laid over the night (sound.ts). */
+  sound?: SoundNight | null;
+  soundEvents?: SoundEvent[];
 };
 
 /**
@@ -151,8 +161,41 @@ export function sleepLatencyHours(session: PodSession): number | null {
   return podLatencyHours(session);
 }
 
+/** A stretch this long with no vitals at the start of a session is lost signal. */
+export const SIGNAL_GAP_MIN = 20;
+
+/**
+ * When the pod first actually read the sleeper (heart rate or HRV), as ms.
+ * The session can open long before that: on 5-6 Oct 2026 Laurence's side
+ * registered someone at 23:30 but read no heart rate, breathing or movement
+ * until 02:10, and the pod logged the whole gap as 2h55 "awake in bed".
+ */
+export function firstVitalsAt(session: PodSession): number | null {
+  const times = [
+    ...(session.timeseries?.heartRate ?? []),
+    ...(session.timeseries?.hrv ?? []),
+  ]
+    .map(([ts]) => Date.parse(ts))
+    .filter((t) => !isNaN(t));
+  return times.length > 0 ? Math.min(...times) : null;
+}
+
+/** Hours at the start of the session the pod could not read anyone; 0 if none. */
+export function signalGapHours(session: PodSession): number {
+  const start = session.ts ? Date.parse(session.ts) : NaN;
+  const first = firstVitalsAt(session);
+  if (isNaN(start) || first == null) return 0;
+  const gap = first - start;
+  return gap >= SIGNAL_GAP_MIN * 60_000 ? gap / 3_600_000 : 0;
+}
+
 /** The pod's own figure: everything between getting into bed and sleep. */
 export function podLatencyHours(session: PodSession): number | null {
+  // Time the pod could not read anyone is not time spent trying to sleep.
+  if (signalGapHours(session) > 0 && session.sleepStart) {
+    const first = firstVitalsAt(session)!;
+    return Math.max(0, Date.parse(session.sleepStart) - first) / 3_600_000;
+  }
   const before = session.stageSummary?.awakeBeforeSleepDuration;
   if (before != null) return before / 3600;
   const stages = session.stages ?? [];
@@ -243,6 +286,7 @@ export async function fetchPodSessions(
   // Every session the app reads comes through here, so attaching the screen
   // time once makes every consumer measure latency from lights out.
   await attachScreenTime(unique);
+  await attachSounds(unique);
   return unique;
 }
 
@@ -744,7 +788,15 @@ export async function fetchCurrentSessionWindow(
   const nowMs = Date.now();
   const heartRate: [string, number][] = current.timeseries.heartRate ?? [];
   const bedTemp: [string, number][] = current.timeseries.tempBedC ?? [];
-  const tnt: [string, number][] = current.timeseries.tnt ?? [];
+  // A toss right after a sound (a cat landing, a meow, a door) says nothing
+  // about the bed's temperature, so it never counts toward a live nudge.
+  const recentSounds = await soundEventsBetween(
+    new Date(nowMs - (windowMinutes + 5) * 60_000),
+    new Date(nowMs),
+  );
+  const tnt: [string, number][] = (current.timeseries.tnt ?? []).filter(
+    ([ts]) => soundBefore(recentSounds, Date.parse(ts)) == null,
+  );
 
   // Freshness gate: the newest sample must be recent, otherwise this is a
   // finished night and there is nothing live to tune.

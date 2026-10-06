@@ -15,6 +15,7 @@ import {
   awakeAfterOnsetHours,
   fetchPodSessions,
   podLatencyHours,
+  signalGapHours,
   sleepLatencyHours,
   wakeEventCount,
   type PodSession,
@@ -35,6 +36,7 @@ import {
   thermalScore,
 } from "./score";
 import { guestStayNights } from "./shareLinks";
+import { type SoundNight } from "./sound";
 
 export interface NightMetric {
   night: string; // wake date, YYYY-MM-DD, the app's night key everywhere
@@ -53,6 +55,10 @@ export interface NightMetric {
   podLatencyHours?: number | null;
   /** Hours the bedroom screen was on in bed before sleep; null = no TV. */
   screenInBedHours?: number | null;
+  /** What the bedroom phone heard and which wake-ups followed it. */
+  sound?: SoundNight | null;
+  /** Hours at the start the pod could not read anyone (lying off the sensor). */
+  signalGapHours?: number | null;
   tosses: number | null;
   wakeCount: number | null;
   restingHeartRate: number | null;
@@ -160,6 +166,8 @@ export function metricsFromSession(
     podLatencyHours: podLatencyHours(session),
     screenInBedHours:
       session.screen != null ? session.screen.inBedMinutes / 60 : null,
+    sound: session.sound ?? null,
+    signalGapHours: signalGapHours(session) || null,
     tosses: (timeseries.tnt ?? []).length,
     wakeCount,
     restingHeartRate: heartRates.length > 0 ? Math.min(...heartRates) : null,
@@ -491,6 +499,8 @@ export async function persistNightMetrics(
         awakeTenthHours: tenth(m.awakeHours),
         latencyTenthHours: tenth(m.sleepLatencyHours),
         screenTenthHours: tenth(m.screenInBedHours),
+        soundJson: m.sound ? JSON.stringify(m.sound) : null,
+        signalGapTenthHours: tenth(m.signalGapHours),
         podLatencyTenthHours: tenth(m.podLatencyHours),
         // A person's own answer always wins over the inference, so a night
         // already confirmed keeps its verdict when it is re-synced.
@@ -632,6 +642,8 @@ function rowToMetric(row: typeof nightMetrics.$inferSelect): NightMetric {
     sleepLatencyHours: fromTenth(row.latencyTenthHours),
     podLatencyHours: fromTenth(row.podLatencyTenthHours),
     screenInBedHours: fromTenth(row.screenTenthHours),
+    sound: parseSound(row.soundJson),
+    signalGapHours: fromTenth(row.signalGapTenthHours),
     tosses: row.tosses,
     wakeCount: row.wakeCount,
     restingHeartRate: row.restingHeartRate,
@@ -647,6 +659,15 @@ function rowToMetric(row: typeof nightMetrics.$inferSelect): NightMetric {
     identityConfirmed: row.identityConfirmed,
     identityReason: row.identityReason,
   };
+}
+
+function parseSound(json: string | null): SoundNight | null {
+  if (!json) return null;
+  try {
+    return JSON.parse(json) as SoundNight;
+  } catch {
+    return null;
+  }
 }
 
 export function shiftDate(date: string, days: number): string {

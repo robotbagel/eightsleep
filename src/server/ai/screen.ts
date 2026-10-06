@@ -123,14 +123,30 @@ interface SessionTimes {
   ts?: string | null;
   sleepStart?: string | null;
   stageSummary?: { awakeBeforeSleepDuration?: number | null } | null;
+  timeseries?: {
+    heartRate?: [string, number][] | null;
+    hrv?: [string, number][] | null;
+  } | null;
 }
 
-/** When they got into bed: the session start, else sleep start minus latency. */
+/**
+ * When they got into bed: the session start, else sleep start minus latency.
+ * A session that opened long before the pod could read anyone starts at the
+ * first vitals instead (see signalGapHours in sleepData.ts).
+ */
 export function inBedAt(session: SessionTimes): Date | null {
   if (!session.sleepStart) return null;
   const sleep = Date.parse(session.sleepStart);
   if (isNaN(sleep)) return null;
-  const start = session.ts ? Date.parse(session.ts) : NaN;
+  const opened = session.ts ? Date.parse(session.ts) : NaN;
+  const vitals = [...(session.timeseries?.heartRate ?? []), ...(session.timeseries?.hrv ?? [])]
+    .map(([ts]) => Date.parse(ts))
+    .filter((t) => !isNaN(t));
+  const firstVitals = vitals.length > 0 ? Math.min(...vitals) : NaN;
+  const start =
+    !isNaN(opened) && !isNaN(firstVitals) && firstVitals - opened >= 20 * 60_000
+      ? firstVitals
+      : opened;
   if (!isNaN(start) && start <= sleep) return new Date(start);
   const before = session.stageSummary?.awakeBeforeSleepDuration;
   return before != null ? new Date(sleep - before * 1000) : null;

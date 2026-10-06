@@ -9,6 +9,7 @@ import { formatHours, scoreTone, TONE_VAR } from "./charts/chartUtils";
 import LordIcon from "./ui/lordIcon";
 import { useNightInsight } from "./useNightInsight";
 import { type Contributor } from "~/lib/insights";
+import { soundCountsText, soundLabel } from "~/lib/soundLabels";
 
 function clockOf(minutes: number | null | undefined): string {
   if (minutes == null) return "—";
@@ -191,6 +192,17 @@ export const NightSummaryCard: React.FC<{
       )}
       {metrics.secondOpinion && <SecondOpinionRow opinion={metrics.secondOpinion} />}
 
+      {metrics.signalGapHours != null && metrics.signalGapHours > 0 && (
+        <p className="mt-3 text-xs leading-snug" style={{ color: "var(--text-muted)" }}>
+          The bed could not read you for the first{" "}
+          {formatHours(metrics.signalGapHours)} after you got in, usually from
+          sitting up or lying outside your side&apos;s sensor. That time is not
+          counted as trying to fall asleep.
+        </p>
+      )}
+
+      {metrics.sound && <SoundRow sound={metrics.sound} />}
+
       {(helped.length > 0 || heldBack.length > 0) && (
         <div
           className="mt-5 space-y-4 border-t pt-4"
@@ -232,6 +244,53 @@ export const NightSummaryCard: React.FC<{
         </div>
       )}
     </Card>
+    </div>
+  );
+};
+
+/**
+ * What the bedroom phone heard, and whether it lines up with the wake-ups.
+ * Sounds are only named as a cause when wake-ups followed them far more
+ * often than chance (sound.ts), so a snoring partner is not blamed for every
+ * waking.
+ */
+const SoundRow: React.FC<{
+  sound: NonNullable<
+    NonNullable<RouterOutputs["user"]["getNightTimeline"]["metrics"]>["sound"]
+  >;
+}> = ({ sound }) => {
+  const total = Object.values(sound.counts).reduce((a, b) => a + b, 0);
+  const kinds = [...new Set(sound.wakeUpsAfterSound.map((w) => soundLabel(w.kind)))];
+  return (
+    <div
+      id="night-sound"
+      className="mt-4 flex gap-3 rounded-xl p-3"
+      style={{ background: sound.likelyCause ? "var(--warning-soft)" : "var(--surface-sunken)" }}
+    >
+      <LordIcon
+        name="microphone"
+        size={22}
+        trigger="hover"
+        target="#night-sound"
+        color={sound.likelyCause ? "var(--warning)" : "var(--text-muted)"}
+      />
+      <div className="min-w-0">
+        <p className="text-sm font-semibold" style={{ color: "var(--text-headline)" }}>
+          {total} sound{total === 1 ? "" : "s"} in the night
+        </p>
+        <p className="mt-0.5 text-sm leading-snug" style={{ color: "var(--text)" }}>
+          {soundCountsText(sound.counts)}.{" "}
+          {sound.wakeUps === 0
+            ? "You did not wake up."
+            : sound.wakeUpsAfterSound.length === 0
+              ? `None of your ${sound.wakeUps} wake-ups followed a sound.`
+              : `${sound.wakeUpsAfterSound.length} of ${sound.wakeUps} wake-ups came within two minutes of a sound (${kinds.join(", ")})${
+                  sound.likelyCause
+                    ? ", far more often than chance, so the noise is likely what woke you."
+                    : ", about what chance alone would give."
+                }`}
+        </p>
+      </div>
     </div>
   );
 };
