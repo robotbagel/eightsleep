@@ -21,9 +21,17 @@ services:
       DEVICE_NAME: "Bedroom camera"
       # Eufy E220's hardware address: found again if moving it changes its IP.
       CAMERA_MAC: "90:bf:d9:39:7c:cb"
+      # Video clips around events, served signed through the Cloudflare tunnel
+      # (sleep-clips.geshido.now -> this host:8790). The key is the app's
+      # CRON_SECRET, which signs each clip link.
+      CLIP_DIR: /clips
+      CLIP_PORT: "8790"
+      CLIP_KEY_FILE: /run/secrets/clip-key
     volumes:
       - /home/nathan/.config/8sleep/rtsp-url:/run/secrets/rtsp-url:ro
       - /home/nathan/.config/8sleep/sound-token:/run/secrets/sound-token:ro
+      - /home/nathan/.config/8sleep/cron-secret:/run/secrets/clip-key:ro
+      - ./clips:/clips
     logging:
       driver: json-file
       options:

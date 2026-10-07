@@ -198,6 +198,8 @@ export const soundEvents = createTable(
     aboveQuietDb: integer("aboveQuietDb"),
     durationS: integer("durationS"),
     device: varchar("device", { length: 80 }),
+    /** A 15 s video around it, kept on the NAS (deploy/night-ears). */
+    videoFile: varchar("videoFile", { length: 80 }),
   },
   (table) => ({
     atIdx: index("soundEvents_at_idx").on(table.at),

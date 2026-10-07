@@ -86,6 +86,19 @@ LOUD_ABOVE_QUIET = 22
 # CLIP_BEFORE windows (~1 s each) before the moment and CLIP_AFTER after.
 CLIP_BEFORE = 3
 CLIP_AFTER = 4
+# Video clips: the stream is also copied (no re-encoding) into 4-second
+# segments in a rolling buffer; around each event 15 s are cut from it
+# (7 before, 8 after), shrunk to 720p and kept on the NAS for 14 days.
+CLIP_DIR = os.environ.get("CLIP_DIR", "/clips")
+BUFFER_DIR = os.path.join(CLIP_DIR, "buffer")
+SEGMENT_S = 4
+VIDEO_BEFORE_S = 7
+VIDEO_AFTER_S = 8
+KEEP_DAYS = 14
+CLIP_PORT = int(os.environ.get("CLIP_PORT", "8790"))
+CLIP_KEY = (
+    open(os.environ["CLIP_KEY_FILE"]).read().strip() if os.environ.get("CLIP_KEY_FILE") else ""
+)
 MERGE_S = 10  # the same kind within this many seconds is one event
 CAT_MIN_SCORE = 0.4
 # On a dim, grey night picture the detector mixes animals up (a test cat was
@@ -172,6 +185,7 @@ class Outbox:
                 return
             event = {
                 "_clip_pending": True,
+                "_video_pending": True,
                 "_t": now,
                 "at": datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "kind": kind,
@@ -183,19 +197,23 @@ class Outbox:
                 event["aboveQuietDb"] = round(above_quiet, 1)
             self.pending.append(event)
         CLIPS.start(event)
+        threading.Timer(VIDEO_AFTER_S + SEGMENT_S + 2, cut_video, args=(event, now, kind)).start()
         log.info("heard %s (%.2f, +%s dB)", kind, confidence or 0, above_quiet)
 
     def flush(self) -> None:
         # A clip that never completed (the stream dropped) does not hold
         # its event back for more than half a minute.
-        cutoff = time.time() - 30
+        cutoff = time.time() - 60
         with self.lock:
             for e in self.pending:
-                if e.get("_clip_pending") and e.get("_t", 0) < cutoff:
+                if e.get("_t", 0) < cutoff:
                     e.pop("_clip_pending", None)
+                    e.pop("_video_pending", None)
+        def waiting(e: dict) -> bool:
+            return bool(e.get("_clip_pending") or e.get("_video_pending"))
         with self.lock:
-            ready = [e for e in self.pending if not e.get("_clip_pending")]
-            self.pending = [e for e in self.pending if e.get("_clip_pending")]
+            ready = [e for e in self.pending if not waiting(e)]
+            self.pending = [e for e in self.pending if waiting(e)]
         # Clips make a batch heavy; send a few at a time.
         for start in range(0, len(ready), 10):
             self._send(ready[start : start + 10])
@@ -218,6 +236,124 @@ class Outbox:
             log.warning("send failed (%s); keeping %d events", exc, len(batch))
             with self.lock:
                 self.pending[:0] = batch
+
+
+def cut_video(event: dict, at: float, kind: str) -> None:
+    """Cut 15 s around `at` from the segment buffer into a 720p .mp4."""
+    try:
+        start = at - VIDEO_BEFORE_S
+        end = at + VIDEO_AFTER_S
+        segments = []
+        for name in sorted(os.listdir(BUFFER_DIR)):
+            if not name.endswith(".ts"):
+                continue
+            seg_start = int(name[:-3])
+            if seg_start + SEGMENT_S >= start and seg_start <= end:
+                segments.append((seg_start, os.path.join(BUFFER_DIR, name)))
+        if not segments:
+            return
+        listing = os.path.join(BUFFER_DIR, f"cut-{int(at * 1000)}.txt")
+        with open(listing, "w") as fh:
+            for _, path in segments:
+                fh.write(f"file '{path}'\n")
+        offset = max(0.0, start - segments[0][0])
+        name = f"{int(at)}-{kind}.mp4"
+        result = subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", listing,
+             "-ss", f"{offset:.2f}", "-t", str(VIDEO_BEFORE_S + VIDEO_AFTER_S),
+             "-vf", "scale=-2:720", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+             "-c:a", "aac", "-b:a", "48k", "-movflags", "+faststart",
+             os.path.join(CLIP_DIR, name)],
+            capture_output=True,
+        )
+        os.remove(listing)
+        if result.returncode == 0:
+            event["videoFile"] = name
+        else:
+            log.warning("clip cut failed: %s", result.stderr[-200:])
+    except Exception as exc:
+        log.warning("clip cut failed: %s", exc)
+    finally:
+        event.pop("_video_pending", None)
+
+
+def housekeeping() -> None:
+    """Keep the buffer to a few minutes and clips to KEEP_DAYS."""
+    while True:
+        now = time.time()
+        for folder, max_age in ((BUFFER_DIR, 180), (CLIP_DIR, KEEP_DAYS * 86400)):
+            try:
+                for name in os.listdir(folder):
+                    path = os.path.join(folder, name)
+                    if os.path.isfile(path) and now - os.path.getmtime(path) > max_age:
+                        os.remove(path)
+            except OSError:
+                pass
+        time.sleep(30)
+
+
+def serve_clips() -> None:
+    """Serves clips over HTTP for the app, through the Cloudflare tunnel.
+    Every request needs a signature the app makes with the shared key and an
+    expiry, so a clip address cannot be guessed, and stops working."""
+    import hashlib
+    import hmac
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import parse_qs, urlparse
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args) -> None:  # quiet
+            pass
+
+        def do_GET(self) -> None:
+            url = urlparse(self.path)
+            name = url.path.removeprefix("/clip/")
+            query = parse_qs(url.query)
+            exp = query.get("exp", [""])[0]
+            sig = query.get("sig", [""])[0]
+            valid_name = (
+                "/" not in name and name.endswith(".mp4") and not name.startswith(".")
+            )
+            expected = hmac.new(CLIP_KEY.encode(), f"{name}|{exp}".encode(), hashlib.sha256).hexdigest()
+            if (
+                not CLIP_KEY
+                or not valid_name
+                or not exp.isdigit()
+                or int(exp) < time.time()
+                or not hmac.compare_digest(expected, sig)
+            ):
+                self.send_error(403)
+                return
+            path = os.path.join(CLIP_DIR, name)
+            if not os.path.isfile(path):
+                self.send_error(404)
+                return
+            data = open(path, "rb").read()
+            size = len(data)
+            start, end = 0, size - 1
+            rng = self.headers.get("Range", "")
+            status = 200
+            if rng.startswith("bytes="):
+                a, _, b = rng[6:].partition("-")
+                start = int(a) if a else 0
+                end = min(int(b) if b else size - 1, size - 1)
+                if start > end:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.end_headers()
+                    return
+                status = 206
+            self.send_response(status)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(end - start + 1))
+            self.send_header("Cache-Control", "private, max-age=3600")
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.end_headers()
+            self.wfile.write(data[start : end + 1])
+
+    ThreadingHTTPServer(("0.0.0.0", CLIP_PORT), Handler).serve_forever()
 
 
 def is_night() -> bool:
@@ -271,6 +407,7 @@ def open_stream() -> tuple[subprocess.Popen, int]:
     """ONE connection to the camera, split into sound (stdout) and picture
     (a second pipe): cameras often allow only a couple of RTSP clients."""
     url = current_url()
+    os.makedirs(BUFFER_DIR, exist_ok=True)
     video_read, video_write = os.pipe()
     proc = subprocess.Popen(
         ["ffmpeg", "-loglevel", "error",
@@ -279,7 +416,13 @@ def open_stream() -> tuple[subprocess.Popen, int]:
          "-i", url,
          "-map", "0:a:0", "-ac", "1", "-ar", str(RATE), "-f", "s16le", "pipe:1",
          "-map", "0:v:0", "-vf", f"fps={FPS},scale={VIDEO_W}:{VIDEO_H}",
-         "-pix_fmt", "rgb24", "-f", "rawvideo", f"pipe:{video_write}"],
+         "-pix_fmt", "rgb24", "-f", "rawvideo", f"pipe:{video_write}",
+         # The untouched stream, in short segments named by start time, for
+         # cutting clips around events. Pruned to a few minutes.
+         "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+         "-f", "segment", "-segment_time", str(SEGMENT_S), "-segment_format", "mpegts",
+         "-reset_timestamps", "1", "-strftime", "1",
+         os.path.join(BUFFER_DIR, "%s.ts")],
         stdout=subprocess.PIPE,
         pass_fds=(video_write,),
     )
@@ -386,6 +529,9 @@ def main() -> None:
             outbox.flush()
 
     threading.Thread(target=sender, daemon=True).start()
+    os.makedirs(BUFFER_DIR, exist_ok=True)
+    threading.Thread(target=housekeeping, daemon=True).start()
+    threading.Thread(target=serve_clips, daemon=True).start()
     while True:
         if not is_night():
             outbox.flush()

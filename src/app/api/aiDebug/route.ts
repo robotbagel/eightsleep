@@ -256,6 +256,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         "created_at" timestamp DEFAULT now() NOT NULL
       )`,
       sql`CREATE INDEX IF NOT EXISTS "soundClips_eventId_idx" ON "8slp_soundClips" ("eventId")`,
+      sql`ALTER TABLE "8slp_soundEvents" ADD COLUMN IF NOT EXISTS "videoFile" varchar(80)`,
       sql`CREATE TABLE IF NOT EXISTS "8slp_shareLinks" (
         "id" serial PRIMARY KEY,
         "email" varchar(255) NOT NULL REFERENCES "8slp_users"("email"),

@@ -57,8 +57,14 @@ export async function POST(request: NextRequest): Promise<Response> {
       const duration = num(e.durationS);
       const clip =
         typeof e.clip === "string" && e.clip.length <= MAX_CLIP_B64 ? e.clip : null;
+      // A clip file on the NAS; only the plain name shape is accepted.
+      const videoFile =
+        typeof e.videoFile === "string" && /^\d{9,11}-[a-z_]{1,40}\.mp4$/.test(e.videoFile)
+          ? e.videoFile
+          : null;
       return {
         clip,
+        videoFile,
         at,
         kind,
         confidence: confidence == null ? null : Math.round(confidence * 100),

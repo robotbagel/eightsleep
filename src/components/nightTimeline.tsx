@@ -162,6 +162,7 @@ export const NightDetail: React.FC<{
           kind: s.kind,
           aboveQuietDb: s.aboveQuietDb,
           hasClip: s.hasClip,
+          videoUrl: s.videoUrl,
         }))}
         timezone={timezone}
         wakeUps={wakeUpTimes}

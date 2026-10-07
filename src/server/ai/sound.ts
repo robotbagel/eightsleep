@@ -30,6 +30,8 @@ export interface SoundEvent {
   kind: string;
   /** Loudness above the room's quiet, dB; null when not measured. */
   aboveQuietDb: number | null;
+  /** The NAS video clip around it, if one was cut. */
+  videoFile?: string | null;
 }
 
 export interface SoundNight {
@@ -145,6 +147,7 @@ export async function soundEventsBetween(from: Date, to: Date): Promise<SoundEve
         at: soundEvents.at,
         kind: soundEvents.kind,
         aboveQuietDb: soundEvents.aboveQuietDb,
+        videoFile: soundEvents.videoFile,
       })
       .from(soundEvents)
       .where(and(gte(soundEvents.at, from), lte(soundEvents.at, to)))

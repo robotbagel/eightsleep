@@ -11,6 +11,8 @@ export interface HeardSound {
   kind: string;
   aboveQuietDb: number | null;
   hasClip: boolean;
+  /** Signed link to the 15 s video around it, when the camera cut one. */
+  videoUrl: string | null;
 }
 
 type Filter = "all" | "cats" | "woke";
@@ -37,6 +39,7 @@ export const NightSounds: React.FC<{
   const [loading, setLoading] = useState<number | null>(null);
   const [failed, setFailed] = useState<number | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  const [watching, setWatching] = useState<(typeof rows)[number] | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => () => audio.current?.pause(), []);
@@ -60,6 +63,12 @@ export const NightSounds: React.FC<{
   if (rows.length === 0) return null;
 
   const play = (row: (typeof rows)[number]) => {
+    if (row.videoUrl) {
+      audio.current?.pause();
+      setPlaying(null);
+      setWatching(row);
+      return;
+    }
     if (row.id == null) return;
     if (playing === row.id) {
       audio.current?.pause();
@@ -192,11 +201,17 @@ export const NightSounds: React.FC<{
                     </span>
                   </span>
                 </button>
-                {row.hasClip && row.id != null && (
+                {(row.videoUrl || (row.hasClip && row.id != null)) && (
                   <button
                     type="button"
                     onClick={() => play(row)}
-                    aria-label={playing === row.id ? `Stop ${soundLabel(row.kind)}` : `Play ${soundLabel(row.kind)}`}
+                    aria-label={
+                      row.videoUrl
+                        ? `Watch ${soundLabel(row.kind)}`
+                        : playing === row.id
+                          ? `Stop ${soundLabel(row.kind)}`
+                          : `Play ${soundLabel(row.kind)}`
+                    }
                     disabled={loading === row.id}
                     id={`${rowId}-play`}
                     className="grid h-11 w-11 shrink-0 place-items-center rounded-full border transition-[transform,border-color] duration-fast ease-snap active:scale-[0.94] disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
@@ -217,6 +232,14 @@ export const NightSounds: React.FC<{
         </ul>
       )}
 
+      {watching?.videoUrl && (
+        <ClipSheet
+          url={watching.videoUrl}
+          title={`${clockIn(watching.at, timezone)} · ${soundLabel(watching.kind)}`}
+          onClose={() => setWatching(null)}
+        />
+      )}
+
       {visible.length > COLLAPSED && (
         <button
           type="button"
@@ -227,5 +250,69 @@ export const NightSounds: React.FC<{
         </button>
       )}
     </section>
+  );
+};
+
+/**
+ * The 15 s around a sound, from the bedroom camera. A bottom sheet on a
+ * phone: closes with its button, a tap on the dimmed background, or Escape.
+ */
+const ClipSheet: React.FC<{ url: string; title: string; onClose: () => void }> = ({
+  url,
+  title,
+  onClose,
+}) => {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center sm:items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <button
+        type="button"
+        aria-label="Close"
+        onClick={onClose}
+        className="enter absolute inset-0"
+        style={{ background: "color-mix(in srgb, var(--bg) 70%, transparent)" }}
+      />
+      <div
+        className="enter relative w-full max-w-lg rounded-t-2xl p-4 shadow-pop sm:rounded-2xl"
+        style={{ background: "var(--surface-raised)", border: "1px solid var(--border)" }}
+      >
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <p className="text-sm font-semibold" style={{ color: "var(--text-headline)" }}>
+            {title}
+          </p>
+          <button type="button" onClick={onClose} className="btn btn-secondary">
+            Close
+          </button>
+        </div>
+        {failed ? (
+          <p className="py-6 text-center text-sm" style={{ color: "var(--text-muted)" }}>
+            This clip could not be loaded. Clips are kept for 14 days.
+          </p>
+        ) : (
+          <video
+            src={url}
+            controls
+            autoPlay
+            playsInline
+            onError={() => setFailed(true)}
+            className="aspect-video w-full rounded-lg"
+            style={{ background: "var(--bg)" }}
+          />
+        )}
+        <p className="mt-2 text-xs" style={{ color: "var(--text-faint)" }}>
+          7 seconds before and 8 after the moment it was heard or seen.
+        </p>
+      </div>
+    </div>
   );
 };

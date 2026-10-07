@@ -71,6 +71,7 @@ import { getCurrentHeatingStatus } from "~/server/eight/user";
 import { celsiusToRaw, MAX_BED_TEMP_C, MIN_BED_TEMP_C } from "~/lib/temperature";
 import { setHeatingLevel } from "~/server/eight/eight";
 import { nightKeyFor } from "~/server/ai/time";
+import { signedClipUrl } from "~/server/ai/clipLinks";
 
 class DatabaseError extends Error {
   constructor(message: string) {
@@ -806,6 +807,8 @@ export const userRouter = createTRPCRouter({
           kind: string;
           aboveQuietDb: number | null;
           hasClip: boolean;
+          /** Signed, expiring link to the NAS video around it. */
+          videoUrl: string | null;
         }[];
       } | null = null;
       let metrics: NightMetric | null = null;
@@ -894,6 +897,7 @@ export const userRouter = createTRPCRouter({
                   kind: e.kind,
                   aboveQuietDb: e.aboveQuietDb,
                   hasClip: e.id != null && withClip.has(e.id),
+                  videoUrl: e.videoFile ? signedClipUrl(e.videoFile) : null,
                 }));
               })(),
             };
