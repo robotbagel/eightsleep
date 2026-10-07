@@ -73,5 +73,10 @@ Manual Shortcut imports were abandoned after one use (Nathan won't add a daily s
 ## Bedroom camera listener (2026-10-06)
 Phone listening can't start without a foreground tap (iOS), Nathan dozes off, so the Eufy Indoor Cam E220 (T8410C, 192.168.50.226, MAC 90:bf:d9 "Smart Innovation") is used instead. NAS container `night-ears` (`/volume2/docker/stacks/night-ears`, src `deploy/night-ears`, host network because Docker has no free address pools) pulls its RTSP 21:00-10:00: YAMNet sounds + EfficientDet-Lite2 animal-on-motion → `/api/soundEvents` (kind `cat_moving` for sight). Camera link goes in `~/.config/8sleep/rtsp-url` (600) on the NAS, token in `sound-token`. **Waiting on Nathan to enable RTSP** in the Eufy app (Settings → Storage → NAS (RTSP)); the camera's RTSP server answered but had no stream. Once it works, his two phone shortcuts can go.
 
+## Clips (2026-10-07)
+- Audio: night-ears sends ~7 s AAC per event → `8slp_soundClips` (14 d), `/api/soundClip/<eventId>` (owner cookie or CRON_SECRET bearer, byte ranges).
+- Video: night-ears segment buffer → 15 s 720p mp4 per event in `/volume2/docker/stacks/night-ears/clips` (14 d), served on `sleep-clips.geshido.now` (geshido-tools tunnel ingress → 192.168.50.177:8790; backup of the old ingress in `~/.config/8sleep/geshido-tools-tunnel-backup-2026-10-07.json`) only with HMAC(CRON_SECRET, "file|exp") links the app signs for 6 h (`clipLinks.ts`). Cloudflare 403s Python's default user agent; browsers fine.
+- Night tab "Heard in the night" list with play / watch; Watch bedtime reference now home nights only (Watch scores 87-89 vs pod 91-96).
+
 ## Open items
 - Both profiles drifted while away (Nathan mid 26.3 -> 24.8, deep 26.5 -> 26; Laurence deep 28.6 -> 30.2), all from stale evidence. Restoring the pre-holiday profiles is Nathan's call.
