@@ -146,6 +146,7 @@ export const NightDetail: React.FC<{
         bed={bed}
         room={room}
         tosses={tosses}
+        wakeUps={wakeUpTimes}
         events={chartEvents}
         sounds={(session?.sounds ?? []).map((s) => ({
           at: Date.parse(s.at),

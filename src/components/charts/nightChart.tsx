@@ -81,6 +81,12 @@ interface Props {
   bed: Point[];
   room: Point[];
   tosses: number[];
+  /**
+   * Every wake-up the night's summary counts. Most last under a minute and
+   * never appear as an awake stage, so they are drawn in the Awake lane on
+   * their own; otherwise the chart shows one awake block for "4 wake-ups".
+   */
+  wakeUps?: number[];
   events: NightEvent[];
   /** Sounds heard in the room; drawn as icons above the hypnogram. */
   sounds?: NightSound[];
@@ -94,7 +100,8 @@ interface Props {
 // The viewBox width tracks the measured container width so the chart draws at
 // 1:1 CSS pixels: stroke weights and block heights stay constant from a 375px
 // phone to a 1280px desktop instead of being scaled up with the box.
-const GUTTER = 34;
+// Wide enough for "AWAKE" at 10px uppercase without touching the first block.
+const GUTTER = 42;
 const X0 = GUTTER;
 
 /** Vertical geometry grows a little with the card so a wide desktop chart does
@@ -145,6 +152,7 @@ export const NightChart: React.FC<Props> = ({
   bed,
   room,
   tosses,
+  wakeUps = [],
   events,
   sounds = [],
   focusAt = null,
@@ -209,6 +217,10 @@ export const NightChart: React.FC<Props> = ({
       if (isStageKey(key)) runs.push({ stage: key, from, to });
       // "out" (out of bed) leaves a deliberate gap in the band.
     }
+    // Wake-ups already inside a drawn awake block need no second mark.
+    const briefWakes = wakeUps.filter(
+      (t) => !runs.some((r) => r.stage === "awake" && t >= r.from - 60_000 && t <= r.to + 60_000),
+    );
 
     // ---- temperature series ---------------------------------------------
     const tempValues = [...bed, ...room].map(([, v]) => v);
@@ -233,6 +245,7 @@ export const NightChart: React.FC<Props> = ({
       lo,
       hi,
       runs,
+      briefWakes,
       bedPoints,
       roomPoints,
       bedPath: smoothPath(bedPoints),
@@ -244,6 +257,7 @@ export const NightChart: React.FC<Props> = ({
     sleepStart,
     sleepEnd,
     stages,
+    wakeUps,
     bed,
     room,
     tosses,
@@ -262,7 +276,7 @@ export const NightChart: React.FC<Props> = ({
     );
   }
 
-  const { t0, t1, x, y, runs, bedPoints, bedPath, roomPath, ticks } = model;
+  const { t0, t1, x, y, runs, briefWakes, bedPoints, bedPath, roomPath, ticks } = model;
 
   const readAt = (time: number) => {
     const nearest = (series: Point[]) => {
@@ -274,8 +288,12 @@ export const NightChart: React.FC<Props> = ({
       return Math.abs(best[0] - time) < 90 * 60_000 ? best[1] : null;
     };
     const run = runs.find((r) => time >= r.from && time < r.to);
+    // A brief wake-up is a minute wide on a ten-hour axis: catch it within
+    // two minutes so a finger can actually land on it.
+    const wokeBriefly = briefWakes.find((t) => Math.abs(t - time) <= 2 * 60_000) ?? null;
     return {
       stage: run?.stage ?? null,
+      wokeBriefly,
       bed: nearest(bed),
       room: nearest(room),
       // Sounds within three minutes either side, so a hover over an awake
@@ -398,6 +416,24 @@ export const NightChart: React.FC<Props> = ({
             />
           );
         })}
+
+        {/* Brief wake-ups: a fixed-width pill in the Awake lane, so a
+            40-second wake-up is as findable as a 15-minute one. */}
+        {briefWakes.map((t, index) => (
+          <rect
+            key={`wake-${index}`}
+            className="grow-seg"
+            x={x(t) - 2.5}
+            y={LANE_TOP}
+            width={5}
+            height={BLOCK_H}
+            rx={2.5}
+            fill="var(--stage-awake)"
+            stroke="var(--surface)"
+            strokeWidth="1"
+            style={{ "--i": Math.min(index, 12) } as React.CSSProperties}
+          />
+        ))}
 
         {/* Each sound drops a faint line through the hypnogram, so you can
             see for yourself whether an awake block follows it. */}
@@ -592,6 +628,15 @@ export const NightChart: React.FC<Props> = ({
               {STAGE_LABEL[reading.stage]}
             </div>
           )}
+          {reading.wokeBriefly != null && (
+            <div className="mt-0.5 flex items-center gap-1.5">
+              <span
+                className="inline-block h-1.5 w-1.5 rounded-full"
+                style={{ backgroundColor: "var(--stage-awake)" }}
+              />
+              Woke briefly at {clockIn(reading.wokeBriefly, timezone)}
+            </div>
+          )}
           {reading.bed != null && (
             <div className="tabular mt-0.5" style={{ color: "var(--warm)" }}>
               Bed {reading.bed.toFixed(1)}°C
@@ -618,6 +663,9 @@ export const NightChart: React.FC<Props> = ({
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
         <LegendKey color="var(--warm)" label="Bed temp (°C)" />
         <LegendKey color="var(--text-faint)" label="Room temp" dashed />
+        {briefWakes.length > 0 && (
+          <LegendKey color="var(--stage-awake)" label="Brief wake-up" pill />
+        )}
         <LegendKey color="var(--stage-awake)" label="Toss & turn" tick />
         <LegendKey color="var(--accent)" label="Scheduled change" dot />
         <LegendKey color="var(--warm)" label="Live nudge" dot />
@@ -635,11 +683,17 @@ const LegendKey: React.FC<{
   dashed?: boolean;
   dot?: boolean;
   tick?: boolean;
-}> = ({ color, label, dashed, dot, tick }) => (
+  pill?: boolean;
+}> = ({ color, label, dashed, dot, tick, pill }) => (
   <span className="flex items-center gap-1.5" style={{ color: "var(--text-muted)" }}>
     {dot ? (
       <span
         className="inline-block h-2 w-2 rounded-full"
+        style={{ backgroundColor: color }}
+      />
+    ) : pill ? (
+      <span
+        className="inline-block h-2.5 w-[5px] rounded-full"
         style={{ backgroundColor: color }}
       />
     ) : tick ? (
