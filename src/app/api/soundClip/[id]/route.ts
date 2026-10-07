@@ -14,16 +14,22 @@ export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } },
 ): Promise<Response> {
-  const token = request.cookies.get("8slpAutht")?.value;
-  if (!token) return new Response("Unauthorized", { status: 401 });
-  let email: string;
-  try {
-    email = (jwt.verify(token, process.env.JWT_SECRET!) as { email: string }).email;
-  } catch {
-    return new Response("Unauthorized", { status: 401 });
+  // The operator's key also works, so playback can be checked without
+  // anyone's Eight Sleep login.
+  const operator =
+    request.headers.get("authorization") === `Bearer ${process.env.CRON_SECRET}`;
+  if (!operator) {
+    const token = request.cookies.get("8slpAutht")?.value;
+    if (!token) return new Response("Unauthorized", { status: 401 });
+    let email: string;
+    try {
+      email = (jwt.verify(token, process.env.JWT_SECRET!) as { email: string }).email;
+    } catch {
+      return new Response("Unauthorized", { status: 401 });
+    }
+    const owner = await db.query.users.findFirst({ where: eq(users.email, email) });
+    if (!owner) return new Response("Unauthorized", { status: 401 });
   }
-  const owner = await db.query.users.findFirst({ where: eq(users.email, email) });
-  if (!owner) return new Response("Unauthorized", { status: 401 });
 
   const eventId = Number(params.id);
   if (!Number.isInteger(eventId)) return new Response("Not found", { status: 404 });

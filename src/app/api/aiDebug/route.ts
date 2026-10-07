@@ -200,6 +200,23 @@ export async function POST(request: NextRequest): Promise<Response> {
   // `latencyTenthHours`, and every cache write failed until this existed.
   // Idempotent (IF NOT EXISTS), so it is safe to run on every deploy.
   // POST /api/aiDebug?action=migrate
+  // Remove sound events (and their clips) that a test sent, by device name.
+  // POST /api/aiDebug?action=deletesounds&device=clip-test   (lists ids)
+  if (action === "deletesounds") {
+    const device = request.nextUrl.searchParams.get("device");
+    if (!device) return Response.json({ error: "device required" }, { status: 400 });
+    const { soundEvents, soundClips } = await import("~/server/db/schema");
+    const gone = await db
+      .delete(soundEvents)
+      .where(eq(soundEvents.device, device))
+      .returning({ id: soundEvents.id });
+    const ids = gone.map((r) => r.id);
+    if (ids.length > 0) {
+      await db.delete(soundClips).where(inArray(soundClips.eventId, ids));
+    }
+    return Response.json({ device, deleted: ids });
+  }
+
   if (action === "migrate") {
     const statements = [
       sql`ALTER TABLE "8slp_nightMetrics" ADD COLUMN IF NOT EXISTS "latencyTenthHours" integer`,
