@@ -94,9 +94,25 @@ interface Props {
   focusAt?: number | null;
 }
 
-// Geometry. One viewBox, three stacked panels sharing the same time axis —
-// small multiples, never a second y-scale on one plot.
-//
+/**
+ * One story per view. Everything at once (stages, sounds, temperature,
+ * tosses, AI changes) was accurate and unreadable on a phone, so the chart
+ * shows one layer at a time over the same time axis and says in a sentence
+ * what that layer found.
+ */
+type Lens = "sleep" | "sounds" | "temp";
+
+const LENSES: { key: Lens; label: string; icon: string }[] = [
+  { key: "sleep", label: "Sleep", icon: "sleep" },
+  { key: "sounds", label: "Sounds", icon: "speaker" },
+  { key: "temp", label: "Temperature", icon: "thermometer" },
+];
+
+/** A wake-up this soon after a sound is shown as following it (as in the list). */
+const FOLLOW_MS = 2 * 60_000;
+/** Tossing is summed per slice of the night and drawn as one shaded strip. */
+const RESTLESS_SLICE_MS = 15 * 60_000;
+
 // The viewBox width tracks the measured container width so the chart draws at
 // 1:1 CSS pixels: stroke weights and block heights stay constant from a 375px
 // phone to a 1280px desktop instead of being scaled up with the box.
@@ -104,32 +120,45 @@ interface Props {
 const GUTTER = 42;
 const X0 = GUTTER;
 
-/** Vertical geometry grows a little with the card so a wide desktop chart does
- *  not look like a letterbox, while a 375px phone stays compact. */
-function layoutFor(width: number, withSounds: boolean) {
-  const k = Math.min(Math.max(width / 420, 1), 1.7);
-  // A row of sound icons sits above the hypnogram when there is anything to
-  // show, so a meow lines up with the awake block under it.
-  const SOUND_TOP = 4;
-  const SOUND_H = withSounds ? Math.round(24 * k) : 0;
-  const LANE_TOP = SOUND_TOP + SOUND_H + (withSounds ? 6 : 4);
-  const LANE_H = Math.round(22 * k);
-  const BLOCK_H = Math.round(14 * k);
-  const TEMP_TOP = LANE_TOP + LANE_H * 4 + Math.round(18 * k);
-  const TEMP_H = Math.round(76 * k);
-  const RAIL_TOP = TEMP_TOP + TEMP_H + Math.round(14 * k);
-  const RAIL_H = Math.round(16 * k);
+/** Vertical geometry per view; grows a little on wide cards. */
+function layoutFor(width: number, lens: Lens) {
+  const k = Math.min(Math.max(width / 420, 1), 1.6);
+  if (lens === "temp") {
+    const TEMP_TOP = 10;
+    const TEMP_H = Math.round(150 * k);
+    return {
+      SOUND_TOP: 0,
+      SOUND_H: 0,
+      LANE_TOP: 0,
+      LANE_H: 0,
+      BLOCK_H: 0,
+      STRIP_TOP: 0,
+      STRIP_H: 0,
+      TEMP_TOP,
+      TEMP_H,
+      H: TEMP_TOP + TEMP_H + 10,
+    };
+  }
+  const withSounds = lens === "sounds";
+  const SOUND_TOP = 2;
+  const SOUND_H = withSounds ? Math.round(26 * k) : 0;
+  const LANE_TOP = SOUND_TOP + SOUND_H + 8;
+  const LANE_H = Math.round((withSounds ? 22 : 30) * k);
+  const BLOCK_H = Math.round((withSounds ? 14 : 18) * k);
+  const lanesEnd = LANE_TOP + LANE_H * 3 + BLOCK_H;
+  const STRIP_TOP = lanesEnd + Math.round(14 * k);
+  const STRIP_H = withSounds ? 0 : Math.round(8 * k);
   return {
     SOUND_TOP,
     SOUND_H,
     LANE_TOP,
     LANE_H,
     BLOCK_H,
-    TEMP_TOP,
-    TEMP_H,
-    RAIL_TOP,
-    RAIL_H,
-    H: RAIL_TOP + RAIL_H + 2,
+    STRIP_TOP,
+    STRIP_H,
+    TEMP_TOP: 0,
+    TEMP_H: 0,
+    H: (withSounds ? lanesEnd : STRIP_TOP + STRIP_H) + 6,
   };
 }
 
@@ -142,6 +171,8 @@ const SOURCE_COLOR: Record<NightEvent["source"], string> = {
   // made hand adjustments invisible.
   manual: "var(--cool)",
 };
+
+const minutes = (ms: number) => Math.round(ms / 60_000);
 
 export const NightChart: React.FC<Props> = ({
   timezone,
@@ -157,10 +188,14 @@ export const NightChart: React.FC<Props> = ({
   sounds = [],
   focusAt = null,
 }) => {
-  const svgRef = useRef<SVGSVGElement | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
   const [cursor, setCursor] = useState<number | null>(null);
   const [W, setW] = useState(360);
+  const [lens, setLens] = useState<Lens>("sleep");
+
+  const lenses = LENSES.filter((l) => l.key !== "sounds" || sounds.length > 0);
+  const activeLens: Lens = lenses.some((l) => l.key === lens) ? lens : "sleep";
 
   useEffect(() => {
     const box = boxRef.current;
@@ -173,19 +208,17 @@ export const NightChart: React.FC<Props> = ({
     return () => observer.disconnect();
   }, []);
 
+  // Picking a sound in the list below shows it where sounds are drawn.
+  useEffect(() => {
+    if (focusAt != null && sounds.length > 0) {
+      setLens("sounds");
+      setCursor(focusAt);
+    }
+  }, [focusAt, sounds.length]);
+
   const X1 = W - 6;
-  const {
-    SOUND_TOP,
-    SOUND_H,
-    LANE_TOP,
-    LANE_H,
-    BLOCK_H,
-    TEMP_TOP,
-    TEMP_H,
-    RAIL_TOP,
-    RAIL_H,
-    H,
-  } = layoutFor(W, sounds.length > 0);
+  const { SOUND_TOP, SOUND_H, LANE_TOP, LANE_H, BLOCK_H, STRIP_TOP, STRIP_H, TEMP_TOP, TEMP_H, H } =
+    layoutFor(W, activeLens);
 
   const model = useMemo(() => {
     // ---- time domain -----------------------------------------------------
@@ -222,18 +255,26 @@ export const NightChart: React.FC<Props> = ({
       (t) => !runs.some((r) => r.stage === "awake" && t >= r.from - 60_000 && t <= r.to + 60_000),
     );
 
+    // ---- restlessness: tosses per slice, as a share of the worst slice ----
+    const slices: { from: number; count: number }[] = [];
+    for (let from = t0; from < t1; from += RESTLESS_SLICE_MS) {
+      slices.push({
+        from,
+        count: tosses.filter((t) => t >= from && t < from + RESTLESS_SLICE_MS).length,
+      });
+    }
+    const maxSlice = Math.max(1, ...slices.map((s) => s.count));
+
     // ---- temperature series ---------------------------------------------
     const tempValues = [...bed, ...room].map(([, v]) => v);
-    const [lo, hi] = paddedDomain(tempValues, 0.18);
+    const [lo, hi] = tempValues.length > 0 ? paddedDomain(tempValues, 0.18) : [0, 1];
     const y = (value: number) =>
       TEMP_TOP + TEMP_H - ((clamp(value, lo, hi) - lo) / (hi - lo)) * TEMP_H;
-
     const toPoints = (series: Point[]) =>
       series
         .slice()
         .sort((a, b) => a[0] - b[0])
         .map(([t, v]) => ({ x: x(t), y: y(v) }));
-
     const bedPoints = toPoints(bed);
     const roomPoints = toPoints(room);
 
@@ -246,27 +287,14 @@ export const NightChart: React.FC<Props> = ({
       hi,
       runs,
       briefWakes,
+      slices,
+      maxSlice,
       bedPoints,
-      roomPoints,
       bedPath: smoothPath(bedPoints),
       roomPath: smoothPath(roomPoints),
       ticks: hourTicks(t0, t1, t1 - t0 > 9 * 3_600_000 ? 2 : 1),
     };
-  }, [
-    sessionStart,
-    sleepStart,
-    sleepEnd,
-    stages,
-    wakeUps,
-    bed,
-    room,
-    tosses,
-    events,
-    sounds,
-    X1,
-    TEMP_TOP,
-    TEMP_H,
-  ]);
+  }, [sessionStart, sleepStart, sleepEnd, stages, wakeUps, bed, room, tosses, events, sounds, X1, TEMP_TOP, TEMP_H]);
 
   if (!model) {
     return (
@@ -276,17 +304,69 @@ export const NightChart: React.FC<Props> = ({
     );
   }
 
-  const { t0, t1, x, y, runs, briefWakes, bedPoints, bedPath, roomPath, ticks } = model;
+  const { t0, t1, x, y, runs, briefWakes, slices, maxSlice, bedPoints, bedPath, roomPath, ticks } =
+    model;
 
+  const nearest = (series: Point[], time: number) => {
+    if (series.length === 0) return null;
+    let best = series[0]!;
+    for (const point of series) {
+      if (Math.abs(point[0] - time) < Math.abs(best[0] - time)) best = point;
+    }
+    return Math.abs(best[0] - time) < 90 * 60_000 ? best[1] : null;
+  };
+
+  // ---- one sentence per view ----------------------------------------------
+  const asleepFrom = sleepStart ?? t0;
+  const awakeSpells = runs.filter((r) => r.stage === "awake" && r.from > asleepFrom);
+  const longest = awakeSpells.sort((a, b) => b.to - b.from - (a.to - a.from))[0];
+  const wakeCount = wakeUps.length;
+  const soundsBeforeWake = sounds.filter((s) =>
+    wakeUps.some((t) => t >= s.at - 15_000 && t - s.at <= FOLLOW_MS),
+  ).length;
+  // The bedtime setting itself is not news; what changed after falling asleep is.
+  const nightEvents = events.filter((e) => sleepStart == null || e.at > sleepStart);
+  const bedValues = bed.map(([, v]) => v);
+  const roomValues = room.map(([, v]) => v);
+  const range = (values: number[]) =>
+    values.length === 0
+      ? null
+      : Math.min(...values).toFixed(0) === Math.max(...values).toFixed(0)
+        ? `${Math.min(...values).toFixed(0)}°C`
+        : `${Math.min(...values).toFixed(0)}–${Math.max(...values).toFixed(0)}°C`;
+
+  const summary =
+    activeLens === "sleep"
+      ? [
+          wakeCount === 0
+            ? "No wake-ups."
+            : `Woke ${wakeCount === 1 ? "once" : `${wakeCount} times`}${briefWakes.length > 0 ? ", mostly for under a minute" : ""}.`,
+          longest && longest.to - longest.from >= 3 * 60_000
+            ? `Longest awake: ${minutes(longest.to - longest.from)} min at ${clockIn(longest.from, timezone)}.`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" ")
+      : activeLens === "sounds"
+        ? `${sounds.length} ${sounds.length === 1 ? "sound" : "sounds"} while in bed. ${
+            soundsBeforeWake === 0
+              ? "None came right before a wake-up."
+              : `${soundsBeforeWake} came right before a wake-up.`
+          }`
+        : [
+            range(bedValues) ? `Bed ${range(bedValues)}` : null,
+            range(roomValues) ? `room ${range(roomValues)}` : null,
+          ]
+            .filter(Boolean)
+            .join(", ") +
+          `. ${
+            nightEvents.length === 0
+              ? "No changes during the night."
+              : `${nightEvents.length} ${nightEvents.length === 1 ? "change" : "changes"} during the night.`
+          }`;
+
+  // ---- reading one moment ----------------------------------------------------
   const readAt = (time: number) => {
-    const nearest = (series: Point[]) => {
-      if (series.length === 0) return null;
-      let best = series[0]!;
-      for (const point of series) {
-        if (Math.abs(point[0] - time) < Math.abs(best[0] - time)) best = point;
-      }
-      return Math.abs(best[0] - time) < 90 * 60_000 ? best[1] : null;
-    };
     const run = runs.find((r) => time >= r.from && time < r.to);
     // A brief wake-up is a minute wide on a ten-hour axis: catch it within
     // two minutes so a finger can actually land on it.
@@ -294,301 +374,396 @@ export const NightChart: React.FC<Props> = ({
     return {
       stage: run?.stage ?? null,
       wokeBriefly,
-      bed: nearest(bed),
-      room: nearest(room),
-      // Sounds within three minutes either side, so a hover over an awake
+      bed: nearest(bed, time),
+      room: nearest(room, time),
+      // Sounds within three minutes either side, so a touch on an awake
       // block names whatever was heard just before it.
       sounds: sounds.filter((s) => Math.abs(s.at - time) <= 3 * 60_000),
+      event: events.find((e) => Math.abs(e.at - time) <= 5 * 60_000) ?? null,
     };
   };
 
-  const handleMove = (clientX: number) => {
-    const svg = svgRef.current;
-    if (!svg) return;
-    const rect = svg.getBoundingClientRect();
-    const ratio = (clientX - rect.left) / rect.width;
-    const px = clamp(ratio * W, X0, X1);
+  const moveTo = (clientX: number) => {
+    const box = boxRef.current;
+    if (!box) return;
+    const rect = box.getBoundingClientRect();
+    const px = clamp(((clientX - rect.left) / rect.width) * W, X0, X1);
     setCursor(t0 + ((px - X0) / (X1 - X0)) * (t1 - t0));
   };
 
   const reading = cursor == null ? null : readAt(cursor);
   const cursorX = cursor == null ? 0 : x(cursor);
-  const tooltipLeft = clamp(((cursorX - X0) / (X1 - X0)) * 100, 6, 94);
+  const showLanes = activeLens !== "temp";
+  const dimStages = activeLens === "sounds";
+
+  // Connector between consecutive stage blocks, so the hypnogram reads as one
+  // line through the night rather than loose bricks.
+  const laneMid = (stage: StageKey) => LANE_TOP + STAGE_ORDER.indexOf(stage) * LANE_H + BLOCK_H / 2;
+  const connector = runs
+    .slice(1)
+    .map((run, i) => {
+      const prev = runs[i]!;
+      if (prev.to !== run.from || prev.stage === run.stage) return "";
+      return `M ${x(run.from)} ${laneMid(prev.stage)} V ${laneMid(run.stage)}`;
+    })
+    .join(" ");
 
   return (
-    <div className="relative">
-      <div ref={boxRef} className="relative w-full" style={{ height: H }}>
-        {/* Lane labels live in HTML so they stay at a real type size however
-            wide the card gets — SVG <text> scales with the viewBox. */}
-        {STAGE_ORDER.map((stage, lane) => (
-          <span
-            key={`lbl-${stage}`}
-            className="absolute -translate-y-1/2 text-[10px] font-semibold uppercase tracking-wide"
-            style={{
-              left: 0,
-              width: `${(GUTTER / W) * 100}%`,
-              top: `${((LANE_TOP + lane * LANE_H + BLOCK_H / 2) / H) * 100}%`,
-              color: "var(--text-faint)",
-            }}
-          >
-            {STAGE_LABEL[stage]}
-          </span>
-        ))}
-
-        {/* Temperature scale endpoints, same reason. */}
-        {[model.hi, model.lo].map((value, i) => (
-          <span
-            key={`ty-${i}`}
-            className="tabular absolute -translate-y-1/2 text-[10px]"
-            style={{
-              left: 0,
-              width: `${(GUTTER / W) * 100}%`,
-              top: `${((i === 0 ? TEMP_TOP : TEMP_TOP + TEMP_H) / H) * 100}%`,
-              color: "var(--text-faint)",
-            }}
-          >
-            {value.toFixed(0)}°
-          </span>
-        ))}
-
-      <svg
-        ref={svgRef}
-        className="absolute inset-0 h-full w-full"
-        viewBox={`0 0 ${W} ${H}`}
-        role="img"
-        aria-label="Sleep stages, bed temperature and temperature changes across the night"
-        onMouseMove={(e) => handleMove(e.clientX)}
-        onMouseLeave={() => setCursor(null)}
-        onTouchStart={(e) => handleMove(e.touches[0]!.clientX)}
-        onTouchMove={(e) => handleMove(e.touches[0]!.clientX)}
-        onTouchEnd={() => setCursor(null)}
-      >
-        <defs>
-          <linearGradient id="bedFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--warm)" stopOpacity="0.28" />
-            <stop offset="100%" stopColor="var(--warm)" stopOpacity="0.02" />
-          </linearGradient>
-        </defs>
-
-        {/* Hour gridlines run through every panel so the eye can read down. */}
-        {ticks.map((t) => (
-          <line
-            key={`grid-${t}`}
-            x1={x(t)}
-            x2={x(t)}
-            y1={LANE_TOP - 2}
-            y2={RAIL_TOP + RAIL_H}
-            stroke="var(--border)"
-            strokeWidth="1"
-          />
-        ))}
-
-        {/* ---- Panel 1: hypnogram ---------------------------------------- */}
-        {STAGE_ORDER.map((stage, lane) => (
-          <g key={`lane-${stage}`}>
-            <line
-              x1={X0}
-              x2={X1}
-              y1={LANE_TOP + lane * LANE_H + BLOCK_H / 2}
-              y2={LANE_TOP + lane * LANE_H + BLOCK_H / 2}
-              stroke="var(--border)"
-              strokeWidth="1"
-              strokeDasharray="1 4"
-              opacity="0.7"
-            />
-          </g>
-        ))}
-        {runs.map((run, index) => {
-          const lane = STAGE_ORDER.indexOf(run.stage);
-          const left = x(run.from);
-          const width = Math.max(x(run.to) - left, 1.5);
+    <div>
+      {/* ---- View switch ---------------------------------------------------- */}
+      <div role="tablist" aria-label="Chart view" className="mb-3 flex gap-1.5 overflow-x-auto [scrollbar-width:none]">
+        {lenses.map((entry) => {
+          const selected = entry.key === activeLens;
           return (
-            <rect
-              key={`run-${index}`}
-              className="grow-seg"
-              x={left}
-              y={LANE_TOP + lane * LANE_H}
-              width={width}
-              height={BLOCK_H}
-              rx={3}
-              fill={STAGE_VAR[run.stage]}
-              style={{ "--i": Math.min(index, 12) } as React.CSSProperties}
-            />
+            <button
+              key={entry.key}
+              id={`lens-${entry.key}`}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              onClick={() => {
+                setLens(entry.key);
+                setCursor(null);
+              }}
+              className="flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-[background-color,border-color,color,transform] duration-fast ease-snap hover:border-[var(--border-strong)] active:scale-[0.97] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+              style={{
+                borderColor: selected ? "var(--accent)" : "var(--border)",
+                background: selected ? "var(--accent-soft)" : "transparent",
+                color: selected ? "var(--text-headline)" : "var(--text-muted)",
+                outlineColor: "var(--accent)",
+              }}
+            >
+              <LordIcon
+                name={entry.icon}
+                size={16}
+                trigger="hover"
+                target={`#lens-${entry.key}`}
+                color={selected ? "var(--accent)" : "var(--text-faint)"}
+              />
+              {entry.label}
+            </button>
           );
         })}
+      </div>
 
-        {/* Brief wake-ups: a fixed-width pill in the Awake lane, so a
-            40-second wake-up is as findable as a 15-minute one. */}
-        {briefWakes.map((t, index) => (
-          <rect
-            key={`wake-${index}`}
-            className="grow-seg"
-            x={x(t) - 2.5}
-            y={LANE_TOP}
-            width={5}
-            height={BLOCK_H}
-            rx={2.5}
-            fill="var(--stage-awake)"
-            stroke="var(--surface)"
-            strokeWidth="1"
-            style={{ "--i": Math.min(index, 12) } as React.CSSProperties}
-          />
-        ))}
-
-        {/* Each sound drops a faint line through the hypnogram, so you can
-            see for yourself whether an awake block follows it. */}
-        {sounds.map((s, index) => (
-          <line
-            key={`sound-${index}`}
-            x1={x(s.at)}
-            x2={x(s.at)}
-            y1={SOUND_TOP + SOUND_H}
-            y2={LANE_TOP + LANE_H * 4}
-            stroke="var(--warning)"
-            strokeWidth="1"
-            strokeDasharray="2 3"
-            opacity="0.6"
-          />
-        ))}
-
-        {/* ---- Panel 2: temperature (both series in °C, one axis) -------- */}
-        {roomPath && (
-          <path
-            d={roomPath}
-            fill="none"
-            stroke="var(--text-faint)"
-            strokeWidth="1.5"
-            strokeDasharray="3 3"
-            strokeLinecap="round"
-          />
-        )}
-        {bedPath && bedPoints.length > 1 && (
+      {/* ---- What this view found, or the moment being read ----------------- */}
+      <div className="mb-2 flex min-h-[40px] items-start gap-2" aria-live="polite">
+        {reading && cursor != null ? (
           <>
-            <path
-              d={`${bedPath} L ${bedPoints[bedPoints.length - 1]!.x} ${TEMP_TOP + TEMP_H} L ${bedPoints[0]!.x} ${TEMP_TOP + TEMP_H} Z`}
-              fill="url(#bedFill)"
-            />
-            <path
-              d={bedPath}
-              className="draw-line"
-              style={{ "--len": 900 } as React.CSSProperties}
-              fill="none"
-              stroke="var(--warm)"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+            <div className="min-w-0 flex-1 text-[13px] leading-snug" style={{ color: "var(--text)" }}>
+              <span className="tabular font-semibold" style={{ color: "var(--text-headline)" }}>
+                {clockIn(cursor, timezone)}
+              </span>
+              {activeLens !== "temp" && reading.stage && (
+                <Chip color={STAGE_VAR[reading.stage]}>{STAGE_LABEL[reading.stage]}</Chip>
+              )}
+              {activeLens !== "temp" && reading.wokeBriefly != null && (
+                <Chip color="var(--stage-awake)">woke briefly</Chip>
+              )}
+              {activeLens === "sounds" &&
+                reading.sounds.map((s) => (
+                  <Chip key={`rs-${s.at}-${s.kind}`} color="var(--warning)">
+                    {clockIn(s.at, timezone)} {soundLabel(s.kind)}
+                  </Chip>
+                ))}
+              {activeLens === "temp" && reading.bed != null && (
+                <Chip color="var(--warm)">bed {reading.bed.toFixed(1)}°C</Chip>
+              )}
+              {activeLens === "temp" && reading.room != null && (
+                <Chip color="var(--text-faint)">room {reading.room.toFixed(1)}°C</Chip>
+              )}
+              {activeLens === "temp" && reading.event && (
+                <Chip color={SOURCE_COLOR[reading.event.source]}>{reading.event.label}</Chip>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setCursor(null)}
+              className="btn btn-ghost shrink-0 px-2 py-1 text-xs"
+            >
+              Clear
+            </button>
           </>
+        ) : (
+          <p className="text-[13px] leading-snug" style={{ color: "var(--text-muted)" }}>
+            {summary}{" "}
+            <span style={{ color: "var(--text-faint)" }}>Tap or slide along the chart to read a moment.</span>
+          </p>
         )}
+      </div>
 
-        {/* ---- Panel 3: what happened ------------------------------------ */}
-        {tosses.map((t, index) => (
-          <line
-            key={`toss-${index}`}
-            x1={x(t)}
-            x2={x(t)}
-            y1={RAIL_TOP + 4}
-            y2={RAIL_TOP + RAIL_H}
-            stroke="var(--stage-awake)"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            opacity="0.75"
-          />
-        ))}
-        {events.map((event, index) => (
-          <g key={`event-${index}`}>
-            <line
-              x1={x(event.at)}
-              x2={x(event.at)}
-              y1={TEMP_TOP}
-              y2={RAIL_TOP + RAIL_H / 2}
-              stroke={SOURCE_COLOR[event.source]}
-              strokeWidth="1"
-              strokeDasharray="2 2"
-              opacity="0.55"
-            />
-            <circle
-              cx={x(event.at)}
-              cy={RAIL_TOP + RAIL_H / 2}
-              r="3.4"
-              fill={SOURCE_COLOR[event.source]}
-              stroke="var(--surface)"
-              strokeWidth="1.5"
-            />
-          </g>
-        ))}
-
-        {focusAt != null && focusAt >= t0 && focusAt <= t1 && (
-          <line
-            x1={x(focusAt)}
-            x2={x(focusAt)}
-            y1={SOUND_TOP}
-            y2={RAIL_TOP + RAIL_H}
-            stroke="var(--accent)"
-            strokeWidth="2"
-          />
+      {/* ---- Chart ---------------------------------------------------------------
+          Vertical swipes scroll the page (touch-action: pan-y); a tap or a
+          sideways slide reads the night. Long-press selection and the iOS
+          callout are switched off, since they only ever grabbed the chart. */}
+      <div
+        ref={boxRef}
+        className="relative w-full select-none [-webkit-touch-callout:none] [-webkit-user-select:none]"
+        style={{ height: H, touchAction: "pan-y" }}
+        onContextMenu={(e) => e.preventDefault()}
+        onPointerDown={(e) => {
+          if (e.pointerType === "mouse") moveTo(e.clientX);
+          else touchStart.current = { x: e.clientX, y: e.clientY };
+        }}
+        onPointerMove={(e) => {
+          if (e.pointerType === "mouse") moveTo(e.clientX);
+          else if (touchStart.current) moveTo(e.clientX);
+        }}
+        onPointerUp={(e) => {
+          const start = touchStart.current;
+          touchStart.current = null;
+          if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) < 10) moveTo(e.clientX);
+        }}
+        onPointerCancel={() => {
+          touchStart.current = null;
+        }}
+        onPointerLeave={(e) => {
+          if (e.pointerType === "mouse") setCursor(null);
+        }}
+      >
+        {/* Lane labels live in HTML so they stay at a real type size however
+            wide the card gets — SVG <text> scales with the viewBox. */}
+        {showLanes &&
+          STAGE_ORDER.map((stage, lane) => (
+            <span
+              key={`lbl-${stage}`}
+              className="absolute -translate-y-1/2 text-[10px] font-semibold uppercase tracking-wide"
+              style={{
+                left: 0,
+                width: GUTTER,
+                top: LANE_TOP + lane * LANE_H + BLOCK_H / 2,
+                color: dimStages ? "var(--text-faint)" : STAGE_VAR[stage],
+              }}
+            >
+              {STAGE_LABEL[stage]}
+            </span>
+          ))}
+        {activeLens === "sleep" && (
+          <span
+            className="absolute -translate-y-1/2 text-[10px] font-semibold uppercase tracking-wide"
+            style={{ left: 0, width: GUTTER, top: STRIP_TOP + STRIP_H / 2, color: "var(--text-faint)" }}
+          >
+            Toss
+          </span>
         )}
+        {activeLens === "temp" &&
+          [model.hi, model.lo].map((value, i) => (
+            <span
+              key={`ty-${i}`}
+              className="tabular absolute -translate-y-1/2 text-[10px]"
+              style={{
+                left: 0,
+                width: GUTTER,
+                top: i === 0 ? TEMP_TOP : TEMP_TOP + TEMP_H,
+                color: "var(--text-faint)",
+              }}
+            >
+              {value.toFixed(0)}°
+            </span>
+          ))}
 
-        {/* ---- Crosshair ------------------------------------------------- */}
-        {cursor != null && (
-          <>
+        <svg
+          key={activeLens}
+          className="absolute inset-0 h-full w-full"
+          viewBox={`0 0 ${W} ${H}`}
+          role="img"
+          aria-label={summary}
+        >
+          <defs>
+            <linearGradient id="bedFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--warm)" stopOpacity="0.28" />
+              <stop offset="100%" stopColor="var(--warm)" stopOpacity="0.02" />
+            </linearGradient>
+          </defs>
+
+          {/* Hour gridlines, faint, so the eye can read down to the axis. */}
+          {ticks.map((t) => (
             <line
-              x1={cursorX}
-              x2={cursorX}
-              y1={LANE_TOP - 2}
-              y2={RAIL_TOP + RAIL_H}
-              stroke="var(--text)"
+              key={`grid-${t}`}
+              x1={x(t)}
+              x2={x(t)}
+              y1={2}
+              y2={H - 2}
+              stroke="var(--border)"
               strokeWidth="1"
-              opacity="0.55"
+              opacity="0.6"
             />
-            {reading?.bed != null && (
-              <circle
-                cx={cursorX}
-                cy={y(reading.bed)}
-                r="3.5"
-                fill="var(--warm)"
+          ))}
+
+          {/* ---- Stages ------------------------------------------------------ */}
+          {showLanes && (
+            <g opacity={dimStages ? 0.35 : 1}>
+              <path d={connector} stroke="var(--border-strong)" strokeWidth="1" fill="none" />
+              {runs.map((run, index) => {
+                const left = x(run.from);
+                return (
+                  <rect
+                    key={`run-${index}`}
+                    className="grow-seg"
+                    x={left}
+                    y={LANE_TOP + STAGE_ORDER.indexOf(run.stage) * LANE_H}
+                    width={Math.max(x(run.to) - left, 1.5)}
+                    height={BLOCK_H}
+                    rx={3}
+                    fill={STAGE_VAR[run.stage]}
+                    style={{ "--i": Math.min(index, 12) } as React.CSSProperties}
+                  />
+                );
+              })}
+            </g>
+          )}
+
+          {/* Brief wake-ups: a fixed-width pill in the Awake lane, so a
+              40-second wake-up is as findable as a 15-minute one. Never
+              dimmed: in the Sounds view they are what a sound is judged by. */}
+          {showLanes &&
+            briefWakes.map((t, index) => (
+              <rect
+                key={`wake-${index}`}
+                x={x(t) - 3}
+                y={LANE_TOP}
+                width={6}
+                height={BLOCK_H}
+                rx={3}
+                fill="var(--stage-awake)"
                 stroke="var(--surface)"
-                strokeWidth="2"
+                strokeWidth="1"
               />
+            ))}
+
+          {/* Tossing and turning as one strip: darker = more movement. */}
+          {activeLens === "sleep" &&
+            slices.map((slice) =>
+              slice.count === 0 ? null : (
+                <rect
+                  key={`slice-${slice.from}`}
+                  x={x(slice.from)}
+                  y={STRIP_TOP}
+                  width={Math.max(x(Math.min(slice.from + RESTLESS_SLICE_MS, t1)) - x(slice.from) - 1, 1)}
+                  height={STRIP_H}
+                  rx={2}
+                  fill="var(--stage-awake)"
+                  opacity={0.15 + 0.85 * (slice.count / maxSlice)}
+                />
+              ),
             )}
-          </>
-        )}
-      </svg>
+
+          {/* ---- Sounds: a faint line from each icon down through the night -- */}
+          {activeLens === "sounds" &&
+            sounds.map((s, index) => (
+              <line
+                key={`sound-${index}`}
+                x1={x(s.at)}
+                x2={x(s.at)}
+                y1={SOUND_TOP + SOUND_H}
+                y2={H - 4}
+                stroke="var(--warning)"
+                strokeWidth="1"
+                strokeDasharray="2 3"
+                opacity="0.7"
+              />
+            ))}
+
+          {/* ---- Temperature (both series in °C, one axis) ------------------ */}
+          {activeLens === "temp" && roomPath && (
+            <path
+              d={roomPath}
+              fill="none"
+              stroke="var(--text-faint)"
+              strokeWidth="1.5"
+              strokeDasharray="3 3"
+              strokeLinecap="round"
+            />
+          )}
+          {activeLens === "temp" && bedPath && bedPoints.length > 1 && (
+            <>
+              <path
+                d={`${bedPath} L ${bedPoints[bedPoints.length - 1]!.x} ${TEMP_TOP + TEMP_H} L ${bedPoints[0]!.x} ${TEMP_TOP + TEMP_H} Z`}
+                fill="url(#bedFill)"
+              />
+              <path
+                d={bedPath}
+                className="draw-line"
+                style={{ "--len": 1400 } as React.CSSProperties}
+                fill="none"
+                stroke="var(--warm)"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </>
+          )}
+          {/* Each change sits on the bed line at the moment it was sent. */}
+          {activeLens === "temp" &&
+            events.map((event, index) => {
+              const at = nearest(bed, event.at);
+              return (
+                <circle
+                  key={`event-${index}`}
+                  cx={x(event.at)}
+                  cy={at != null ? y(at) : TEMP_TOP + TEMP_H - 6}
+                  r="4"
+                  fill={SOURCE_COLOR[event.source]}
+                  stroke="var(--surface)"
+                  strokeWidth="1.5"
+                />
+              );
+            })}
+
+          {/* ---- Cursor --------------------------------------------------- */}
+          {cursor != null && (
+            <>
+              <line
+                x1={cursorX}
+                x2={cursorX}
+                y1={2}
+                y2={H - 2}
+                stroke="var(--text)"
+                strokeWidth="1.5"
+                opacity="0.7"
+              />
+              {activeLens === "temp" && reading?.bed != null && (
+                <circle
+                  cx={cursorX}
+                  cy={y(reading.bed)}
+                  r="4"
+                  fill="var(--warm)"
+                  stroke="var(--surface)"
+                  strokeWidth="2"
+                />
+              )}
+            </>
+          )}
+        </svg>
 
         {/* Sound icons: HTML over the chart so they are real animated
             Grunkicons at a fixed size. Sounds closer than an icon's width
             share one icon with a count. */}
-        {soundClusters(sounds, x, 18).map((cluster) => (
-          <span
-            key={`sc-${cluster.at}`}
-            id={`sc-${cluster.at}`}
-            className="absolute flex -translate-x-1/2 items-center"
-            style={{
-              left: `${(x(cluster.at) / W) * 100}%`,
-              top: SOUND_TOP,
-              height: SOUND_H,
-            }}
-            title={cluster.label}
-            aria-label={cluster.label}
-            role="img"
-          >
-            <LordIcon
-              name={soundIcon(cluster.kind)}
-              size={Math.min(SOUND_H, 20)}
-              trigger="hover"
-              target={`#sc-${cluster.at}`}
-              color="var(--warning)"
-            />
-            {cluster.count > 1 && (
-              <span
-                className="tabular -ml-0.5 text-[10px] font-semibold"
-                style={{ color: "var(--warning)" }}
-              >
-                {cluster.count}
-              </span>
-            )}
-          </span>
-        ))}
+        {activeLens === "sounds" &&
+          soundClusters(sounds, x, 22).map((cluster) => (
+            <span
+              key={`sc-${cluster.at}`}
+              id={`sc-${cluster.at}`}
+              className="absolute flex -translate-x-1/2 items-center"
+              style={{ left: x(cluster.at), top: SOUND_TOP, height: SOUND_H }}
+              title={cluster.label}
+              aria-label={cluster.label}
+              role="img"
+            >
+              <LordIcon
+                name={soundIcon(cluster.kind)}
+                size={Math.min(SOUND_H, 20)}
+                trigger="hover"
+                target={`#sc-${cluster.at}`}
+                color="var(--warning)"
+              />
+              {cluster.count > 1 && (
+                <span className="tabular -ml-0.5 text-[10px] font-semibold" style={{ color: "var(--warning)" }}>
+                  {cluster.count}
+                </span>
+              )}
+            </span>
+          ))}
       </div>
 
       <div className="relative mt-1 h-4">
@@ -596,86 +771,51 @@ export const NightChart: React.FC<Props> = ({
           <span
             key={`tick-${t}`}
             className="tabular absolute -translate-x-1/2 text-[10px]"
-            style={{ left: `${(x(t) / W) * 100}%`, color: "var(--text-faint)" }}
+            style={{ left: x(t), color: "var(--text-faint)" }}
           >
             {clockIn(t, timezone)}
           </span>
         ))}
       </div>
 
-      {cursor != null && reading && (
-        <div
-          className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-lg border px-2.5 py-1.5 text-[11px] shadow-pop"
-          style={{
-            left: `${tooltipLeft}%`,
-            backgroundColor: "var(--surface-raised)",
-            borderColor: "var(--border-strong)",
-            color: "var(--text)",
-          }}
-        >
-          <div
-            className="tabular font-semibold"
-            style={{ color: "var(--text-headline)" }}
-          >
-            {clockIn(cursor, timezone)}
-          </div>
-          {reading.stage && (
-            <div className="mt-0.5 flex items-center gap-1.5">
-              <span
-                className="inline-block h-1.5 w-1.5 rounded-full"
-                style={{ backgroundColor: STAGE_VAR[reading.stage] }}
-              />
-              {STAGE_LABEL[reading.stage]}
-            </div>
-          )}
-          {reading.wokeBriefly != null && (
-            <div className="mt-0.5 flex items-center gap-1.5">
-              <span
-                className="inline-block h-1.5 w-1.5 rounded-full"
-                style={{ backgroundColor: "var(--stage-awake)" }}
-              />
-              Woke briefly at {clockIn(reading.wokeBriefly, timezone)}
-            </div>
-          )}
-          {reading.bed != null && (
-            <div className="tabular mt-0.5" style={{ color: "var(--warm)" }}>
-              Bed {reading.bed.toFixed(1)}°C
-            </div>
-          )}
-          {reading.room != null && (
-            <div
-              className="tabular"
-              style={{ color: "var(--text-muted)" }}
-            >
-              Room {reading.room.toFixed(1)}°C
-            </div>
-          )}
-          {reading.sounds.map((s) => (
-            <div key={`ts-${s.at}-${s.kind}`} className="tabular" style={{ color: "var(--warning)" }}>
-              {clockIn(s.at, timezone)} {soundLabel(s.kind)}
-              {s.aboveQuietDb != null ? `, +${Math.round(s.aboveQuietDb)} dB` : ""}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Legend — identity is never carried by colour alone. */}
+      {/* Legend for this view only — identity is never carried by colour alone. */}
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
-        <LegendKey color="var(--warm)" label="Bed temp (°C)" />
-        <LegendKey color="var(--text-faint)" label="Room temp" dashed />
-        {briefWakes.length > 0 && (
-          <LegendKey color="var(--stage-awake)" label="Brief wake-up" pill />
+        {activeLens === "sleep" && (
+          <>
+            {briefWakes.length > 0 && <LegendKey color="var(--stage-awake)" label="Brief wake-up" pill />}
+            <LegendKey color="var(--stage-awake)" label="Tossing (darker = more)" block />
+          </>
         )}
-        <LegendKey color="var(--stage-awake)" label="Toss & turn" tick />
-        <LegendKey color="var(--accent)" label="Scheduled change" dot />
-        <LegendKey color="var(--warm)" label="Live nudge" dot />
-        {sounds.length > 0 && (
-          <LegendKey color="var(--warning)" label="Sound heard" tick />
+        {activeLens === "sounds" && (
+          <>
+            <LegendKey color="var(--warning)" label="Sound heard" tick />
+            <LegendKey color="var(--stage-awake)" label="Wake-up" pill />
+          </>
+        )}
+        {activeLens === "temp" && (
+          <>
+            <LegendKey color="var(--warm)" label="Bed" />
+            <LegendKey color="var(--text-faint)" label="Room" dashed />
+            {events.some((e) => e.source === "schedule") && (
+              <LegendKey color="var(--accent)" label="Scheduled change" dot />
+            )}
+            {events.some((e) => e.source === "live") && <LegendKey color="var(--warm)" label="AI nudge" dot />}
+            {events.some((e) => e.source === "manual") && (
+              <LegendKey color="var(--cool)" label="You changed it" dot />
+            )}
+          </>
         )}
       </div>
     </div>
   );
 };
+
+const Chip: React.FC<{ color: string; children: React.ReactNode }> = ({ color, children }) => (
+  <span className="ml-2 inline-flex items-center gap-1 whitespace-nowrap">
+    <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
+    {children}
+  </span>
+);
 
 const LegendKey: React.FC<{
   color: string;
@@ -684,23 +824,20 @@ const LegendKey: React.FC<{
   dot?: boolean;
   tick?: boolean;
   pill?: boolean;
-}> = ({ color, label, dashed, dot, tick, pill }) => (
+  block?: boolean;
+}> = ({ color, label, dashed, dot, tick, pill, block }) => (
   <span className="flex items-center gap-1.5" style={{ color: "var(--text-muted)" }}>
     {dot ? (
-      <span
-        className="inline-block h-2 w-2 rounded-full"
-        style={{ backgroundColor: color }}
-      />
+      <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
     ) : pill ? (
+      <span className="inline-block h-2.5 w-[6px] rounded-full" style={{ backgroundColor: color }} />
+    ) : block ? (
       <span
-        className="inline-block h-2.5 w-[5px] rounded-full"
-        style={{ backgroundColor: color }}
+        className="inline-block h-2 w-4 rounded-sm"
+        style={{ backgroundImage: `linear-gradient(90deg, color-mix(in srgb, ${color} 20%, transparent), ${color})` }}
       />
     ) : tick ? (
-      <span
-        className="inline-block h-2.5 w-[2px] rounded-full"
-        style={{ backgroundColor: color }}
-      />
+      <span className="inline-block h-2.5 w-[2px] rounded-full" style={{ backgroundColor: color }} />
     ) : (
       <span
         className="inline-block h-[2px] w-4 rounded-full"
