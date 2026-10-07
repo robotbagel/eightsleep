@@ -204,6 +204,22 @@ export const soundEvents = createTable(
   }),
 );
 
+// A few seconds of audio around a sound event, so a person can hear what it
+// was and judge it themselves. AAC (.m4a) in base64; deleted after 14 days.
+export const soundClips = createTable(
+  "soundClips",
+  {
+    id: serial("id").primaryKey(),
+    eventId: integer("eventId").notNull(),
+    mime: varchar("mime", { length: 40 }).notNull(),
+    dataB64: text("dataB64").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    eventIdx: index("soundClips_eventId_idx").on(table.eventId),
+  }),
+);
+
 export const aiRunLog = createTable(
   "aiRunLog",
   {

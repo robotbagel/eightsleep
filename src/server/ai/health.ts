@@ -12,7 +12,7 @@
 //    sleepEnd) for anyone who prefers to precompute.
 import { z } from "zod";
 import { db } from "~/server/db";
-import { healthNights } from "~/server/db/schema";
+import { healthNights, nightMetrics } from "~/server/db/schema";
 import { and, desc, eq, gte } from "drizzle-orm";
 import { type NightTrend, type SessionDetail } from "./sleepData";
 import {
@@ -258,6 +258,28 @@ export function computeSleepScore(
  * number — and a "disagreement" between pod and Watch is then our two
  * rubrics disagreeing, not the two sensors.
  */
+/**
+ * Wake dates the bed itself recorded the owner on: the nights spent at home.
+ *
+ * The bedtime term compares a night with the sleeper's usual bedtime. Watch
+ * nights travel; the bed does not. In Sep-Oct 2026 three weeks of holiday
+ * nights in another time zone entered that "usual" and pulled it hours off,
+ * so every night back home scored zero on bedtime (Watch 57-59 against the
+ * pod's 91-96 on the same nights). Only nights the pod also recorded may
+ * define the habit.
+ */
+async function nightsAtHome(email: string): Promise<Set<string>> {
+  try {
+    const rows = await db
+      .select({ night: nightMetrics.night, notMe: nightMetrics.notMe })
+      .from(nightMetrics)
+      .where(and(eq(nightMetrics.email, email), eq(nightMetrics.source, "pod")));
+    return new Set(rows.filter((r) => r.notMe !== true).map((r) => r.night));
+  } catch {
+    return new Set();
+  }
+}
+
 export async function rescoreHealthNights(
   email: string,
   timezone: string,
@@ -269,6 +291,7 @@ export async function rescoreHealthNights(
     .orderBy(healthNights.night);
   const changes: { night: string; before: number; after: number }[] = [];
   const priorStarts: number[] = [];
+  const home = await nightsAtHome(email);
   for (const row of rows) {
     const reference =
       priorStarts.length > 0
@@ -295,7 +318,7 @@ export async function rescoreHealthNights(
         .where(eq(healthNights.id, row.id));
       changes.push({ night: row.night, before: row.score, after });
     }
-    if (row.sleepStart != null) {
+    if (row.sleepStart != null && home.has(row.night)) {
       priorStarts.push(minutesOfDayInZone(row.sleepStart, timezone));
     }
   }
@@ -346,9 +369,12 @@ export async function storeHealthImport(
     .from(healthNights)
     .where(eq(healthNights.email, email))
     .orderBy(desc(healthNights.night))
-    .limit(BEDTIME_REFERENCE_NIGHTS + 1);
+    .limit(60);
+  const home = await nightsAtHome(email);
   const starts = prior
-    .filter((row) => row.night !== night && row.sleepStart != null)
+    .filter(
+      (row) => row.night !== night && row.sleepStart != null && home.has(row.night),
+    )
     .slice(0, BEDTIME_REFERENCE_NIGHTS)
     .map((row) => minutesOfDayInZone(row.sleepStart!, timezone));
   const referenceBedtimeMinutes =

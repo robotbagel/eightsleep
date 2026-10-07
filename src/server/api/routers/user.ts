@@ -1,14 +1,14 @@
 import { z } from "zod";
 import { createTRPCRouter, publicProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
-import { users, userTemperatureProfile } from "~/server/db/schema";
+import { soundClips, users, userTemperatureProfile } from "~/server/db/schema";
 import { cookies } from "next/headers";
 import {
   authenticate,
   obtainFreshAccessToken,
   AuthError,
 } from "~/server/eight/auth";
-import { and, desc, eq, gte, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte } from "drizzle-orm";
 import { type Token } from "~/server/eight/types";
 import { TRPCError } from "@trpc/server";
 import { adjustTemperature } from "~/app/api/temperatureCron/route";
@@ -90,7 +90,6 @@ const checkAuthCookie = async (headers: Headers) => {
     .split("; ")
     .find((row) => row.startsWith("8slpAutht="))
     ?.split("=")[1];
-  console.log("Token:", token);
 
   if (!token) {
     throw new AuthError(`Auth request failed. No cookies found.`, 401);
@@ -800,8 +799,14 @@ export const userRouter = createTRPCRouter({
         /** Hypnogram: consecutive runs from sessionStart, seconds each. */
         stages: { stage: string; duration: number }[];
         stageHours: Record<string, number>;
-        /** What the bedroom phone heard (sound.ts), for the chart. */
-        sounds: { at: string; kind: string; aboveQuietDb: number | null }[];
+        /** What was heard in the bedroom (sound.ts), for the chart and list. */
+        sounds: {
+          id: number | null;
+          at: string;
+          kind: string;
+          aboveQuietDb: number | null;
+          hasClip: boolean;
+        }[];
       } | null = null;
       let metrics: NightMetric | null = null;
       let availableNights: string[] = [];
@@ -870,11 +875,27 @@ export const userRouter = createTRPCRouter({
                 duration: s.duration,
               })),
               stageHours,
-              sounds: (chosen.soundEvents ?? []).map((e) => ({
-                at: e.at.toISOString(),
-                kind: e.kind,
-                aboveQuietDb: e.aboveQuietDb,
-              })),
+              sounds: await (async () => {
+                const heard = chosen.soundEvents ?? [];
+                const ids = heard.map((e) => e.id).filter((id): id is number => id != null);
+                const withClip = new Set(
+                  ids.length === 0
+                    ? []
+                    : (
+                        await db
+                          .select({ eventId: soundClips.eventId })
+                          .from(soundClips)
+                          .where(inArray(soundClips.eventId, ids))
+                      ).map((r) => r.eventId),
+                );
+                return heard.map((e) => ({
+                  id: e.id ?? null,
+                  at: e.at.toISOString(),
+                  kind: e.kind,
+                  aboveQuietDb: e.aboveQuietDb,
+                  hasClip: e.id != null && withClip.has(e.id),
+                }));
+              })(),
             };
             // ONE source of truth. This used to hand back the freshly
             // computed row, while every other view read the stored one — so

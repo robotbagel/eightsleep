@@ -79,6 +79,13 @@ KINDS = {
     "Alarm clock": "alarm_clock",
 }
 MIN_SCORE = 0.35
+# Unnamed sound this far above the room's quiet is reported as "loud". 15 dB
+# gave 149 a night, mostly the TV and morning bustle; 22 keeps real bangs.
+LOUD_ABOVE_QUIET = 22
+# Each event carries a short clip so a person can hear what it was and judge:
+# CLIP_BEFORE windows (~1 s each) before the moment and CLIP_AFTER after.
+CLIP_BEFORE = 3
+CLIP_AFTER = 4
 MERGE_S = 10  # the same kind within this many seconds is one event
 CAT_MIN_SCORE = 0.4
 # On a dim, grey night picture the detector mixes animals up (a test cat was
@@ -96,8 +103,60 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger("night-ears")
 
 
+def encode_clip(pcm: bytes) -> str | None:
+    """16 kHz mono PCM -> AAC in an .m4a, base64. AAC because the iPhone's
+    browser plays it natively; ~7 s at 32 kbit/s is about 25 KB."""
+    import base64
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".m4a") as out:
+        result = subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-y", "-f", "s16le", "-ar", str(RATE),
+             "-ac", "1", "-i", "pipe:0", "-c:a", "aac", "-b:a", "32k",
+             "-movflags", "+faststart", out.name],
+            input=pcm,
+        )
+        if result.returncode != 0:
+            return None
+        return base64.b64encode(open(out.name, "rb").read()).decode()
+
+
+class Clips:
+    """The last few seconds of sound, and clips still being filled. Audio
+    exists only here, in memory, until a clip is encoded and sent."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.recent: list[bytes] = []
+        self.open: list[tuple[dict, list[bytes], int]] = []
+
+    def push(self, window: bytes) -> list[tuple[dict, bytes]]:
+        """Add one window; return clips that are now complete."""
+        done: list[tuple[dict, bytes]] = []
+        with self.lock:
+            self.recent.append(window)
+            del self.recent[:-CLIP_BEFORE]
+            still: list[tuple[dict, list[bytes], int]] = []
+            for event, parts, left in self.open:
+                parts.append(window)
+                if left - 1 <= 0:
+                    done.append((event, b"".join(parts)))
+                else:
+                    still.append((event, parts, left - 1))
+            self.open = still
+        return done
+
+    def start(self, event: dict) -> None:
+        with self.lock:
+            self.open.append((event, list(self.recent), CLIP_AFTER))
+
+
+CLIPS = Clips()
+
+
 class Outbox:
-    """Events waiting to be sent; posted every minute, kept on failure."""
+    """Events waiting to be sent; posted every minute, kept on failure. An
+    event whose clip is still recording waits for it (at most ~10 s)."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -112,6 +171,8 @@ class Outbox:
             if last is not None and now - last < MERGE_S:
                 return
             event = {
+                "_clip_pending": True,
+                "_t": now,
                 "at": datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "kind": kind,
                 "durationS": duration,
@@ -121,14 +182,29 @@ class Outbox:
             if above_quiet is not None:
                 event["aboveQuietDb"] = round(above_quiet, 1)
             self.pending.append(event)
+        CLIPS.start(event)
         log.info("heard %s (%.2f, +%s dB)", kind, confidence or 0, above_quiet)
 
     def flush(self) -> None:
+        # A clip that never completed (the stream dropped) does not hold
+        # its event back for more than half a minute.
+        cutoff = time.time() - 30
         with self.lock:
-            batch, self.pending = self.pending, []
+            for e in self.pending:
+                if e.get("_clip_pending") and e.get("_t", 0) < cutoff:
+                    e.pop("_clip_pending", None)
+        with self.lock:
+            ready = [e for e in self.pending if not e.get("_clip_pending")]
+            self.pending = [e for e in self.pending if e.get("_clip_pending")]
+        # Clips make a batch heavy; send a few at a time.
+        for start in range(0, len(ready), 10):
+            self._send(ready[start : start + 10])
+
+    def _send(self, batch: list[dict]) -> None:
         if not batch:
             return
-        body = json.dumps({"device": DEVICE, "events": batch}).encode()
+        clean = [{k: v for k, v in e.items() if not k.startswith("_")} for e in batch]
+        body = json.dumps({"device": DEVICE, "events": clean}).encode()
         req = urllib.request.Request(
             EVENT_URL,
             data=body,
@@ -238,6 +314,11 @@ def listen(outbox: Outbox, audio) -> None:
         raw = read_exact(audio, WINDOW * 2)
         if len(raw) < WINDOW * 2:
             return
+        for event, clip_pcm in CLIPS.push(raw):
+            clip = encode_clip(clip_pcm)
+            if clip:
+                event["clip"] = clip
+            event.pop("_clip_pending", None)
         pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
         db = 20 * np.log10(max(float(np.sqrt(np.mean(pcm ** 2))), 1e-9))
         levels.append(db)
@@ -252,7 +333,7 @@ def listen(outbox: Outbox, audio) -> None:
                 outbox.add(kind, category.score, above, 1)
                 named = True
                 break
-        if not named and len(levels) >= 30 and above >= 15:
+        if not named and len(levels) >= 30 and above >= LOUD_ABOVE_QUIET:
             outbox.add("loud", None, above, 1)
 
 

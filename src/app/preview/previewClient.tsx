@@ -87,10 +87,10 @@ export default function PreviewClient() {
         // Synthetic sounds for the chart's sound row: a meow right before a
         // short wake, a thud, and two meows close together (one cluster).
         sounds: [
-          { at: new Date(Date.parse(fixture.sleepStart) + 95 * 60_000).toISOString(), kind: "cat_meow", aboveQuietDb: 18 },
-          { at: new Date(Date.parse(fixture.sleepStart) + 96 * 60_000).toISOString(), kind: "cat_meow", aboveQuietDb: 21 },
-          { at: new Date(Date.parse(fixture.sleepStart) + 210 * 60_000).toISOString(), kind: "thump_thud", aboveQuietDb: 24 },
-          { at: new Date(Date.parse(fixture.sleepStart) + 330 * 60_000).toISOString(), kind: "snoring", aboveQuietDb: 9 },
+          { id: 871, at: new Date(Date.parse(fixture.sleepStart) + 95 * 60_000).toISOString(), kind: "cat_meow", aboveQuietDb: 18, hasClip: true },
+          { id: 82, at: new Date(Date.parse(fixture.sleepStart) + 96 * 60_000).toISOString(), kind: "cat_meow", aboveQuietDb: 21, hasClip: true },
+          { id: 964, at: new Date(Date.parse(fixture.sleepStart) + 210 * 60_000).toISOString(), kind: "thump_thud", aboveQuietDb: 24, hasClip: true },
+          { id: 775, at: new Date(Date.parse(fixture.sleepStart) + 330 * 60_000).toISOString(), kind: "snoring", aboveQuietDb: 9, hasClip: true },
         ],
         stageHours: {
           deep: Math.round((fixture.stageSummary.deepDuration / 3600) * 100) / 100,

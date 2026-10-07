@@ -84,6 +84,8 @@ interface Props {
   events: NightEvent[];
   /** Sounds heard in the room; drawn as icons above the hypnogram. */
   sounds?: NightSound[];
+  /** A moment picked from the list below: drawn as a solid marker. */
+  focusAt?: number | null;
 }
 
 // Geometry. One viewBox, three stacked panels sharing the same time axis —
@@ -145,6 +147,7 @@ export const NightChart: React.FC<Props> = ({
   tosses,
   events,
   sounds = [],
+  focusAt = null,
 }) => {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
@@ -478,6 +481,17 @@ export const NightChart: React.FC<Props> = ({
             />
           </g>
         ))}
+
+        {focusAt != null && focusAt >= t0 && focusAt <= t1 && (
+          <line
+            x1={x(focusAt)}
+            x2={x(focusAt)}
+            y1={SOUND_TOP}
+            y2={RAIL_TOP + RAIL_H}
+            stroke="var(--accent)"
+            strokeWidth="2"
+          />
+        )}
 
         {/* ---- Crosshair ------------------------------------------------- */}
         {cursor != null && (

@@ -1,7 +1,12 @@
 import type { NextRequest } from "next/server";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, lt } from "drizzle-orm";
 import { db } from "~/server/db";
-import { soundEvents, userAiSettings } from "~/server/db/schema";
+import { soundClips, soundEvents, userAiSettings } from "~/server/db/schema";
+
+/** Clips are for judging recent nights, not an archive of the bedroom. */
+const CLIP_DAYS = 14;
+/** ~10 s of 32 kbit/s AAC is ~40 KB; anything far bigger is not a clip. */
+const MAX_CLIP_B64 = 300_000;
 
 export const runtime = "nodejs";
 
@@ -50,7 +55,10 @@ export async function POST(request: NextRequest): Promise<Response> {
       const confidence = num(e.confidence);
       const above = num(e.aboveQuietDb);
       const duration = num(e.durationS);
+      const clip =
+        typeof e.clip === "string" && e.clip.length <= MAX_CLIP_B64 ? e.clip : null;
       return {
+        clip,
         at,
         kind,
         confidence: confidence == null ? null : Math.round(confidence * 100),
@@ -73,6 +81,25 @@ export async function POST(request: NextRequest): Promise<Response> {
     );
   const seen = new Set(existing.map((e) => `${e.at.getTime()}|${e.kind}`));
   const fresh = rows.filter((r) => !seen.has(`${r.at.getTime()}|${r.kind}`));
-  if (fresh.length > 0) await db.insert(soundEvents).values(fresh);
-  return Response.json({ stored: fresh.length, skipped: rows.length - fresh.length });
+  let clips = 0;
+  if (fresh.length > 0) {
+    const inserted = await db
+      .insert(soundEvents)
+      .values(fresh.map(({ clip: _clip, ...event }) => event))
+      .returning({ id: soundEvents.id });
+    const withClips = fresh
+      .map((r, i) => ({ clip: r.clip, eventId: inserted[i]?.id }))
+      .filter((c): c is { clip: string; eventId: number } => c.clip != null && c.eventId != null);
+    if (withClips.length > 0) {
+      await db.insert(soundClips).values(
+        withClips.map((c) => ({ eventId: c.eventId, mime: "audio/mp4", dataB64: c.clip })),
+      );
+      clips = withClips.length;
+    }
+  }
+  // Retention, done here because this is where clips arrive.
+  await db
+    .delete(soundClips)
+    .where(lt(soundClips.createdAt, new Date(Date.now() - CLIP_DAYS * 86_400_000)));
+  return Response.json({ stored: fresh.length, clips, skipped: rows.length - fresh.length });
 }

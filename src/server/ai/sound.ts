@@ -24,6 +24,8 @@ import { soundVerdict } from "~/lib/soundStats";
 import { screenEventsBetween } from "./screen";
 
 export interface SoundEvent {
+  /** Row id, for fetching its clip; absent in tests. */
+  id?: number;
   at: Date;
   kind: string;
   /** Loudness above the room's quiet, dB; null when not measured. */
@@ -139,6 +141,7 @@ export async function soundEventsBetween(from: Date, to: Date): Promise<SoundEve
   try {
     const rows = await db
       .select({
+        id: soundEvents.id,
         at: soundEvents.at,
         kind: soundEvents.kind,
         aboveQuietDb: soundEvents.aboveQuietDb,

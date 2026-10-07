@@ -4,6 +4,7 @@ import { apiR } from "~/trpc/react";
 import { formatRawByUnit, type DisplayUnit } from "~/lib/temperature";
 import { Skeleton, Tile } from "./ui/card";
 import { NightChart, type NightEvent } from "./charts/nightChart";
+import { NightSounds } from "./nightSounds";
 import { clockIn, formatHours } from "./charts/chartUtils";
 
 const STAGE_LABEL: Record<string, string> = {
@@ -30,6 +31,7 @@ export const NightDetail: React.FC<{
   night: string | null;
 }> = ({ displayUnit, night: selectedNight }) => {
   const [showLog, setShowLog] = useState(false);
+  const [focusAt, setFocusAt] = useState<number | null>(null);
   // Same query key as the summary card above, so both cards always show the
   // same night and it costs one request.
   const timelineQuery = apiR.user.getNightTimeline.useQuery(
@@ -80,6 +82,14 @@ export const NightDetail: React.FC<{
   }));
 
   const tosses = (session?.tnt ?? []).map(([t]) => new Date(t).getTime());
+  // Wake-ups as the pod marks them, merged within ten minutes like the
+  // night's own wake-up count, so "you woke up right after" means the same.
+  const wakeUpTimes: number[] = [];
+  for (const [t] of session?.shortAwakes ?? []) {
+    const at = new Date(t).getTime();
+    const last = wakeUpTimes[wakeUpTimes.length - 1];
+    if (last == null || at - last > 10 * 60_000) wakeUpTimes.push(at);
+  }
   const bed = (session?.tempBedC ?? []).map(
     ([t, v]) => [new Date(t).getTime(), v] as [number, number],
   );
@@ -142,6 +152,21 @@ export const NightDetail: React.FC<{
           kind: s.kind,
           aboveQuietDb: s.aboveQuietDb,
         }))}
+        focusAt={focusAt}
+      />
+
+      <NightSounds
+        sounds={(session?.sounds ?? []).map((s) => ({
+          id: s.id,
+          at: Date.parse(s.at),
+          kind: s.kind,
+          aboveQuietDb: s.aboveQuietDb,
+          hasClip: s.hasClip,
+        }))}
+        timezone={timezone}
+        wakeUps={wakeUpTimes}
+        tosses={tosses}
+        onFocus={setFocusAt}
       />
 
       <button
