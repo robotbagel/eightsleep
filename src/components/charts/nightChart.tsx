@@ -16,37 +16,6 @@ import {
 import LordIcon from "../ui/lordIcon";
 import { soundLabel } from "~/lib/soundLabels";
 
-/**
- * Groups sounds whose icons would overlap: the cluster takes the most common
- * kind for its icon and lists every sound in its label.
- */
-function soundClusters(
-  sounds: NightSound[],
-  x: (t: number) => number,
-  minGapPx: number,
-): { at: number; kind: string; count: number; label: string }[] {
-  const sorted = [...sounds].sort((a, b) => a.at - b.at);
-  const groups: NightSound[][] = [];
-  for (const s of sorted) {
-    const last = groups[groups.length - 1];
-    if (last && x(s.at) - x(last[0]!.at) < minGapPx) last.push(s);
-    else groups.push([s]);
-  }
-  return groups.map((group) => {
-    const tally = new Map<string, number>();
-    for (const s of group) tally.set(s.kind, (tally.get(s.kind) ?? 0) + 1);
-    const kind = [...tally.entries()].sort((a, b) => b[1] - a[1])[0]![0];
-    return {
-      at: group[0]!.at,
-      kind,
-      count: group.length,
-      label: [...tally.entries()]
-        .map(([k, n]) => `${n > 1 ? `${n}× ` : ""}${soundLabel(k)}`)
-        .join(", "),
-    };
-  });
-}
-
 /** Something the bedroom phone heard (sound.ts). */
 export interface NightSound {
   at: number;
@@ -63,6 +32,19 @@ export function soundIcon(kind: string): string {
   if (["speech", "laughter", "cough", "baby_crying"].includes(kind)) return "chat";
   return "speaker";
 }
+
+/**
+ * Each family of sound gets its own row in the Sounds view, cats first: one
+ * shared row let 60 "loud" marks bury the two meows that mattered.
+ */
+const SOUND_FAMILIES: { key: string; label: string }[] = [
+  { key: "cat", label: "Cats" },
+  { key: "speaker", label: "Noise" },
+  { key: "door", label: "Thuds" },
+  { key: "chat", label: "Voices" },
+  { key: "snore", label: "Snoring" },
+  { key: "dog", label: "Dog" },
+];
 
 export interface NightEvent {
   at: number;
@@ -118,48 +100,32 @@ const RESTLESS_SLICE_MS = 15 * 60_000;
 // phone to a 1280px desktop instead of being scaled up with the box.
 // Wide enough for "AWAKE" at 10px uppercase without touching the first block.
 const GUTTER = 42;
-const X0 = GUTTER;
+/** The Sounds view labels its rows with an icon, a name and a count. */
+const SOUND_GUTTER = 78;
 
 /** Vertical geometry per view; grows a little on wide cards. */
-function layoutFor(width: number, lens: Lens) {
+function layoutFor(width: number, lens: Lens, soundRows: number) {
   const k = Math.min(Math.max(width / 420, 1), 1.6);
+  const none = { LANE_TOP: 0, LANE_H: 0, BLOCK_H: 0, STRIP_TOP: 0, STRIP_H: 0, TEMP_TOP: 0, TEMP_H: 0 };
   if (lens === "temp") {
     const TEMP_TOP = 10;
     const TEMP_H = Math.round(150 * k);
-    return {
-      SOUND_TOP: 0,
-      SOUND_H: 0,
-      LANE_TOP: 0,
-      LANE_H: 0,
-      BLOCK_H: 0,
-      STRIP_TOP: 0,
-      STRIP_H: 0,
-      TEMP_TOP,
-      TEMP_H,
-      H: TEMP_TOP + TEMP_H + 10,
-    };
+    return { ...none, TEMP_TOP, TEMP_H, H: TEMP_TOP + TEMP_H + 10 };
   }
-  const withSounds = lens === "sounds";
-  const SOUND_TOP = 2;
-  const SOUND_H = withSounds ? Math.round(26 * k) : 0;
-  const LANE_TOP = SOUND_TOP + SOUND_H + 8;
-  const LANE_H = Math.round((withSounds ? 22 : 30) * k);
-  const BLOCK_H = Math.round((withSounds ? 14 : 18) * k);
+  if (lens === "sounds") {
+    // Row 0 is Awake, then one row per family of sound heard this night.
+    const LANE_TOP = 6;
+    const LANE_H = Math.round(30 * k);
+    const BLOCK_H = Math.round(16 * k);
+    return { ...none, LANE_TOP, LANE_H, BLOCK_H, H: LANE_TOP + LANE_H * soundRows + BLOCK_H + 4 };
+  }
+  const LANE_TOP = 10;
+  const LANE_H = Math.round(30 * k);
+  const BLOCK_H = Math.round(18 * k);
   const lanesEnd = LANE_TOP + LANE_H * 3 + BLOCK_H;
   const STRIP_TOP = lanesEnd + Math.round(14 * k);
-  const STRIP_H = withSounds ? 0 : Math.round(8 * k);
-  return {
-    SOUND_TOP,
-    SOUND_H,
-    LANE_TOP,
-    LANE_H,
-    BLOCK_H,
-    STRIP_TOP,
-    STRIP_H,
-    TEMP_TOP: 0,
-    TEMP_H: 0,
-    H: (withSounds ? lanesEnd : STRIP_TOP + STRIP_H) + 6,
-  };
+  const STRIP_H = Math.round(8 * k);
+  return { ...none, LANE_TOP, LANE_H, BLOCK_H, STRIP_TOP, STRIP_H, H: STRIP_TOP + STRIP_H + 6 };
 }
 
 const SOURCE_COLOR: Record<NightEvent["source"], string> = {
@@ -216,9 +182,15 @@ export const NightChart: React.FC<Props> = ({
     }
   }, [focusAt, sounds.length]);
 
+  // Families heard this night, in a fixed order so rows never jump around.
+  const families = SOUND_FAMILIES.filter((f) => sounds.some((s) => soundIcon(s.kind) === f.key));
+  const X0 = activeLens === "sounds" ? SOUND_GUTTER : GUTTER;
   const X1 = W - 6;
-  const { SOUND_TOP, SOUND_H, LANE_TOP, LANE_H, BLOCK_H, STRIP_TOP, STRIP_H, TEMP_TOP, TEMP_H, H } =
-    layoutFor(W, activeLens);
+  const { LANE_TOP, LANE_H, BLOCK_H, STRIP_TOP, STRIP_H, TEMP_TOP, TEMP_H, H } = layoutFor(
+    W,
+    activeLens,
+    families.length,
+  );
 
   const model = useMemo(() => {
     // ---- time domain -----------------------------------------------------
@@ -292,9 +264,10 @@ export const NightChart: React.FC<Props> = ({
       bedPoints,
       bedPath: smoothPath(bedPoints),
       roomPath: smoothPath(roomPoints),
-      ticks: hourTicks(t0, t1, t1 - t0 > 9 * 3_600_000 ? 2 : 1),
+      // Every hour when there is room for "00:00" labels, else every two.
+      ticks: hourTicks(t0, t1, (X1 - X0) / ((t1 - t0) / 3_600_000) < 44 ? 2 : 1),
     };
-  }, [sessionStart, sleepStart, sleepEnd, stages, wakeUps, bed, room, tosses, events, sounds, X1, TEMP_TOP, TEMP_H]);
+  }, [sessionStart, sleepStart, sleepEnd, stages, wakeUps, bed, room, tosses, events, sounds, X0, X1, TEMP_TOP, TEMP_H]);
 
   if (!model) {
     return (
@@ -393,8 +366,10 @@ export const NightChart: React.FC<Props> = ({
 
   const reading = cursor == null ? null : readAt(cursor);
   const cursorX = cursor == null ? 0 : x(cursor);
-  const showLanes = activeLens !== "temp";
-  const dimStages = activeLens === "sounds";
+  const showLanes = activeLens === "sleep";
+  // A sound counts as "before a wake-up" by the same rule as the list below.
+  const wokeAfter = (at: number) => wakeUps.some((t) => t >= at - 15_000 && t - at <= FOLLOW_MS);
+  const rowMid = (row: number) => LANE_TOP + row * LANE_H + BLOCK_H / 2;
 
   // Connector between consecutive stage blocks, so the hypnogram reads as one
   // line through the night rather than loose bricks.
@@ -462,7 +437,7 @@ export const NightChart: React.FC<Props> = ({
               )}
               {activeLens === "sounds" &&
                 reading.sounds.map((s) => (
-                  <Chip key={`rs-${s.at}-${s.kind}`} color="var(--warning)">
+                  <Chip key={`rs-${s.at}-${s.kind}`} color="var(--cool)">
                     {clockIn(s.at, timezone)} {soundLabel(s.kind)}
                   </Chip>
                 ))}
@@ -532,12 +507,45 @@ export const NightChart: React.FC<Props> = ({
                 left: 0,
                 width: GUTTER,
                 top: LANE_TOP + lane * LANE_H + BLOCK_H / 2,
-                color: dimStages ? "var(--text-faint)" : STAGE_VAR[stage],
+                color: STAGE_VAR[stage],
               }}
             >
               {STAGE_LABEL[stage]}
             </span>
           ))}
+        {activeLens === "sounds" && (
+          <>
+            <span
+              className="absolute -translate-y-1/2 text-[10px] font-semibold uppercase tracking-wide"
+              style={{ left: 0, width: SOUND_GUTTER, top: rowMid(0), color: "var(--stage-awake)" }}
+            >
+              Awake
+            </span>
+            {families.map((family, i) => {
+              const count = sounds.filter((s) => soundIcon(s.kind) === family.key).length;
+              return (
+                <span
+                  key={`fam-${family.key}`}
+                  id={`fam-${family.key}`}
+                  className="absolute flex -translate-y-1/2 items-center gap-1 text-[11px] font-semibold"
+                  style={{ left: 0, width: SOUND_GUTTER, top: rowMid(i + 1), color: "var(--text-muted)" }}
+                >
+                  <LordIcon
+                    name={family.key}
+                    size={16}
+                    trigger="hover"
+                    target={`#fam-${family.key}`}
+                    color="var(--cool)"
+                  />
+                  {family.label}
+                  <span className="tabular font-normal" style={{ color: "var(--text-faint)" }}>
+                    {count}
+                  </span>
+                </span>
+              );
+            })}
+          </>
+        )}
         {activeLens === "sleep" && (
           <span
             className="absolute -translate-y-1/2 text-[10px] font-semibold uppercase tracking-wide"
@@ -592,7 +600,7 @@ export const NightChart: React.FC<Props> = ({
 
           {/* ---- Stages ------------------------------------------------------ */}
           {showLanes && (
-            <g opacity={dimStages ? 0.35 : 1}>
+            <g>
               <path d={connector} stroke="var(--border-strong)" strokeWidth="1" fill="none" />
               {runs.map((run, index) => {
                 const left = x(run.from);
@@ -648,21 +656,79 @@ export const NightChart: React.FC<Props> = ({
               ),
             )}
 
-          {/* ---- Sounds: a faint line from each icon down through the night -- */}
-          {activeLens === "sounds" &&
-            sounds.map((s, index) => (
-              <line
-                key={`sound-${index}`}
-                x1={x(s.at)}
-                x2={x(s.at)}
-                y1={SOUND_TOP + SOUND_H}
-                y2={H - 4}
-                stroke="var(--warning)"
-                strokeWidth="1"
-                strokeDasharray="2 3"
-                opacity="0.7"
-              />
-            ))}
+          {/* ---- Sounds: Awake on top, one row per family below ------------ */}
+          {activeLens === "sounds" && (
+            <g>
+              {[0, ...families.map((_, i) => i + 1)].map((row) => (
+                <line
+                  key={`row-${row}`}
+                  x1={X0}
+                  x2={X1}
+                  y1={rowMid(row)}
+                  y2={rowMid(row)}
+                  stroke="var(--border)"
+                  strokeWidth="1"
+                  strokeDasharray="1 4"
+                  opacity="0.8"
+                />
+              ))}
+              {runs
+                .filter((run) => run.stage === "awake")
+                .map((run, index) => (
+                  <rect
+                    key={`awake-${index}`}
+                    x={x(run.from)}
+                    y={LANE_TOP}
+                    width={Math.max(x(run.to) - x(run.from), 2)}
+                    height={BLOCK_H}
+                    rx={3}
+                    fill="var(--stage-awake)"
+                  />
+                ))}
+              {briefWakes.map((t, index) => (
+                <rect
+                  key={`swake-${index}`}
+                  x={x(t) - 3}
+                  y={LANE_TOP}
+                  width={6}
+                  height={BLOCK_H}
+                  rx={3}
+                  fill="var(--stage-awake)"
+                  stroke="var(--surface)"
+                  strokeWidth="1"
+                />
+              ))}
+              {/* A sound followed by a wake-up is drawn at full strength and
+                  tied to the Awake row; the rest stay quiet. */}
+              {sounds.map((sound, index) => {
+                const row = families.findIndex((f) => f.key === soundIcon(sound.kind)) + 1;
+                const woke = wokeAfter(sound.at);
+                return (
+                  <g key={`snd-${index}`} opacity={woke ? 1 : 0.5}>
+                    {woke && (
+                      <line
+                        x1={x(sound.at)}
+                        x2={x(sound.at)}
+                        y1={LANE_TOP + BLOCK_H}
+                        y2={LANE_TOP + row * LANE_H}
+                        stroke="var(--cool)"
+                        strokeWidth="1.5"
+                        strokeDasharray="2 2"
+                      />
+                    )}
+                    <rect
+                      x={x(sound.at) - 2.5}
+                      y={LANE_TOP + row * LANE_H}
+                      width={5}
+                      height={BLOCK_H}
+                      rx={2.5}
+                      fill="var(--cool)"
+                    />
+                  </g>
+                );
+              })}
+            </g>
+          )}
 
           {/* ---- Temperature (both series in °C, one axis) ------------------ */}
           {activeLens === "temp" && roomPath && (
@@ -736,34 +802,6 @@ export const NightChart: React.FC<Props> = ({
           )}
         </svg>
 
-        {/* Sound icons: HTML over the chart so they are real animated
-            Grunkicons at a fixed size. Sounds closer than an icon's width
-            share one icon with a count. */}
-        {activeLens === "sounds" &&
-          soundClusters(sounds, x, 22).map((cluster) => (
-            <span
-              key={`sc-${cluster.at}`}
-              id={`sc-${cluster.at}`}
-              className="absolute flex -translate-x-1/2 items-center"
-              style={{ left: x(cluster.at), top: SOUND_TOP, height: SOUND_H }}
-              title={cluster.label}
-              aria-label={cluster.label}
-              role="img"
-            >
-              <LordIcon
-                name={soundIcon(cluster.kind)}
-                size={Math.min(SOUND_H, 20)}
-                trigger="hover"
-                target={`#sc-${cluster.at}`}
-                color="var(--warning)"
-              />
-              {cluster.count > 1 && (
-                <span className="tabular -ml-0.5 text-[10px] font-semibold" style={{ color: "var(--warning)" }}>
-                  {cluster.count}
-                </span>
-              )}
-            </span>
-          ))}
       </div>
 
       <div className="relative mt-1 h-4">
@@ -788,8 +826,8 @@ export const NightChart: React.FC<Props> = ({
         )}
         {activeLens === "sounds" && (
           <>
-            <LegendKey color="var(--warning)" label="Sound heard" tick />
-            <LegendKey color="var(--stage-awake)" label="Wake-up" pill />
+            <LegendKey color="var(--stage-awake)" label="Awake" pill />
+            <LegendKey color="var(--cool)" label="Sound, bright if you woke right after" pill />
           </>
         )}
         {activeLens === "temp" && (

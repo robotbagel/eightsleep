@@ -177,7 +177,7 @@ export const NightSounds: React.FC<{
                     size={22}
                     trigger="hover"
                     target={`#${rowId}`}
-                    color="var(--warning)"
+                    color="var(--cool)"
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm" style={{ color: "var(--text)" }}>
