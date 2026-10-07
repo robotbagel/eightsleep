@@ -201,7 +201,7 @@ export const NightSounds: React.FC<{
                     </span>
                   </span>
                 </button>
-                {(row.videoUrl || (row.hasClip && row.id != null)) && (
+                {(row.videoUrl != null || (row.hasClip && row.id != null)) && (
                   <button
                     type="button"
                     onClick={() => play(row)}
