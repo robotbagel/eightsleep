@@ -591,6 +591,43 @@ export async function GET(request: NextRequest): Promise<Response> {
   const probe = request.nextUrl.searchParams.get("probe");
   if (probe) return handleProbe(request, probe);
 
+  // Sounds in a window with their clip files, for repairing or auditing
+  // clips. GET /api/aiDebug?sounds=1&from=<ISO>&to=<ISO>
+  if (request.nextUrl.searchParams.get("sounds") === "1") {
+    const from = new Date(request.nextUrl.searchParams.get("from") ?? "");
+    const to = new Date(request.nextUrl.searchParams.get("to") ?? "");
+    if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+      return Response.json({ error: "from and to (ISO) required" }, { status: 400 });
+    }
+    const { soundEvents, soundClips } = await import("~/server/db/schema");
+    const { gte, lte } = await import("drizzle-orm");
+    const rows = await db
+      .select({
+        id: soundEvents.id,
+        at: soundEvents.at,
+        kind: soundEvents.kind,
+        device: soundEvents.device,
+        videoFile: soundEvents.videoFile,
+      })
+      .from(soundEvents)
+      .where(and(gte(soundEvents.at, from), lte(soundEvents.at, to)))
+      .orderBy(soundEvents.at);
+    const ids = rows.map((r) => r.id);
+    const withClip = new Set(
+      ids.length === 0
+        ? []
+        : (
+            await db
+              .select({ eventId: soundClips.eventId })
+              .from(soundClips)
+              .where(inArray(soundClips.eventId, ids))
+          ).map((r) => r.eventId),
+    );
+    return Response.json({
+      sounds: rows.map((r) => ({ ...r, hasClip: withClip.has(r.id) })),
+    });
+  }
+
   // Raw decision trail for one night: every temperature event and live
   // adjustment, exactly as stored. GET /api/aiDebug?events=YYYY-MM-DD&email=…
   // (night key = the date the night STARTED). This exists because diagnosing

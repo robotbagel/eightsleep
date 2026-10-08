@@ -60,6 +60,7 @@ import {
   syncNightMetrics,
 } from "./history";
 import { sendPushToUser } from "~/server/push";
+import { ratingFor } from "~/lib/insights";
 import {
   celsiusToRaw,
   formatRawByUnit,
@@ -1333,9 +1334,19 @@ async function sendMorningReport(
     const nights = context?.nights ?? [];
     const lastNight = nights[nights.length - 1];
     const parts: string[] = [];
-    if (lastNight?.score != null) parts.push(`Score ${lastNight.score}`);
-    if (lastNight?.sleepDurationHours != null)
-      parts.push(`${lastNight.sleepDurationHours}h sleep`);
+    // Lead with the number the app leads with. This used to print the pod's
+    // own score from the sleep context, so the notification said 90 while
+    // the app's ring said 100 for the same night (2026-10-08).
+    const stored = await db.query.nightMetrics.findFirst({
+      where: and(eq(nightMetrics.email, email), eq(nightMetrics.night, rec.forDate)),
+    });
+    if (stored?.thermalScore != null) {
+      const rating = ratingFor(stored.thermalScore);
+      parts.push(`Sleep quality ${stored.thermalScore}${rating ? ` (${rating})` : ""}`);
+    }
+    const asleep =
+      stored?.asleepTenthHours != null ? stored.asleepTenthHours / 10 : lastNight?.sleepDurationHours;
+    if (asleep != null) parts.push(`${asleep}h asleep`);
     if (session?.stageHours?.deep != null)
       parts.push(`deep ${session.stageHours.deep}h`);
     if (session) {

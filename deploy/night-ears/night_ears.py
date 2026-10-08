@@ -116,6 +116,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger("night-ears")
 
 
+# The camera's microphone is quiet: a voice in the room peaks near -40 dBFS,
+# inaudible on a phone at normal volume. Clips are levelled per quarter
+# second, up to 30x (+30 dB), so a meow is audible without hand-turning the
+# volume up and a door slam is not boosted into distortion.
+AUDIO_LEVEL = "dynaudnorm=f=250:g=15:p=0.9:m=30"
+
+
 def encode_clip(pcm: bytes) -> str | None:
     """16 kHz mono PCM -> AAC in an .m4a, base64. AAC because the iPhone's
     browser plays it natively; ~7 s at 32 kbit/s is about 25 KB."""
@@ -125,7 +132,7 @@ def encode_clip(pcm: bytes) -> str | None:
     with tempfile.NamedTemporaryFile(suffix=".m4a") as out:
         result = subprocess.run(
             ["ffmpeg", "-loglevel", "error", "-y", "-f", "s16le", "-ar", str(RATE),
-             "-ac", "1", "-i", "pipe:0", "-c:a", "aac", "-b:a", "32k",
+             "-ac", "1", "-i", "pipe:0", "-af", AUDIO_LEVEL, "-c:a", "aac", "-b:a", "32k",
              "-movflags", "+faststart", out.name],
             input=pcm,
         )
@@ -238,6 +245,17 @@ class Outbox:
                 self.pending[:0] = batch
 
 
+def has_audio(path: str) -> bool:
+    """Whether a file carries a decodable sound track (a silent clip is a bug)."""
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=sample_rate", "-of", "csv=p=0", path],
+        capture_output=True, text=True,
+    )
+    rate = probe.stdout.strip()
+    return rate.isdigit() and int(rate) > 0
+
+
 def cut_video(event: dict, at: float, kind: str) -> None:
     """Cut 15 s around `at` from the segment buffer into a 720p .mp4."""
     try:
@@ -260,15 +278,18 @@ def cut_video(event: dict, at: float, kind: str) -> None:
         name = f"{int(at)}-{kind}.mp4"
         result = subprocess.run(
             ["ffmpeg", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", listing,
+             "-map", "0:v:0", "-map", "0:a:0?",
              "-ss", f"{offset:.2f}", "-t", str(VIDEO_BEFORE_S + VIDEO_AFTER_S),
              "-vf", "scale=-2:720", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
-             "-c:a", "aac", "-b:a", "48k", "-movflags", "+faststart",
+             "-af", AUDIO_LEVEL, "-c:a", "aac", "-b:a", "48k", "-movflags", "+faststart",
              os.path.join(CLIP_DIR, name)],
             capture_output=True,
         )
         os.remove(listing)
         if result.returncode == 0:
             event["videoFile"] = name
+            if not has_audio(os.path.join(CLIP_DIR, name)):
+                log.warning("clip %s has no sound track", name)
         else:
             log.warning("clip cut failed: %s", result.stderr[-200:])
     except Exception as exc:
@@ -417,9 +438,13 @@ def open_stream() -> tuple[subprocess.Popen, int]:
          "-map", "0:a:0", "-ac", "1", "-ar", str(RATE), "-f", "s16le", "pipe:1",
          "-map", "0:v:0", "-vf", f"fps={FPS},scale={VIDEO_W}:{VIDEO_H}",
          "-pix_fmt", "rgb24", "-f", "rawvideo", f"pipe:{video_write}",
-         # The untouched stream, in short segments named by start time, for
-         # cutting clips around events. Pruned to a few minutes.
-         "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+         # The picture untouched, in short segments named by start time, for
+         # cutting clips around events. Pruned to a few minutes. The sound is
+         # re-encoded: the camera's AAC copied as-is lands in MPEG-TS without
+         # a sample rate, and the clip cutter then drops it without a word
+         # (every clip of 2026-10-07/08 was silent).
+         "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy",
+         "-c:a", "aac", "-ar", str(RATE), "-ac", "1", "-b:a", "48k",
          "-f", "segment", "-segment_time", str(SEGMENT_S), "-segment_format", "mpegts",
          "-reset_timestamps", "1", "-strftime", "1",
          os.path.join(BUFFER_DIR, "%s.ts")],
