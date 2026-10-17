@@ -16,7 +16,7 @@ import {
   users,
 } from "~/server/db/schema";
 import { and, desc, eq, gte, inArray, ne, sql } from "drizzle-orm";
-import { obtainFreshAccessToken } from "~/server/eight/auth";
+import { ensureFreshToken } from "~/server/eight/tokenStore";
 import { type Token } from "~/server/eight/types";
 import {
   collectSleepContext,
@@ -114,29 +114,12 @@ function forecastFromLedger(ledger: LedgerEntry[]) {
 }
 
 export async function getFreshToken(user: UserRow): Promise<Token> {
-  let token: Token = {
+  return ensureFreshToken({
     eightAccessToken: user.eightAccessToken,
     eightRefreshToken: user.eightRefreshToken,
     eightExpiresAtPosix: user.eightTokenExpiresAt.getTime(),
     eightUserId: user.eightUserId,
-  };
-
-  if (Date.now() > token.eightExpiresAtPosix) {
-    token = await obtainFreshAccessToken(
-      token.eightRefreshToken,
-      token.eightUserId,
-    );
-    await db
-      .update(users)
-      .set({
-        eightAccessToken: token.eightAccessToken,
-        eightRefreshToken: token.eightRefreshToken,
-        eightTokenExpiresAt: new Date(token.eightExpiresAtPosix),
-      })
-      .where(eq(users.email, user.email));
-  }
-
-  return token;
+  });
 }
 
 export async function getAiSettingsOrDefaults(email: string) {

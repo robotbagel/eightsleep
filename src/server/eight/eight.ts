@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { DeviceDataSchema, DeviceListSchema, type Token } from './types';
 import { CLIENT_API_URL, APP_API_URL, DEFAULT_API_HEADERS } from './constants';
+import { recoverRejectedToken } from './tokenStore';
 
 
 export async function fetchWithAuth<T extends z.ZodType<unknown, z.ZodTypeDef, unknown>>(
@@ -10,14 +11,21 @@ export async function fetchWithAuth<T extends z.ZodType<unknown, z.ZodTypeDef, u
   schema: T, 
   options: RequestInit = {}
 ): Promise<z.infer<T>> {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      ...DEFAULT_API_HEADERS,
-      ...options.headers,
-      authorization: `Bearer ${token.eightAccessToken}`,
-    },
-  });
+  const send = () =>
+    fetch(url, {
+      ...options,
+      headers: {
+        ...DEFAULT_API_HEADERS,
+        ...options.headers,
+        authorization: `Bearer ${token.eightAccessToken}`,
+      },
+    });
+  let response = await send();
+  if (response.status === 401) {
+    // Renews `token` in place, so the caller's later requests use it too.
+    await recoverRejectedToken(token);
+    response = await send();
+  }
   if (!response.ok) {
     throw new Error(`API request failed: ${response.status}`);
   }

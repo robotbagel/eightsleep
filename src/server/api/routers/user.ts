@@ -3,11 +3,8 @@ import { createTRPCRouter, publicProcedure } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import { soundClips, users, userTemperatureProfile } from "~/server/db/schema";
 import { cookies } from "next/headers";
-import {
-  authenticate,
-  obtainFreshAccessToken,
-  AuthError,
-} from "~/server/eight/auth";
+import { authenticate, AuthError } from "~/server/eight/auth";
+import { tokenNeedsRefresh } from "~/server/eight/tokenStore";
 import { and, desc, eq, gte, inArray, lte } from "drizzle-orm";
 import { type Token } from "~/server/eight/types";
 import { TRPCError } from "@trpc/server";
@@ -133,29 +130,11 @@ export const userRouter = createTRPCRouter({
 
       const user = userList[0];
 
-      // check if token is expired, and if so, refresh it
-      if (user.eightTokenExpiresAt < new Date()) {
-        console.log("Token expired, refreshing for user", user.email);
+      // check if token is (about to be) expired, and if so, refresh it
+      if (tokenNeedsRefresh(user.eightTokenExpiresAt.getTime())) {
+        console.log("Token expiring, refreshing for user", user.email);
         try {
-          const {
-            eightAccessToken,
-            eightRefreshToken,
-            eightExpiresAtPosix: expiresAt,
-          } = await obtainFreshAccessToken(
-            user.eightRefreshToken,
-            user.eightUserId,
-          );
-
-          await db
-            .update(users)
-            .set({
-              eightAccessToken,
-              eightRefreshToken,
-              eightTokenExpiresAt: new Date(expiresAt),
-            })
-            .where(eq(users.email, email))
-            .execute();
-
+          await getFreshToken(user);
           return { loginRequired: false };
         } catch (error) {
           console.error("Token renewal failed:", error);

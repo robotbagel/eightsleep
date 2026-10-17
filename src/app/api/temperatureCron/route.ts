@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { db } from "~/server/db";
 import { userTemperatureProfile, users } from "~/server/db/schema";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { obtainFreshAccessToken } from "~/server/eight/auth";
+import { ensureFreshToken } from "~/server/eight/tokenStore";
 import { type Token } from "~/server/eight/types";
 import { setHeatingLevel, turnOnSide, turnOffSide } from "~/server/eight/eight";
 import {
@@ -301,7 +301,7 @@ export async function adjustTemperature(
 
     for (const profile of profiles) {
       try {
-        let token: Token = {
+        const token: Token = {
           eightAccessToken: profile.users.eightAccessToken,
           eightRefreshToken: profile.users.eightRefreshToken,
           eightExpiresAtPosix: profile.users.eightTokenExpiresAt.getTime(),
@@ -310,19 +310,8 @@ export async function adjustTemperature(
 
         const now = testMode?.enabled ? testMode.currentTime : new Date();
 
-        if (!testMode?.enabled && now.getTime() > token.eightExpiresAtPosix) {
-          token = await obtainFreshAccessToken(
-            token.eightRefreshToken,
-            token.eightUserId,
-          );
-          await db
-            .update(users)
-            .set({
-              eightAccessToken: token.eightAccessToken,
-              eightRefreshToken: token.eightRefreshToken,
-              eightTokenExpiresAt: new Date(token.eightExpiresAtPosix),
-            })
-            .where(eq(users.email, profile.users.email));
+        if (!testMode?.enabled) {
+          await ensureFreshToken(token);
         }
 
         // A guest staying here sets up their own night. Their schedule is

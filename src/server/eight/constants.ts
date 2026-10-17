@@ -10,7 +10,9 @@ export const AUTH_URL = "https://auth-api.8slp.net/v1/tokens";
 export const KNOWN_CLIENT_ID = "0894c7f33bb94800a03f1f4df13a4f38";
 export const KNOWN_CLIENT_SECRET = "f0954a3ed5763ba3d06834c73731a32f15f168f47d4f164751275def86db0c76";
 
-export const TOKEN_TIME_BUFFER_SECONDS = 120;
+// Renew this long before the stored expiry. Longer than one 10-minute cron
+// interval, so a token is renewed a full tick before it can lapse mid-tick.
+export const TOKEN_TIME_BUFFER_SECONDS = 15 * 60;
 
 export const DEFAULT_API_HEADERS = {
   "content-type": "application/json",
