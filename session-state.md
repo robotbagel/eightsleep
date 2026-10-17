@@ -78,5 +78,8 @@ Phone listening can't start without a foreground tap (iOS), Nathan dozes off, so
 - Video: night-ears segment buffer → 15 s 720p mp4 per event in `/volume2/docker/stacks/night-ears/clips` (14 d), served on `sleep-clips.geshido.now` (geshido-tools tunnel ingress → 192.168.50.177:8790; backup of the old ingress in `~/.config/8sleep/geshido-tools-tunnel-backup-2026-10-07.json`) only with HMAC(CRON_SECRET, "file|exp") links the app signs for 6 h (`clipLinks.ts`). Cloudflare 403s Python's default user agent; browsers fine.
 - Night tab "Heard in the night" list with play / watch; Watch bedtime reference now home nights only (Watch scores 87-89 vs pod 91-96).
 
+## Token 401s (2026-10-17, commit b4ffb38)
+One 10-minute tick failed with `API request failed: 401` on 10-11, 10-15 and 10-16 (all daytime, next tick recovered, no night affected). Tokens were renewed only AFTER the stored expiry and a refused token was never retried. All renewal now goes through `src/server/eight/tokenStore.ts`: 15 min early, in place on the caller's token, adopts a renewal another invocation stored, single-flight, and `fetchWithAuth` renews + repeats once on a 401. `token.test.mts` covers it. First tick after deploy (17:30Z) clean. Monitor alert now names the failing check's local time.
+
 ## Open items
 - Both profiles drifted while away (Nathan mid 26.3 -> 24.8, deep 26.5 -> 26; Laurence deep 28.6 -> 30.2), all from stale evidence. Restoring the pre-holiday profiles is Nathan's call.
